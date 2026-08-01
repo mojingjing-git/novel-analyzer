@@ -158,7 +158,7 @@ a) 文件顶部（`re` 已导入）新增两个模块级正则与修复函数（
 
 ```python
 _RE_KEY_MISSING_QUOTE = re.compile(r'([{,]\s*)([A-Za-z_\u4e00-\u9fff][A-Za-z0-9_\u4e00-\u9fff]*)"\s*:')
-_RE_VALUE_MISSING_QUOTE = re.compile(r'(:\s*)([^\s"{}[\],][^{}\[\]]*?)"(\s*[,}\]])')
+_RE_VALUE_MISSING_QUOTE = re.compile(r'(:\s*)([^\s"{}[\],][^"{}[\]]*?)"(\s*[,}\]])')
 
 
 def repair_missing_quotes(text: str) -> str:
