@@ -159,6 +159,7 @@ def parse_json_robust(text: str):
             pass
 
     # 策略3: 移除尾部注释（// 风格）
+    # B7 修复：在与切片相同的基准字符串上 search（防止行号偏移）
     base = trimmed if last_brace != -1 else text
     comment_match = re.search(r'(}\s*)//.*$', base, re.MULTILINE | re.DOTALL)
     if comment_match:

@@ -327,9 +327,11 @@ class LLMClient:
         max_tokens: Optional[int] = None,
         validate_response: Optional[Callable[[str], Tuple[bool, str]]] = None,
         retry_messages_builder: Optional[Callable[[str, List[dict]], List[dict]]] = None
-    ) -> Tuple[bool, str, str, Tuple[int, int]]:
+    ) -> Tuple[bool, str, str, Tuple[int, int], dict]:
         last_error = ""
         total_attempts = 0
+        # 本次调用的失败 token 累计（并发安全：不再依赖客户端全局计数做差分归因）
+        call_failed_tokens = 0
         messages_length = len(str(messages))
         # 跟踪最后一次 API 成功调用消耗的 tokens（即使 JSON 验证失败，API 已扣费）
         last_consumed_tokens: Tuple[int, int] = (0, 0)
@@ -347,7 +349,7 @@ class LLMClient:
         for attempt in range(self.config.temperature_max_retries):
             if self._stop_requested:
                 logger.info("⛔ 检测到停止请求，终止重试链")
-                return False, "", "用户请求停止", last_consumed_tokens
+                return False, "", "用户请求停止", last_consumed_tokens, {"attempts": total_attempts, "failed_tokens": call_failed_tokens}
             total_attempts += 1
             with self._stats_lock:
                 self._attempts += 1
@@ -382,6 +384,7 @@ class LLMClient:
                         if isinstance(tokens, tuple) and len(tokens) == 2:
                             with self._stats_lock:
                                 self._failed_tokens += tokens[0] + tokens[1]
+                            call_failed_tokens += tokens[0] + tokens[1]
                             last_consumed_tokens = tokens  # 保留以供最终返回
                         last_error = f"响应验证失败: {validation_error}"
                         # 构建带格式修正提示的messages用于重试
@@ -405,7 +408,7 @@ class LLMClient:
                 logger.info(f"✅ API请求成功（第{total_attempts}次尝试）")
                 logger.info(f"使用Tokens: {tokens}")
                 logger.info("=" * 60)
-                return True, content, "", tokens
+                return True, content, "", tokens, {"attempts": total_attempts, "failed_tokens": call_failed_tokens}
 
             last_error = error
             logger.warning(f"❌ 尝试失败: {error}")
@@ -426,7 +429,7 @@ class LLMClient:
 
             if "认证失败" in error or "401" in error:
                 logger.error("⛔ 认证错误，停止重试")
-                return False, "", error, last_consumed_tokens
+                return False, "", error, last_consumed_tokens, {"attempts": total_attempts, "failed_tokens": call_failed_tokens}
 
             if attempt < self.config.temperature_max_retries - 1:
                 wait_time = 3 * (attempt + 1)
@@ -438,7 +441,7 @@ class LLMClient:
         for retry_num in range(self.config.backoff_max_retries):
             if self._stop_requested:
                 logger.info("⛔ 检测到停止请求，终止重试链")
-                return False, "", "用户请求停止", last_consumed_tokens
+                return False, "", "用户请求停止", last_consumed_tokens, {"attempts": total_attempts, "failed_tokens": call_failed_tokens}
             total_attempts += 1
             with self._stats_lock:
                 self._attempts += 1
@@ -477,6 +480,7 @@ class LLMClient:
                         if isinstance(tokens, tuple) and len(tokens) == 2:
                             with self._stats_lock:
                                 self._failed_tokens += tokens[0] + tokens[1]
+                            call_failed_tokens += tokens[0] + tokens[1]
                             last_consumed_tokens = tokens
                         last_error = f"响应验证失败: {validation_error}"
                         # 构建带格式修正提示的messages用于重试
@@ -496,7 +500,7 @@ class LLMClient:
                 logger.info(f"✅ API请求成功（第{total_attempts}次尝试）")
                 logger.info(f"使用Tokens: {tokens}")
                 logger.info("=" * 60)
-                return True, content, "", tokens
+                return True, content, "", tokens, {"attempts": total_attempts, "failed_tokens": call_failed_tokens}
 
             last_error = error
             logger.warning(f"❌ 重试失败: {error}")
@@ -517,7 +521,7 @@ class LLMClient:
 
             if "认证失败" in error or "401" in error:
                 logger.error("⛔ 认证错误，停止重试")
-                return False, "", error, last_consumed_tokens
+                return False, "", error, last_consumed_tokens, {"attempts": total_attempts, "failed_tokens": call_failed_tokens}
 
         final_msg = f"所有重试均失败（温度退火{self.config.temperature_max_retries}次 + " \
                    f"指数退避{self.config.backoff_max_retries}次 = 共{total_attempts}次）。" \
@@ -531,7 +535,7 @@ class LLMClient:
         logger.error(f"失败统计: {summary}")
         logger.error("=" * 60)
 
-        return False, "", final_msg, last_consumed_tokens
+        return False, "", final_msg, last_consumed_tokens, {"attempts": total_attempts, "failed_tokens": call_failed_tokens}
 
     def get_stats(self) -> dict:
         return {

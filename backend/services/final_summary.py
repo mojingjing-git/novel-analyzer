@@ -565,7 +565,7 @@ class FinalSummaryRunner:
             {"role": "system", "content": BATCH_SYSTEM_PROMPT},
             {"role": "user", "content": prompt}
         ]
-        success, content, error, tokens = await self._llm.chat_with_retry(
+        success, content, error, tokens, _call_stats = await self._llm.chat_with_retry(
             messages, max_tokens=self.config.api.max_tokens, validate_response=None
         )
         self._record_tokens("summary", tokens)
@@ -580,7 +580,7 @@ class FinalSummaryRunner:
             {"role": "system", "content": FINAL_SYSTEM_PROMPT},
             {"role": "user", "content": prompt}
         ]
-        success, content, error, tokens = await self._llm.chat_with_retry(
+        success, content, error, tokens, _call_stats = await self._llm.chat_with_retry(
             messages, max_tokens=self.config.api.max_tokens, validate_response=None
         )
         self._record_tokens("final", tokens)
@@ -595,7 +595,7 @@ class FinalSummaryRunner:
             {"role": "system", "content": RECONCILIATION_SYSTEM_PROMPT},
             {"role": "user", "content": prompt}
         ]
-        success, content, error, tokens = await self._llm.chat_with_retry(
+        success, content, error, tokens, _call_stats = await self._llm.chat_with_retry(
             messages, max_tokens=self.config.api.max_tokens,
             validate_response=validate_reconciliation_json,
             retry_messages_builder=build_reconciliation_retry_messages
@@ -612,7 +612,7 @@ class FinalSummaryRunner:
             {"role": "system", "content": GLOBAL_RECHECK_SYSTEM_PROMPT},
             {"role": "user", "content": prompt}
         ]
-        success, content, error, tokens = await self._llm.chat_with_retry(
+        success, content, error, tokens, _call_stats = await self._llm.chat_with_retry(
             messages, max_tokens=self.config.api.max_tokens,
             validate_response=validate_reconciliation_json,
             retry_messages_builder=build_reconciliation_retry_messages

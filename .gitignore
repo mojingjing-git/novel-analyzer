@@ -18,6 +18,9 @@ __pycache__/
 node_modules/
 frontend/dist/
 frontend/.tmp_verify/
+*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
 
 # 开发流程产物
 .superpowers/

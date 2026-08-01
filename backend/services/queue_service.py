@@ -337,6 +337,8 @@ class AnalysisService:
         self._total_retries = 0
         self._total_failed_tokens = 0
         self._analysis_start_time: float = 0.0
+        # 运行结束时刻（冻结耗时用：结束后 elapsed 不再随 time.time() 增长）
+        self._analysis_end_time: Optional[float] = None
         # 启动时自动扫描工作区
         self._auto_scan_workspace()
 
@@ -355,7 +357,13 @@ class AnalysisService:
 
     def token_stats(self) -> Dict[str, Any]:
         """返回分类 token 统计 + 每章记录 + 总耗时"""
-        elapsed = time.time() - self._analysis_start_time if self._analysis_start_time else 0.0
+        # 运行结束后用冻结的结束时刻计算，否则结束后的 elapsed 会无限增长
+        if self._analysis_end_time:
+            elapsed = self._analysis_end_time - self._analysis_start_time
+        elif self._analysis_start_time:
+            elapsed = time.time() - self._analysis_start_time
+        else:
+            elapsed = 0.0
         return {
             "categories": self._token_stats,
             "chapter_stats": self._chapter_stats[-200:],  # 最近200章
@@ -369,6 +377,7 @@ class AnalysisService:
         """记录每章统计（含重试成本），供 /api/analysis/token_stats 展示"""
         self._chapter_stats.append({
             "chapter": payload.get("chapter", 0),
+            "status": payload.get("status", "done"),
             "elapsed": payload.get("elapsed", 0),
             "input_tokens": payload.get("input_tokens", 0),
             "output_tokens": payload.get("output_tokens", 0),
@@ -443,6 +452,7 @@ class AnalysisService:
         self._total_retries = 0
         self._total_failed_tokens = 0
         self._analysis_start_time = time.time()
+        self._analysis_end_time = None
         self._runner_task = asyncio.create_task(self._run_queue())
         return True
 
@@ -463,39 +473,44 @@ class AnalysisService:
         hub = get_hub()
         config = self.config_manager.load()  # 每次启动重读配置
 
-        # API 预检查
-        await hub.log("API 预检查中...")
-        if not await self.queue.check_api(config):
-            await hub.log("API 预检查失败，请检查设置中的 API 配置", level="error")
-            await hub.state_change("idle", "API 预检查失败")
-            return
+        try:
+            # API 预检查
+            await hub.log("API 预检查中...")
+            if not await self.queue.check_api(config):
+                await hub.log("API 预检查失败，请检查设置中的 API 配置", level="error")
+                await hub.state_change("idle", "API 预检查失败")
+                return
 
-        await hub.state_change("running", "队列分析开始")
+            await hub.state_change("running", "队列分析开始")
 
-        while not self._stop_requested:
-            item = self.queue.get_current()
-            if item is None or item.status not in ("pending", "running"):
-                break
-            if not self.queue.validate_item(item):
-                self.queue.mark_current("failed", "blocks 目录无效")
-                await hub.log(f"《{item.name}》blocks 目录无效，跳过", level="error")
+            while not self._stop_requested:
+                item = self.queue.get_current()
+                if item is None or item.status not in ("pending", "running"):
+                    break
+                if not self.queue.validate_item(item):
+                    self.queue.mark_current("failed", "blocks 目录无效")
+                    await hub.log(f"《{item.name}》blocks 目录无效，跳过", level="error")
+                    self.queue.advance()
+                    self.save_queue()
+                    continue
+
+                await self._run_one_item(item, config)
+                if self._stop_requested:
+                    break
                 self.queue.advance()
                 self.save_queue()
-                continue
 
-            await self._run_one_item(item, config)
-            if self._stop_requested:
-                break
-            self.queue.advance()
+            # 收尾
             self.save_queue()
-
-        # 收尾
-        self.save_queue()
-        if self._stop_requested:
-            await hub.state_change("stopped", "分析已停止")
-        else:
-            await hub.state_change("done", "队列全部完成")
-        self._pipeline = None
+            if self._stop_requested:
+                await hub.state_change("stopped", "分析已停止")
+            else:
+                await hub.state_change("done", "队列全部完成")
+            self._pipeline = None
+        finally:
+            # 冻结结束时刻：任务完成/被取消/异常后 is_running 即变 False，
+            # 此时 token_stats 的 elapsed 必须停止增长
+            self._analysis_end_time = time.time()
 
     async def _run_one_item(self, item: QueueItem, base_config: AppConfig) -> None:
         """运行单本书的完整分析"""
@@ -533,9 +548,8 @@ class AnalysisService:
                         "tokens": payload.get("tokens"),
                     },
                 })
-                # 记录每章统计
-                if status == "done":
-                    self._record_chapter_stat(payload)
+                # 记录每章统计（失败块同样计入：重试成本不可因失败而归零）
+                self._record_chapter_stat(payload)
 
         async def on_token_stats(payload: dict) -> None:
             # 累积分类 token 统计

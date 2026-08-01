@@ -37,10 +37,12 @@ async def test_success_on_first_try():
     client = LLMClient(config)
     # Mock chat method
     client.chat = AsyncMock(return_value=(True, '{"result":"ok"}', '', (10, 20)))
-    success, content, error, tokens = await client.chat_with_retry([{"role": "user", "content": "hi"}])
+    success, content, error, tokens, call_stats = await client.chat_with_retry([{"role": "user", "content": "hi"}])
     assert success
     assert content == '{"result":"ok"}'
     assert tokens == (10, 20)
+    assert call_stats["attempts"] == 1
+    assert call_stats["failed_tokens"] == 0
     assert client.chat.call_count == 1
     print("✅ test_success_on_first_try passed")
 
@@ -58,7 +60,7 @@ async def test_temperature_annealing():
         return (True, '{"result":"ok"}', '', (10, 20))
 
     client.chat = mock_chat
-    success, content, error, tokens = await client.chat_with_retry([{"role": "user", "content": "hi"}])
+    success, content, error, tokens, call_stats = await client.chat_with_retry([{"role": "user", "content": "hi"}])
     assert success
     assert len(call_temps) == 2
     # First temp: 0.7, second: 0.6
@@ -72,7 +74,7 @@ async def test_authentication_error_stops_immediately():
     config = make_config(temperature_max_retries=3)
     client = LLMClient(config)
     client.chat = AsyncMock(return_value=(False, '', '认证失败，请检查API Key', (0, 0)))
-    success, content, error, tokens = await client.chat_with_retry([{"role": "user", "content": "hi"}])
+    success, content, error, tokens, call_stats = await client.chat_with_retry([{"role": "user", "content": "hi"}])
     assert not success
     assert "认证" in error
     # Should only call once (auth error stops immediately)
@@ -86,7 +88,7 @@ async def test_stop_requested():
     client = LLMClient(config)
     client.chat = AsyncMock(return_value=(False, '', 'API error', (0, 0)))
     client.request_stop()
-    success, content, error, tokens = await client.chat_with_retry([{"role": "user", "content": "hi"}])
+    success, content, error, tokens, call_stats = await client.chat_with_retry([{"role": "user", "content": "hi"}])
     assert not success
     assert "停止" in error
     print("✅ test_stop_requested passed")
@@ -118,13 +120,15 @@ async def test_validation_failure_triggers_retry():
     def build_retry(error, messages):
         return messages + [{"role": "assistant", "content": "retry"}]
 
-    success, content, error, tokens = await client.chat_with_retry(
+    success, content, error, tokens, call_stats = await client.chat_with_retry(
         [{"role": "user", "content": "hi"}],
         validate_response=validate,
         retry_messages_builder=build_retry,
     )
     assert success
     assert call_count == 3
+    # 前两次验证失败消耗的 tokens 计入 call_stats.failed_tokens
+    assert call_stats["failed_tokens"] == 30
     print("✅ test_validation_failure_triggers_retry passed")
 
 
@@ -141,10 +145,43 @@ async def test_attempts_counter():
         return (True, '{"result":"ok"}', '', (10, 20))
 
     client.chat = mock_chat
-    success, content, error, tokens = await client.chat_with_retry([{"role": "user", "content": "hi"}])
+    success, content, error, tokens, call_stats = await client.chat_with_retry([{"role": "user", "content": "hi"}])
     assert success
     assert client.get_stats()["total_attempts"] == 3
+    # call_stats 只统计本次调用（与客户端全局计数一致：单线程场景）
+    assert call_stats["attempts"] == 3
+    assert call_stats["failed_tokens"] == 0
     print("✅ test_attempts_counter passed")
+
+
+async def test_attempts_counter_backoff_path():
+    """指数退避路径的调用统计：温度退火 + 退避两循环的 total_attempts 全部计入"""
+    config = make_config(temperature=0.7, temperature_step=0.1,
+                         temperature_max_retries=3, backoff_max_retries=2)
+    client = LLMClient(config)
+    # 所有响应均验证失败（消耗 tokens 但无效）→ 温度退火3次 + 指数退避2次
+    client.chat = AsyncMock(return_value=(True, 'invalid json', '', (5, 10)))
+
+    def validate(content):
+        return False, 'JSON parse error'
+
+    # 指数退避等待 min(2^(n+1),60) 秒会拖慢测试，mock 掉 sleep
+    with patch("asyncio.sleep", new=AsyncMock()):
+        success, content, error, tokens, call_stats = await client.chat_with_retry(
+            [{"role": "user", "content": "hi"}],
+            validate_response=validate,
+        )
+
+    assert not success
+    assert "所有重试均失败" in error
+    # 温度退火3次 + 指数退避2次
+    assert call_stats["attempts"] == 5
+    # 每次验证失败都消耗 (5,10) tokens 并计入 failed_tokens
+    assert call_stats["failed_tokens"] == 5 * 15
+    # 客户端全局计数与 call_stats 一致
+    assert client.get_stats()["total_attempts"] == 5
+    assert client.get_stats()["failed_tokens"] == 75
+    print("✅ test_attempts_counter_backoff_path passed")
 
 
 def pytest_approx(expected, rel=1e-6):
@@ -167,6 +204,7 @@ async def main():
     await test_stop_requested()
     await test_validation_failure_triggers_retry()
     await test_attempts_counter()
+    await test_attempts_counter_backoff_path()
     print("\n🎉 All LLM mock tests passed!")
 
 

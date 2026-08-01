@@ -872,7 +872,7 @@ class AnalysisPipeline:
 
         # 与全链路其它 LLM 调用一致，走带温度退火 + 退避重试的 chat_with_retry，
         # 避免单次失败直接丢弃势头归档（归档是热点路径上的关键节点）。
-        success, content, error, tokens = await rolling_client.chat_with_retry(
+        success, content, error, tokens, _call_stats = await rolling_client.chat_with_retry(
             messages, max_tokens=100
         )
         await self._emit_rolling_tokens(tokens)

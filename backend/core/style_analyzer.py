@@ -290,7 +290,7 @@ async def call_llm_semantic(prompt: str, api_config: dict) -> Optional[dict]:
         {"role": "system", "content": "你是专业的中文小说写作风格分析师。输出纯 JSON，不要 Markdown。"},
         {"role": "user", "content": prompt}
     ]
-    success, content, error, tokens = await client.chat_with_retry(messages, max_tokens=20000)
+    success, content, error, tokens, _call_stats = await client.chat_with_retry(messages, max_tokens=20000)
 
     if not success:
         logger.warning(f"语义风格 LLM 调用失败: {error}")

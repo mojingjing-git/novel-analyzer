@@ -125,17 +125,17 @@ class NovelAnalyzer:
                 return retry_msgs
 
             # 2. 调用LLM（带重试和温度退火，包含JSON解析验证）
-            stats_before = self.llm_client.get_stats()
-            success, response, error, token_counts = await self.llm_client.chat_with_retry(
+            # 重试归因改用单次调用统计：并发章节共享 LLMClient 时，
+            # 客户端全局计数差分会把其它章节的尝试混入本块的 retry_info
+            success, response, error, token_counts, call_stats = await self.llm_client.chat_with_retry(
                 messages,
                 max_tokens=self.config.api.max_tokens,
                 validate_response=validate_json_response,
                 retry_messages_builder=build_retry_messages
             )
-            stats_after = self.llm_client.get_stats()
             retry_info = {
-                "retries": max(0, stats_after.get("total_attempts", 0) - stats_before.get("total_attempts", 0) - 1),
-                "failed_tokens": max(0, stats_after.get("failed_tokens", 0) - stats_before.get("failed_tokens", 0)),
+                "retries": max(0, call_stats.get("attempts", 0) - 1),
+                "failed_tokens": call_stats.get("failed_tokens", 0),
             }
 
             if not success:

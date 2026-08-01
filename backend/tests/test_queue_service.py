@@ -167,6 +167,7 @@ def test_record_chapter_stat_accumulates():
     svc._chapter_stats = []
     svc._token_stats = {}
     svc._analysis_start_time = 0.0
+    svc._analysis_end_time = None
     svc._runner_task = None
     svc._pipeline = None
     svc._stop_requested = False
@@ -192,8 +193,61 @@ def test_record_chapter_stat_accumulates():
     assert stats["chapter_stats"][0]["input_tokens"] == 10
 
 
+def test_record_chapter_stat_failed_payload():
+    """失败块的 retries/failed_tokens 同样计入总量与每章记录（失败成本不可归零）"""
+    from backend.services.queue_service import AnalysisService
+    svc = object.__new__(AnalysisService)
+    svc._chapter_stats = []
+    svc._token_stats = {}
+    svc._analysis_start_time = 0.0
+    svc._analysis_end_time = None
+    svc._runner_task = None
+    svc._pipeline = None
+    svc._stop_requested = False
+    svc._total_retries = 0
+    svc._total_failed_tokens = 0
+
+    # 失败 payload 只有 chapter/status/retries/failed_tokens（无 elapsed/input/output）
+    svc._record_chapter_stat({
+        "chapter": 3, "status": "failed",
+        "retries": 4, "failed_tokens": 200,
+    })
+
+    stats = svc.token_stats()
+    assert stats["total_retries"] == 4
+    assert stats["total_failed_tokens"] == 200
+    assert stats["chapter_stats"][0]["chapter"] == 3
+    assert stats["chapter_stats"][0]["status"] == "failed"
+    assert stats["chapter_stats"][0]["retries"] == 4
+    assert stats["chapter_stats"][0]["failed_tokens"] == 200
+    # 缺失的耗时/token 字段安全降级为 0
+    assert stats["chapter_stats"][0]["elapsed"] == 0
+    assert stats["chapter_stats"][0]["input_tokens"] == 0
+    assert stats["chapter_stats"][0]["output_tokens"] == 0
+
+
+def test_token_stats_elapsed_frozen_after_run():
+    """运行结束后 elapsed 冻结为结束时刻与开始时刻之差，不再随当前时间增长"""
+    from backend.services.queue_service import AnalysisService
+    svc = object.__new__(AnalysisService)
+    svc._chapter_stats = []
+    svc._token_stats = {}
+    svc._analysis_start_time = 1000.0
+    svc._analysis_end_time = 1005.0
+    svc._runner_task = None
+    svc._pipeline = None
+    svc._stop_requested = False
+    svc._total_retries = 0
+    svc._total_failed_tokens = 0
+
+    stats = svc.token_stats()
+    assert stats["elapsed"] == 5.0
+
+
 if __name__ == "__main__":
     test_record_chapter_stat_accumulates()
+    test_record_chapter_stat_failed_payload()
+    test_token_stats_elapsed_frozen_after_run()
     test_queue_item_roundtrip()
     test_queue_manager_add_remove()
     test_queue_manager_dedup()
