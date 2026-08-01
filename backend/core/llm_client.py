@@ -117,6 +117,7 @@ class LLMClient:
         )
         self._stats_lock = threading.Lock()
         self._request_count = 0
+        self._attempts = 0
         self._total_tokens = 0
         self._failed_tokens = 0
         self._cached_tokens = 0
@@ -348,6 +349,8 @@ class LLMClient:
                 logger.info("⛔ 检测到停止请求，终止重试链")
                 return False, "", "用户请求停止", last_consumed_tokens
             total_attempts += 1
+            with self._stats_lock:
+                self._attempts += 1
 
             temp = max(0.0, self.config.temperature - attempt * self.config.temperature_step)
 
@@ -437,6 +440,8 @@ class LLMClient:
                 logger.info("⛔ 检测到停止请求，终止重试链")
                 return False, "", "用户请求停止", last_consumed_tokens
             total_attempts += 1
+            with self._stats_lock:
+                self._attempts += 1
 
             wait_time = min(2 ** (retry_num + 1), 60)
 
@@ -531,6 +536,7 @@ class LLMClient:
     def get_stats(self) -> dict:
         return {
             "total_requests": self._request_count,
+            "total_attempts": self._attempts,
             "total_tokens": self._total_tokens,
             "failed_tokens": self._failed_tokens,
             "cached_tokens": self._cached_tokens,

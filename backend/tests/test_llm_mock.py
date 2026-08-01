@@ -128,6 +128,25 @@ async def test_validation_failure_triggers_retry():
     print("✅ test_validation_failure_triggers_retry passed")
 
 
+async def test_attempts_counter():
+    """total_attempts 随重试递增（供重试成本统计）"""
+    config = make_config(temperature=0.7, temperature_step=0.1, temperature_max_retries=3, backoff_max_retries=0)
+    client = LLMClient(config)
+    call_temps = []
+
+    async def mock_chat(messages, temperature=0.1, max_tokens=None):
+        call_temps.append(temperature)
+        if len(call_temps) < 3:
+            return (False, '', 'API error', (0, 0))
+        return (True, '{"result":"ok"}', '', (10, 20))
+
+    client.chat = mock_chat
+    success, content, error, tokens = await client.chat_with_retry([{"role": "user", "content": "hi"}])
+    assert success
+    assert client.get_stats()["total_attempts"] == 3
+    print("✅ test_attempts_counter passed")
+
+
 def pytest_approx(expected, rel=1e-6):
     """Simple approximation for floating point comparison"""
     class Approx:
@@ -147,6 +166,7 @@ async def main():
     await test_authentication_error_stops_immediately()
     await test_stop_requested()
     await test_validation_failure_triggers_retry()
+    await test_attempts_counter()
     print("\n🎉 All LLM mock tests passed!")
 
 
