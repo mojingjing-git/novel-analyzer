@@ -89,96 +89,10 @@ def safe_parse_json(text: str) -> Optional[dict]:
     """
     安全地解析JSON字符串，支持多种容错策略（LLM输出不完美时的fallback链）
 
-    1. 直接解析标准JSON
-    2. 移除尾部非JSON内容后重试
-    3. 移除尾部注释（// 风格）
-    4. json5 — 兼容单引号、尾逗号、注释、Python bool（推荐安装: pip install json5）
-    5. ast.literal_eval — Python字典格式转JSON（兼容单引号字符串）
-    6. json_repair — 修复损坏的JSON结构（推荐安装: pip install json-repair）
-    7. 单引号→双引号替换后重试
-
-    Args:
-        text: JSON字符串
-
-    Returns:
-        解析后的字典，失败返回None
+    内部委托 parse_json_robust，仅返回 dict 或 None（兼容既有调用方）。
     """
-    import logging as _logging
-    _log = _logging.getLogger(__name__)
-    if not text:
-        return None
-
-    text_len = len(text)
-
-    # 策略1: 直接解析
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-
-    # 策略2: 移除尾部内容（从最后一个完整的}之后）
-    last_brace = text.rfind('}')
-    if last_brace != -1:
-        trimmed = text[:last_brace + 1]
-        try:
-            return json.loads(trimmed)
-        except json.JSONDecodeError:
-            pass
-
-    # 策略3: 移除尾部注释（// 风格的）
-    # B7 修复：在与切片相同的基准字符串上 search，避免索引错位
-    base = trimmed if last_brace != -1 else text
-    comment_match = re.search(r'(}\s*)//.*$', base, re.MULTILINE | re.DOTALL)
-    if comment_match:
-        cleaned = base[:comment_match.start()].strip()
-        try:
-            return json.loads(cleaned)
-        except json.JSONDecodeError:
-            pass
-
-    # 策略4: json5 — 处理单引号、尾逗号、注释、Python bool/None
-    _log.info(f"JSON解析进入 json5 策略（文本长度={text_len}）")
-    try:
-        import json5
-        result = json5.loads(text)
-        if isinstance(result, dict):
-            return result
-    except ImportError:
-        _log.debug("json5 未安装，跳过")
-    except Exception as e:
-        _log.debug(f"json5 解析失败: {e}")
-
-    # 策略5: ast.literal_eval — 处理单引号字符串（Python dict 格式）
-    _log.info(f"JSON解析进入 ast.literal_eval 策略（文本长度={text_len}）")
-    try:
-        import ast
-        result = ast.literal_eval(text)
-        if isinstance(result, dict):
-            return result
-    except Exception as e:
-        _log.info(f"ast.literal_eval 解析失败: {e}")
-
-    # 策略6: json_repair
-    _log.info(f"JSON解析进入 json_repair 策略（文本长度={text_len}）")
-    try:
-        import json_repair
-        result = json_repair.loads(text)
-        if isinstance(result, dict):
-            return result
-    except ImportError:
-        _log.debug("json_repair 未安装，跳过")
-    except Exception as e:
-        _log.debug(f"json_repair 解析失败: {e}")
-
-    # 策略7: 单引号→双引号替换（保守：只替换键值对中的单引号值）
-    try:
-        fixed = _replace_single_quoted_values(text)
-        if fixed != text:
-            return json.loads(fixed)
-    except json.JSONDecodeError:
-        pass
-
-    return None
+    data, _ = parse_json_robust(text)
+    return data
 
 
 def _replace_single_quoted_values(text: str) -> str:
@@ -196,6 +110,126 @@ def _replace_single_quoted_values(text: str) -> str:
         text,
         flags=re.DOTALL
     )
+
+
+_RE_KEY_MISSING_QUOTE = re.compile(r'([{,]\s*)([A-Za-z_\u4e00-\u9fff][A-Za-z0-9_\u4e00-\u9fff]*)"\s*:')
+_RE_VALUE_MISSING_QUOTE = re.compile(r'(:\s*)([^\s"{}[\],][^"{}[\]]*?)"(\s*[,}\]])')
+
+
+def repair_missing_quotes(text: str) -> str:
+    """定向修复 LLM 漏引号错误（模式在合法 JSON 中不可能出现，安全）：
+    1) 键漏开引号: {id":2 -> {"id":2
+    2) 值漏开引号: :"（内容）" -> :"（内容）"（值以全角字符/字母开头、只有闭引号）
+    """
+    fixed = _RE_KEY_MISSING_QUOTE.sub(lambda m: f'{m.group(1)}"{m.group(2)}":', text)
+    fixed = _RE_VALUE_MISSING_QUOTE.sub(lambda m: f'{m.group(1)}"{m.group(2)}"{m.group(3)}', fixed)
+    return fixed
+
+
+def parse_json_robust(text: str):
+    """
+    安全解析 JSON 并返回诊断信息（LLM 输出容错链 + 漏引号定向修复）
+
+    Returns:
+        (dict, None)                    — 直接解析成功
+        (dict, "已自动修复JSON（漏引号）后解析成功") — 经漏引号修复成功
+        (None, 诊断文本)                 — 全部失败，诊断含首次直接解析错误（含行号）
+    """
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+    if not text:
+        return None, "空文本"
+
+    first_error: Optional[str] = None
+    text_len = len(text)
+
+    # 策略1: 直接解析
+    try:
+        return json.loads(text), None
+    except json.JSONDecodeError as e:
+        first_error = str(e)
+
+    # 策略2: 移除尾部内容（从最后一个完整的}之后）
+    last_brace = text.rfind('}')
+    if last_brace != -1:
+        trimmed = text[:last_brace + 1]
+        try:
+            return json.loads(trimmed), None
+        except json.JSONDecodeError:
+            pass
+
+    # 策略3: 移除尾部注释（// 风格）
+    base = trimmed if last_brace != -1 else text
+    comment_match = re.search(r'(}\s*)//.*$', base, re.MULTILINE | re.DOTALL)
+    if comment_match:
+        cleaned = base[:comment_match.start()].strip()
+        try:
+            return json.loads(cleaned), None
+        except json.JSONDecodeError:
+            pass
+
+    # 策略4: json5 — 处理单引号、尾逗号、注释、Python bool/None
+    _log.info(f"JSON解析进入 json5 策略（文本长度={text_len}）")
+    try:
+        import json5
+        result = json5.loads(text)
+        if isinstance(result, dict):
+            return result, None
+    except ImportError:
+        _log.debug("json5 未安装，跳过")
+    except Exception as e:
+        _log.debug(f"json5 解析失败: {e}")
+
+    # 策略5: ast.literal_eval — 处理单引号字符串（Python dict 格式）
+    _log.info(f"JSON解析进入 ast.literal_eval 策略（文本长度={text_len}）")
+    try:
+        import ast
+        result = ast.literal_eval(text)
+        if isinstance(result, dict):
+            return result, None
+    except Exception as e:
+        _log.info(f"ast.literal_eval 解析失败: {e}")
+
+    # 策略6: json_repair
+    _log.info(f"JSON解析进入 json_repair 策略（文本长度={text_len}）")
+    try:
+        import json_repair
+        result = json_repair.loads(text)
+        if isinstance(result, dict):
+            return result, None
+    except ImportError:
+        _log.debug("json_repair 未安装，跳过")
+    except Exception as e:
+        _log.debug(f"json_repair 解析失败: {e}")
+
+    # 策略7: 单引号→双引号替换（保守：只替换键值对中的单引号值）
+    try:
+        fixed = _replace_single_quoted_values(text)
+        if fixed != text:
+            return json.loads(fixed), None
+    except json.JSONDecodeError:
+        pass
+
+    # 策略8: 漏引号定向修复（最多两轮，每轮后重试标准解析与 json5）
+    repaired = text
+    for _ in range(2):
+        next_repaired = repair_missing_quotes(repaired)
+        if next_repaired == repaired:
+            break
+        repaired = next_repaired
+        try:
+            return json.loads(repaired), "已自动修复JSON（漏引号）后解析成功"
+        except json.JSONDecodeError:
+            pass
+        try:
+            import json5
+            result = json5.loads(repaired)
+            if isinstance(result, dict):
+                return result, "已自动修复JSON（漏引号）后解析成功"
+        except Exception:
+            pass
+
+    return None, first_error or "JSON解析失败（未知原因）"
 
 
 def safe_save_json(data: Any, file_path: Path, ensure_ascii: bool = False) -> bool:
