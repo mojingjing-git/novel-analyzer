@@ -59,7 +59,7 @@
 ### queue_service.py
 
 - `on_progress` 中 `_chapter_stats.append` 增加 `retries`、`failed_tokens` 字段；另维护
-  `self._total_retries`、`self._total_failed_tokens` 累加。
+  `self._total_retries`、`self._total_failed_tokens` 累加（与 `_chapter_stats` 一样在 `start()` 时清零，每次运行独立统计）。
 - `token_stats()` 响应增加 `total_retries`、`total_failed_tokens`。
 
 ### frontend StatsPage.vue
