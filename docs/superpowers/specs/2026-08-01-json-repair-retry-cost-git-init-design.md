@@ -48,9 +48,9 @@
 ### analyzer.py
 
 - `analyze_chapter` 返回值改为 3 元组 `(result, ch_tokens, retry_info)`；retry_info 为 dict：
-  `{"retries": int, "failed_tokens": int}`，通过调用 `chat_with_retry` 前后 `self.llm_client.get_stats()` 中 `total_attempts` 与 `failed_tokens` 的差值计算。
-  - 成功时 retries = attempts 差值 - 1（第 1 次不算重试）
-  - 失败返回 None 时同样带上差值（失败成本不可归零）
+  `{"retries": int, "failed_tokens": int}`。
+- 修订（2026-08-01，最终审查后）：**不使用** `get_stats()` 前后差值——并发下多章共享一个 LLMClient，差值会把其他章节的尝试归因到本章。改为 `chat_with_retry` 直接返回本次调用的 `call_stats = {"attempts", "failed_tokens"}`（调用内本地累计，与全局 `_failed_tokens` 同点递增），analyzer 按 `retries = max(0, attempts - 1)`（第 1 次不算重试）、`failed_tokens = call_stats["failed_tokens"]` 计算。
+  - 失败返回 None 时同样带上本次调用的统计（失败成本不可归零）
 
 ### pipeline.py
 
@@ -59,9 +59,10 @@
 
 ### queue_service.py
 
-- `on_progress` 中 `_chapter_stats.append` 增加 `retries`、`failed_tokens` 字段；另维护
+- `_record_chapter_stat` 记录每章统计（含 `retries`、`failed_tokens`，另存 `status` 字段）；`on_progress` 的 **done 与 failed** 均调用（修订 2026-08-01：失败章节也计入总量，避免"失败成本归零"）；另维护
   `self._total_retries`、`self._total_failed_tokens` 累加（与 `_chapter_stats` 一样在 `start()` 时清零，每次运行独立统计）。
 - `token_stats()` 响应增加 `total_retries`、`total_failed_tokens`。
+- 修订（2026-08-01）：`elapsed` 在运行结束时冻结（`_analysis_end_time` 于 `_run_queue` 的 finally 中记录，`start()` 重置）——前端去掉运行门控后，结束后不再持续增长。
 
 ### frontend StatsPage.vue
 
@@ -71,8 +72,8 @@
 
 ### 测试
 
-- `backend/tests/test_llm_mock.py` 扩展：断言 `total_attempts` 随重试递增。
-- `backend/tests/test_queue_service.py`：token_stats 含新字段。
+- `backend/tests/test_llm_mock.py` 扩展：断言 `total_attempts` 随重试递增（含温度退火与指数退避两条路径）；`chat_with_retry` 5 元组解包。
+- `backend/tests/test_queue_service.py`：token_stats 含新字段；done/failed 均累计。
 - 前端 `npx vue-tsc --noEmit` 零错误。
 
 ## 三、git 初始化

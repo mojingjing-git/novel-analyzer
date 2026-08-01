@@ -353,8 +353,9 @@ async def test_attempts_counter():
         return (True, '{"result":"ok"}', '', (10, 20))
 
     client.chat = mock_chat
-    success, content, error, tokens = await client.chat_with_retry([{"role": "user", "content": "hi"}])
+    success, content, error, tokens, call_stats = await client.chat_with_retry([{"role": "user", "content": "hi"}])
     assert success
+    assert call_stats["attempts"] == 3
     assert client.get_stats()["total_attempts"] == 3
     print("✅ test_attempts_counter passed")
 ```
@@ -435,7 +436,7 @@ git commit -m "feat: llm_client 累计 total_attempts 计数器"
 - Test: `backend/tests/test_queue_service.py`（追加）
 
 **Interfaces:**
-- Consumes: `get_stats()["total_attempts"]`、`get_stats()["failed_tokens"]`（Task 3）
+- Consumes: `chat_with_retry` 5 元组返回（含 `call_stats = {"attempts", "failed_tokens"}`，修订 2026-08-01：不再用 `get_stats()` 差值，见 Step 3a）
 - Produces:
   - `analyze_chapter(...) -> (result, ch_tokens, retry_info)`；retry_info = `{"retries": int, "failed_tokens": int}`（失败时 result 为 None，retry_info 照常返回）
   - pipeline `_analyze_one_block -> (success, elapsed, ch_tokens, result, retry_info)`
@@ -498,21 +499,19 @@ python -m pytest backend/tests/test_queue_service.py -k record_chapter_stat -v
 
 在 `backend/core/analyzer.py` 的 `analyze_chapter` 中：
 
-a) 调用 `chat_with_retry` 前后计算差值（替换原调用块）：
+a) 改用 `chat_with_retry` 返回的本次调用统计（修订 2026-08-01：不用 get_stats 差值——并发下多章共享一个 LLMClient，差值会把其他章节尝试归因到本章）：
 
 ```python
             # 2. 调用LLM（带重试和温度退火，包含JSON解析验证）
-            stats_before = self.llm_client.get_stats()
-            success, response, error, token_counts = await self.llm_client.chat_with_retry(
+            success, response, error, token_counts, call_stats = await self.llm_client.chat_with_retry(
                 messages,
                 max_tokens=self.config.api.max_tokens,
                 validate_response=validate_json_response,
                 retry_messages_builder=build_retry_messages
             )
-            stats_after = self.llm_client.get_stats()
             retry_info = {
-                "retries": max(0, stats_after.get("total_attempts", 0) - stats_before.get("total_attempts", 0) - 1),
-                "failed_tokens": max(0, stats_after.get("failed_tokens", 0) - stats_before.get("failed_tokens", 0)),
+                "retries": max(0, call_stats.get("attempts", 0) - 1),
+                "failed_tokens": call_stats.get("failed_tokens", 0),
             }
 ```
 
@@ -730,9 +729,10 @@ d) 新增方法（放在 `status()` 之后）：
 
 ```python
     def _record_chapter_stat(self, payload: dict) -> None:
-        """记录每章统计（含重试成本），供 /api/analysis/token_stats 展示"""
+        """记录每章统计（含重试成本与状态），供 /api/analysis/token_stats 展示"""
         self._chapter_stats.append({
             "chapter": payload.get("chapter", 0),
+            "status": payload.get("status", "done"),
             "elapsed": payload.get("elapsed", 0),
             "input_tokens": payload.get("input_tokens", 0),
             "output_tokens": payload.get("output_tokens", 0),
@@ -743,13 +743,18 @@ d) 新增方法（放在 `status()` 之后）：
         self._total_failed_tokens += payload.get("failed_tokens", 0) or 0
 ```
 
-e) `on_progress` 中替换（约 line 517-524）：
+e) `on_progress` 中替换（约 line 517-524；修订 2026-08-01：done 与 failed 均记录，失败章节的重试成本不可归零）：
 
 ```python
-                # 记录每章统计
-                if status == "done":
+                # 记录每章统计（成功与失败章节均计入）
+                if status in ("done", "failed"):
                     self._record_chapter_stat(payload)
 ```
+
+f) `elapsed` 冻结（修订 2026-08-01：前端去掉运行门控后，`token_stats()` 的 `elapsed = time.time() - _analysis_start_time` 会在结束后持续增长）：
+- `__init__`/`start()` 增加 `self._analysis_end_time: Optional[float] = None`（start() 重置为 None）
+- `_run_queue` 的 `finally` 中记录 `self._analysis_end_time = time.time()`（覆盖 precheck 返回/取消/异常三条路径）
+- `token_stats()` 中：`elapsed = (self._analysis_end_time if not self.is_running and self._analysis_end_time else time.time()) - self._analysis_start_time`
 
 - [ ] **Step 6: 运行测试确认通过**
 
