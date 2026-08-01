@@ -1,0 +1,253 @@
+<script setup lang="ts">
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import ChapterValue from './ChapterValue.vue'
+import { api } from '../api/client'
+
+// 用户指定章节后，若 1 分钟内没有任何"活动"（滚动/滚轮/触摸/按键/点击），
+// 自动回到"不指定"状态（即永远显示最新章节）。
+const IDLE_MS = 60_000
+
+const props = defineProps<{ bookId: string; chapter: number }>()
+const emit = defineEmits<{ 'update:chapter': [value: number] }>()
+
+const manualChapter = computed<number>({
+  get: () => props.chapter,
+  set: (v) => emit('update:chapter', v),
+})
+
+const latestChapter = ref(0)
+const result = ref<Record<string, unknown> | null>(null)
+const loading = ref(false)
+const error = ref('')
+
+const isManual = computed(() => manualChapter.value > 0)
+const effectiveChapter = computed(() =>
+  manualChapter.value > 0 ? manualChapter.value : latestChapter.value
+)
+const blockSize = computed<number>(() => Number(result.value?.block_size) || 0)
+
+const SECTION_LABELS: Record<string, string> = {
+  core_events: '核心事件',
+  character_arcs: '人物弧光',
+  foreshadowing: '伏笔',
+  plot_holes: '剧情漏洞',
+  locations: '地点',
+  spatial_relationships: '空间关系',
+  cross_block: '跨块衔接',
+  updated_knowledge: '知识更新',
+  long_context_insights: '长上下文洞察',
+}
+
+const sections = computed(() => {
+  if (!result.value) return []
+  return Object.entries(result.value)
+    .filter(([k]) => k !== 'chapter_number' && k !== 'block_size')
+    .map(([k, v]) => ({ key: k, label: SECTION_LABELS[k] || k, value: v }))
+})
+
+let idleTimer: ReturnType<typeof setTimeout> | null = null
+let latestPoll: ReturnType<typeof setInterval> | null = null
+
+async function loadLatest() {
+  if (!props.bookId) return
+  try {
+    const res = await api.getLatestChapter(props.bookId)
+    latestChapter.value = res.latest
+  } catch (e) {
+    console.error('获取最新章节失败:', e)
+  }
+}
+
+async function loadChapter() {
+  if (!props.bookId || effectiveChapter.value <= 0) {
+    result.value = null
+    return
+  }
+  loading.value = true
+  error.value = ''
+  try {
+    const res = await api.getChapterResult(props.bookId, effectiveChapter.value)
+    result.value = res.data
+  } catch (e) {
+    error.value = (e as Error).message || '加载失败'
+    result.value = null
+  } finally {
+    loading.value = false
+  }
+}
+
+// 活动事件 → 重置 1 分钟计时器（仅在手动指定模式下生效）
+function resetIdle() {
+  if (manualChapter.value <= 0) return
+  if (idleTimer) clearTimeout(idleTimer)
+  idleTimer = setTimeout(() => {
+    manualChapter.value = 0 // 回到不指定状态
+  }, IDLE_MS)
+}
+function onActivity() {
+  resetIdle()
+}
+
+// 规范化 chapter：空 / 负数 / 小数 → 0 或向下取整；并管理空闲计时器
+watch(
+  () => props.chapter,
+  (v) => {
+    const n = Math.max(0, Math.floor(Number(v) || 0))
+    if (n !== Number(v)) {
+      emit('update:chapter', n)
+      return
+    }
+    if (n > 0) resetIdle()
+    else if (idleTimer) {
+      clearTimeout(idleTimer)
+      idleTimer = null
+    }
+  }
+)
+
+watch(
+  () => props.bookId,
+  async () => {
+    latestChapter.value = 0
+    result.value = null
+    if (props.bookId) {
+      await loadLatest()
+      await loadChapter()
+    }
+  }
+)
+
+watch(effectiveChapter, loadChapter)
+
+onMounted(() => {
+  window.addEventListener('scroll', onActivity, { passive: true })
+  window.addEventListener('wheel', onActivity, { passive: true })
+  window.addEventListener('touchmove', onActivity, { passive: true })
+  window.addEventListener('keydown', onActivity)
+  window.addEventListener('click', onActivity)
+  // 每 5s 刷新最新章节（运行中也能跟上），仅在未指定章节时
+  latestPoll = setInterval(() => {
+    if (manualChapter.value <= 0) loadLatest()
+  }, 5000)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('scroll', onActivity)
+  window.removeEventListener('wheel', onActivity)
+  window.removeEventListener('touchmove', onActivity)
+  window.removeEventListener('keydown', onActivity)
+  window.removeEventListener('click', onActivity)
+  if (idleTimer) clearTimeout(idleTimer)
+  if (latestPoll) clearInterval(latestPoll)
+})
+</script>
+
+<template>
+  <div class="chapter-detail">
+    <div class="cd-report">
+      <div v-if="!bookId" class="cd-placeholder">请先在上方选择书目</div>
+      <div v-else-if="loading" class="cd-placeholder">加载中...</div>
+      <div v-else-if="error" class="cd-placeholder cd-error">{{ error }}</div>
+      <div v-else-if="!result" class="cd-placeholder">暂无章节数据</div>
+      <template v-else>
+        <div class="cd-report-head">
+          <span class="cd-chapter">第 {{ effectiveChapter }} 章</span>
+          <span v-if="blockSize" class="cd-blocksize">· 共 {{ blockSize }} 个文本块</span>
+          <span class="cd-mode" :class="{ 'is-manual': isManual }">
+            {{ isManual ? '指定章节' : '自动 · 最新章节' }}
+          </span>
+        </div>
+        <section v-for="sec in sections" :key="sec.key" class="cd-section">
+          <h4 class="cd-section-title">{{ sec.label }}</h4>
+          <ChapterValue :value="sec.value" />
+        </section>
+      </template>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.chapter-detail {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+/* 液态玻璃框：与全局 .glass-card 同款视觉效果 */
+.cd-report {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--glass-frost);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-rim-color);
+  box-shadow: var(--glass-shadow), var(--glass-inner);
+  border-radius: var(--radius-glass-lg);
+  padding: 16px 18px;
+  color: var(--text-primary);
+  position: relative;
+}
+.cd-report::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  background: var(--glass-rim);
+  pointer-events: none;
+  border-radius: inherit;
+}
+.cd-placeholder {
+  color: var(--text-secondary);
+  font-size: 13px;
+  padding: 24px 0;
+  text-align: center;
+}
+.cd-error {
+  color: var(--color-system-red);
+}
+.cd-report-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding-bottom: 12px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--glass-border-subtle);
+}
+.cd-chapter {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.cd-blocksize {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.cd-mode {
+  margin-left: auto;
+  font-size: 11px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: rgba(0, 122, 255, 0.12);
+  color: var(--color-system-blue);
+  white-space: nowrap;
+}
+.cd-mode.is-manual {
+  background: rgba(255, 59, 48, 0.12);
+  color: var(--color-system-red);
+}
+.cd-section {
+  margin-bottom: 18px;
+}
+.cd-section:last-child {
+  margin-bottom: 0;
+}
+.cd-section-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--color-system-blue);
+  margin: 0 0 8px;
+  padding-left: 9px;
+  border-left: 3px solid var(--color-system-blue);
+}
+</style>

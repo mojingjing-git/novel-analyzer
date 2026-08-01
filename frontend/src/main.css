@@ -1,0 +1,637 @@
+@import "tailwindcss";
+
+/* ============================================
+   iOS 26 液态玻璃设计系统（v2 - 极简分层）
+   设计原则：内容优先 / 动态光学透明 / 轻量化拟物
+   ============================================ */
+
+@theme {
+  /* iOS 系统色（克制使用，主要靠底层透射） */
+  --color-system-blue: #007AFF;
+  --color-system-green: #34C759;
+  --color-system-red: #FF3B30;
+  --color-system-orange: #FF9500;
+  --color-system-purple: #AF52DE;
+  --color-system-gray: #8E8E93;
+  --color-text-primary: #1c1c1e;
+  --color-text-secondary: rgba(60, 60, 67, 0.6);
+
+  /* 大圆角统一规格（18-28px 连续大圆角） */
+  --radius-glass-md: 14px;
+  --radius-glass-lg: 20px;
+  --radius-glass-xl: 28px;
+  --radius-glass-pill: 999px;
+
+  /* 流体缓动（iOS 风格阻尼） */
+  --ease-fluid: cubic-bezier(0.2, 0, 0.2, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* ============================================
+   基础布局
+   ============================================ */
+
+:root {
+  color-scheme: light;
+  /* 极低饱和度柔和渐变（淡蓝→淡紫，速率放缓） */
+  --bg-page:
+    radial-gradient(at 18% 12%, rgba(198, 215, 245, 0.5), transparent 55%),
+    radial-gradient(at 82% 8%, rgba(230, 215, 240, 0.45), transparent 55%),
+    radial-gradient(at 50% 92%, rgba(200, 220, 240, 0.4), transparent 55%),
+    linear-gradient(135deg, #f4f5f8 0%, #f7f6f9 50%, #f2f4f8 100%);
+
+  /* 玻璃基底 - 浅色（清澈模式） */
+  --glass-clear: rgba(255, 255, 255, 0.14);
+  --glass-frost: rgba(255, 255, 255, 0.28);
+  --glass-blur: blur(12px) saturate(160%);
+
+  /* 边缘高光 - 浅色 */
+  --glass-rim: linear-gradient(180deg, rgba(255, 255, 255, 0.5) 0%, rgba(255, 255, 255, 0.05) 50%);
+  --glass-rim-color: rgba(255, 255, 255, 0.4);
+
+  /* 弥散阴影 - 低透明度大范围 */
+  --glass-shadow: 0 8px 30px rgba(20, 30, 60, 0.06), 0 2px 6px rgba(20, 30, 60, 0.04);
+  --glass-shadow-hover: 0 12px 40px rgba(20, 30, 60, 0.08), 0 3px 8px rgba(20, 30, 60, 0.05);
+  --glass-inner: inset 0 1px 0 rgba(255, 255, 255, 0.4), inset 0 -1px 0 rgba(0, 0, 0, 0.02);
+
+  --text-primary: #1c1c1e;
+  --text-secondary: rgba(60, 60, 67, 0.6);
+  --text-tertiary: rgba(60, 60, 67, 0.3);
+  --divider: rgba(60, 60, 67, 0.1);
+  /* 区块标题底部分隔线（浅色下用极淡灰） */
+  --glass-border-subtle: rgba(60, 60, 67, 0.12);
+  /* 次级填充 / 强填充 / 强边框（分段控件、开关、卷分组底色） */
+  --glass-fill-subtle: rgba(120, 120, 128, 0.12);
+  --glass-fill-strong: rgba(255, 255, 255, 0.7);
+  --glass-border-strong: rgba(60, 60, 67, 0.3);
+}
+
+html.dark {
+  color-scheme: dark;
+  /* 深色：深邃的夜空蓝 */
+  --bg-page:
+    radial-gradient(at 15% 20%, rgba(40, 50, 90, 0.5), transparent 50%),
+    radial-gradient(at 85% 10%, rgba(80, 40, 90, 0.4), transparent 50%),
+    radial-gradient(at 50% 95%, rgba(20, 60, 90, 0.5), transparent 50%),
+    linear-gradient(135deg, #0a0a14 0%, #0d0d1a 50%, #0a0e16 100%);
+
+  /* 深色玻璃基底（适度提高不透明度保证可读） */
+  --glass-clear: rgba(30, 30, 35, 0.30);
+  --glass-frost: rgba(40, 40, 48, 0.42);
+  --glass-blur: blur(14px) saturate(140%);
+
+  /* 边缘高光 - 深色（透明度降低避免刺眼） */
+  --glass-rim: linear-gradient(180deg, rgba(255, 255, 255, 0.14) 0%, rgba(255, 255, 255, 0.02) 50%);
+  --glass-rim-color: rgba(255, 255, 255, 0.1);
+
+  --glass-shadow: 0 8px 30px rgba(0, 0, 0, 0.4), 0 2px 6px rgba(0, 0, 0, 0.3);
+  --glass-shadow-hover: 0 12px 40px rgba(0, 0, 0, 0.5), 0 3px 8px rgba(0, 0, 0, 0.35);
+  --glass-inner: inset 0 1px 0 rgba(255, 255, 255, 0.08), inset 0 -1px 0 rgba(0, 0, 0, 0.2);
+
+  --text-primary: rgba(255, 255, 255, 0.92);
+  --text-secondary: rgba(235, 235, 245, 0.6);
+  --text-tertiary: rgba(235, 235, 245, 0.3);
+  --divider: rgba(84, 84, 88, 0.45);
+  /* 区块标题底部分隔线（深色下用半透明亮线） */
+  --glass-border-subtle: rgba(235, 235, 245, 0.12);
+  --glass-fill-subtle: rgba(120, 120, 128, 0.22);
+  --glass-fill-strong: rgba(255, 255, 255, 0.14);
+  --glass-border-strong: rgba(235, 235, 245, 0.4);
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  background: var(--bg-page);
+  background-attachment: fixed;
+  color: var(--text-primary);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  letter-spacing: -0.01em;
+  transition: background 350ms var(--ease-fluid);
+}
+
+/* ============================================
+   滚动条（极细、半透明）
+   ============================================ */
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-thumb {
+  background: var(--text-tertiary);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--text-secondary); }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* ============================================
+   玻璃材质核心 - 三层结构
+   ============================================ */
+
+/* 通用玻璃基底层 - 清澈模式（透明度低、模糊小） */
+.glass {
+  background: var(--glass-clear);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-rim-color);
+  box-shadow: var(--glass-shadow), var(--glass-inner);
+  position: relative;
+}
+
+/* 磨砂模式（透明度中等、轻微着色） */
+.glass-frost {
+  background: var(--glass-frost);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-rim-color);
+  box-shadow: var(--glass-shadow), var(--glass-inner);
+  position: relative;
+}
+
+/* 高对比玻璃（用于重要容器） */
+.glass-elevated {
+  background: var(--glass-frost);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-rim-color);
+  box-shadow: var(--glass-shadow-hover), var(--glass-inner);
+  position: relative;
+}
+
+/* ============================================
+   光学表层（边缘高光 + 菲涅尔效果）
+   ============================================ */
+
+/* 顶部边缘高光带 - 用伪元素实现 */
+.glass-rim-top::before,
+.glass-frost::before,
+.glass-elevated::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  background: var(--glass-rim);
+  pointer-events: none;
+  border-radius: inherit;
+}
+
+/* 左右边缘高光（菲涅尔效果模拟） */
+.glass-rim-side::after,
+.glass-frost::after,
+.glass-elevated::after {
+  content: "";
+  position: absolute;
+  inset: 1px 0 1px 0;
+  border-radius: inherit;
+  background:
+    linear-gradient(90deg, var(--glass-rim-color), transparent 20%, transparent 80%, var(--glass-rim-color));
+  pointer-events: none;
+  mix-blend-mode: overlay;
+}
+
+/* ============================================
+   玻璃组件变体
+   ============================================ */
+
+/* 玻璃卡片 */
+.glass-card {
+  background: var(--glass-clear);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-rim-color);
+  box-shadow: var(--glass-shadow), var(--glass-inner);
+  border-radius: var(--radius-glass-lg);
+  overflow: hidden;
+  position: relative;
+}
+.glass-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  background: var(--glass-rim);
+  pointer-events: none;
+}
+
+/* 玻璃面板 - 用于侧边栏等大容器（22px 圆角） */
+.glass-panel {
+  background: var(--glass-frost);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-rim-color);
+  box-shadow: var(--glass-shadow), var(--glass-inner);
+  border-radius: 22px;
+  position: relative;
+  overflow: hidden;
+}
+.glass-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  background: var(--glass-rim);
+  pointer-events: none;
+  border-radius: inherit;
+}
+
+/* 玻璃子面板 - 用于嵌套的小卡片（14px 圆角，更透明） */
+.glass-subtle {
+  background: var(--glass-clear);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-rim-color);
+  box-shadow: var(--glass-inner);
+  border-radius: 14px;
+  position: relative;
+  overflow: hidden;
+}
+.glass-subtle::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  background: var(--glass-rim);
+  pointer-events: none;
+  border-radius: inherit;
+}
+
+/* ============================================
+   按钮（小型独立玻璃几何体）
+   ============================================ */
+
+.glass-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: var(--radius-glass-md);
+  background: var(--glass-frost);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-rim-color);
+  color: var(--color-system-blue);
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  white-space: nowrap;
+  position: relative;
+  box-shadow: var(--glass-inner);
+  transition: all 220ms var(--ease-fluid);
+}
+
+.glass-button:hover:not(:disabled) {
+  background: var(--glass-frost);
+  transform: translateY(-1px);
+  box-shadow: var(--glass-shadow), var(--glass-inner);
+}
+
+.glass-button:active:not(:disabled) {
+  transform: scale(0.97);
+  transition-duration: 80ms;
+}
+
+.glass-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* 主按钮 - 实心蓝（克制使用） */
+.glass-button-primary {
+  background: var(--color-system-blue);
+  color: white;
+  border: none;
+  box-shadow: 0 4px 16px rgba(0, 122, 255, 0.25), var(--glass-inner);
+}
+.glass-button-primary:hover:not(:disabled) {
+  background: #0a84ff;
+  box-shadow: 0 6px 20px rgba(0, 122, 255, 0.35), var(--glass-inner);
+}
+
+/* 危险按钮 */
+.glass-button-danger {
+  background: var(--color-system-red);
+  color: white;
+  border: none;
+  box-shadow: 0 4px 16px rgba(255, 59, 48, 0.25), var(--glass-inner);
+}
+
+/* 玻璃胶囊按钮（标签切换用） */
+.glass-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 12px;
+  border-radius: var(--radius-glass-pill);
+  background: var(--glass-clear);
+  border: 1px solid var(--glass-rim-color);
+  font-size: 12px;
+  font-weight: 500;
+  font-family: inherit;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: all 220ms var(--ease-fluid);
+  -webkit-tap-highlight-color: transparent;
+}
+.glass-pill:hover { background: var(--glass-frost); transform: translateY(-1px); }
+.glass-pill.is-active {
+  background: var(--color-system-blue);
+  color: white;
+  border-color: transparent;
+  box-shadow: 0 4px 14px rgba(0, 122, 255, 0.3);
+}
+
+/* ============================================
+   徽章（克制使用、低饱和）
+   ============================================ */
+
+.glass-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 9px;
+  border-radius: var(--radius-glass-pill);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  border: 1px solid currentColor;
+  border-opacity: 0.18;
+}
+
+.badge-blue   { color: var(--color-system-blue);   background: rgba(0, 122, 255, 0.1); }
+.badge-green  { color: var(--color-system-green);  background: rgba(52, 199, 89, 0.1); }
+.badge-red    { color: var(--color-system-red);    background: rgba(255, 59, 48, 0.1); }
+.badge-orange { color: var(--color-system-orange); background: rgba(255, 149, 0, 0.1); }
+.badge-purple { color: var(--color-system-purple); background: rgba(175, 82, 222, 0.1); }
+.badge-gray   { color: var(--color-system-gray);   background: rgba(142, 142, 147, 0.12); }
+
+/* ============================================
+   表单控件（小型玻璃几何体）
+   ============================================ */
+
+.glass-input {
+  width: 100%;
+  padding: 7px 12px;
+  border-radius: var(--radius-glass-md);
+  background: var(--glass-clear);
+  border: 1px solid var(--glass-rim-color);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: all 220ms var(--ease-fluid);
+}
+.glass-input:focus {
+  background: var(--glass-frost);
+  border-color: rgba(0, 122, 255, 0.4);
+  box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.12);
+}
+.glass-input::placeholder { color: var(--text-tertiary); }
+
+.glass-select {
+  width: 100%;
+  padding: 7px 32px 7px 12px;
+  border-radius: var(--radius-glass-md);
+  background: var(--glass-clear);
+  border: 1px solid var(--glass-rim-color);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  outline: none;
+  transition: all 220ms var(--ease-fluid);
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml;charset=US-ASCII,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%238E8E93' d='M5 6L0 0h10z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 8px;
+}
+.glass-select:focus {
+  background: var(--glass-frost);
+  border-color: rgba(0, 122, 255, 0.4);
+  box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.12);
+}
+
+/* ============================================
+   进度条（极简细线）
+   ============================================ */
+
+.glass-progress-track {
+  width: 100%;
+  height: 4px;
+  background: var(--glass-clear);
+  border-radius: var(--radius-glass-pill);
+  overflow: hidden;
+}
+
+.glass-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--color-system-blue), #5AC8FA);
+  border-radius: var(--radius-glass-pill);
+  transition: width 400ms var(--ease-fluid);
+  position: relative;
+  overflow: hidden;
+}
+.glass-progress-fill::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.4), transparent);
+  animation: shimmer 2.4s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+/* ============================================
+   表格（透明背景）
+   ============================================ */
+
+.glass-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+}
+.glass-table th {
+  text-align: left;
+  padding: 10px 14px;
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--divider);
+}
+.glass-table td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--divider);
+  color: var(--text-primary);
+}
+.glass-table tbody tr {
+  transition: background 180ms var(--ease-fluid);
+}
+.glass-table tbody tr:hover {
+  background: rgba(0, 122, 255, 0.04);
+}
+html.dark .glass-table tbody tr:hover {
+  background: rgba(0, 122, 255, 0.08);
+}
+.glass-table tbody tr:last-child td { border-bottom: none; }
+
+/* ============================================
+   文本层级
+   ============================================ */
+
+.section-title {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+  margin: 0;
+}
+.section-subtitle {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin: 4px 0 0;
+  letter-spacing: -0.01em;
+}
+
+/* ============================================
+   玻璃着色（用于错误/成功提示）
+   ============================================ */
+
+.glass-tinted-red    { background: rgba(255, 59, 48, 0.1);  color: var(--color-system-red);    border-color: rgba(255, 59, 48, 0.2); }
+.glass-tinted-green  { background: rgba(52, 199, 89, 0.1);  color: var(--color-system-green);  border-color: rgba(52, 199, 89, 0.2); }
+.glass-tinted-blue   { background: rgba(0, 122, 255, 0.1);  color: var(--color-system-blue);   border-color: rgba(0, 122, 255, 0.2); }
+.glass-tinted-orange { background: rgba(255, 149, 0, 0.1);  color: var(--color-system-orange); border-color: rgba(255, 149, 0, 0.2); }
+
+/* ============================================
+   动画 - 流体缓动
+   ============================================ */
+
+.transition-spring { transition: all 280ms var(--ease-spring); }
+.transition-fluid  { transition: all 220ms var(--ease-fluid); }
+
+/* 路由切换 - 淡入 + 微滑 */
+.page-enter-active,
+.page-leave-active {
+  transition: opacity 220ms var(--ease-fluid), transform 220ms var(--ease-fluid);
+}
+.page-enter-from { opacity: 0; transform: translateY(6px); }
+.page-leave-to   { opacity: 0; transform: translateY(-3px); }
+
+/* Modal 弹出 */
+.modal-enter-active,
+.modal-leave-active {
+  transition: opacity 260ms var(--ease-fluid), transform 260ms var(--ease-spring);
+}
+.modal-enter-from,
+.modal-leave-to {
+  opacity: 0;
+  transform: scale(0.96);
+}
+
+/* 点击涟漪 - 径向渐变瞬现消散 */
+@keyframes ripple {
+  0%   { opacity: 0.4; transform: scale(0); }
+  100% { opacity: 0;   transform: scale(2.5); }
+}
+.ripple-effect::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(circle at center, rgba(255, 255, 255, 0.4), transparent 70%);
+  opacity: 0;
+  pointer-events: none;
+}
+.ripple-effect:active::after {
+  animation: ripple 500ms var(--ease-fluid);
+}
+
+/* ============================================
+   兼容保留类（兼容旧组件）
+   ============================================ */
+
+.theme-card     { background: var(--glass-clear); border-color: var(--glass-rim-color); }
+.theme-sidebar  { background: var(--glass-frost); border-color: var(--glass-rim-color); }
+.theme-text     { color: var(--text-primary); }
+.theme-text-secondary { color: var(--text-secondary); }
+.theme-input    { background: var(--glass-clear); border-color: var(--glass-rim-color); color: var(--text-primary); }
+
+/* ============================================
+   Markdown 渲染（SummaryPage）
+   ============================================ */
+
+.md-content { color: var(--text-primary); line-height: 1.7; font-size: 14px; }
+.md-content .md-h1, .md-content .md-h2,
+.md-content .md-h3, .md-content .md-h4,
+.md-content .md-h5, .md-content .md-h6 {
+  font-weight: 600; margin: 1.2em 0 0.5em; line-height: 1.3;
+}
+.md-content .md-h1 { font-size: 1.6em; }
+.md-content .md-h2 { font-size: 1.35em; border-bottom: 1px solid var(--divider); padding-bottom: 0.3em; }
+.md-content .md-h3 { font-size: 1.15em; }
+.md-content .md-h4 { font-size: 1.05em; }
+.md-content .md-h5 { font-size: 1em; }
+.md-content .md-h6 { font-size: 0.95em; color: var(--text-secondary); }
+.md-content .md-p { margin: 0.6em 0; }
+.md-content .md-code {
+  background: var(--glass-frost);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-family: ui-monospace, "Cascadia Code", monospace;
+  font-size: 0.9em;
+  color: var(--color-system-purple);
+}
+.md-content .md-pre {
+  background: rgba(28, 28, 30, 0.92);
+  color: #d4d4d4;
+  padding: 12px 14px;
+  border-radius: var(--radius-glass-md);
+  overflow-x: auto;
+  margin: 0.8em 0;
+  font-family: ui-monospace, "Cascadia Code", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.md-content .md-pre code { background: transparent; padding: 0; color: inherit; }
+.md-content .md-link {
+  color: var(--color-system-blue);
+  text-decoration: none;
+  border-bottom: 1px solid currentColor;
+  transition: all 180ms var(--ease-fluid);
+}
+.md-content .md-link:hover { opacity: 0.7; border-bottom-color: transparent; }
+.md-content .md-ul, .md-content .md-ol { margin: 0.6em 0; padding-left: 2em; }
+.md-content .md-ul li, .md-content .md-ol li { margin: 0.25em 0; }
+.md-content .md-quote {
+  margin: 0.8em 0;
+  padding: 8px 14px;
+  border-left: 2px solid var(--color-system-blue);
+  background: rgba(0, 122, 255, 0.06);
+  border-radius: 0 var(--radius-glass-md) var(--radius-glass-md) 0;
+  color: var(--text-secondary);
+}
+.md-content .md-hr { border: 0; border-top: 1px solid var(--divider); margin: 1.5em 0; }
+.md-content .md-table { border-collapse: collapse; width: 100%; margin: 0.8em 0; font-size: 13px; }
+.md-content .md-table th, .md-content .md-table td {
+  border: 1px solid var(--divider);
+  padding: 6px 10px;
+  text-align: left;
+}
+.md-content .md-table th { background: rgba(0, 122, 255, 0.06); font-weight: 600; }
+.md-content strong { font-weight: 600; }
+.md-content em { font-style: italic; }
+.md-content del { color: var(--text-secondary); text-decoration: line-through; }

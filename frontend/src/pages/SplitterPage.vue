@@ -1,0 +1,390 @@
+<script setup lang="ts">
+import { ref, reactive, computed } from 'vue'
+import { api, type SplitterPreview } from '../api/client'
+
+interface FileItem {
+  file_path: string
+  book_name: string
+  status: 'pending' | 'processing' | 'done' | 'error'
+  chapters: number
+  error: string
+}
+type BatchResult = {
+  total: number
+  success: number
+  fail: number
+  results: { file: string; book: string; total_chapters: number; ok: boolean; error: string }[]
+}
+
+const files = ref<FileItem[]>([])
+const opts = reactive({
+  mode: 'auto' as 'auto' | 'custom',
+  pattern: '第[一二三四五六七八九十百千零\\d]+章',
+  use_volume: true,
+  min_words: 0,
+  merge_tiny: false,
+  max_words: 0,
+  remove_ads: false,
+})
+
+const busy = ref(false)
+const preview = ref<SplitterPreview | null>(null)
+const previewTitle = ref('')
+const batchResult = ref<BatchResult | null>(null)
+
+function baseName(p: string): string {
+  const s = p.replace(/\\/g, '/').split('/').pop() || p
+  return s.replace(/\.txt$/i, '')
+}
+function statusText(s: FileItem['status']): string {
+  return { pending: '待处理', processing: '处理中', done: '完成', error: '失败' }[s]
+}
+
+function addFileByPath(p: string) {
+  if (files.value.some((f) => f.file_path === p)) return
+  files.value.push({ file_path: p, book_name: baseName(p), status: 'pending', chapters: 0, error: '' })
+}
+
+// 文件选择改为前端原生 <input type="file">（pywebview 会弹出系统对话框并返回真实本地路径），
+// 不再走后端 tkinter 路由（B4：tkinter 在打包/无 DISPLAY/Linux 服务端即崩，且阻塞事件循环）。
+const fileInput = ref<HTMLInputElement | null>(null)
+function triggerAddFiles() {
+  fileInput.value?.click()
+}
+function onFilesPicked(e: Event) {
+  const input = e.target as HTMLInputElement
+  const list = input.files
+  if (list && list.length) {
+    for (const f of Array.from(list)) {
+      const p = (f as unknown as { path?: string }).path
+      if (p) addFileByPath(p)
+    }
+  }
+  input.value = '' // 允许重复选择同一文件
+}
+function removeFile(idx: number) {
+  files.value.splice(idx, 1)
+}
+function clearFiles() {
+  files.value = []
+  batchResult.value = null
+}
+
+async function inferAll() {
+  if (!files.value.length) return
+  for (const f of files.value) {
+    try {
+      const r = await api.inferBookName(f.file_path)
+      f.book_name = r.book_name
+    } catch (e) {
+      /* 忽略单本推断失败 */
+    }
+  }
+}
+
+function previewBody(filePath: string) {
+  return {
+    file_path: filePath,
+    mode: opts.mode,
+    pattern: opts.pattern,
+    use_volume: opts.use_volume,
+    min_words: Number(opts.min_words) || 0,
+    merge_tiny: opts.merge_tiny,
+    max_words: Number(opts.max_words) || 0,
+    remove_ads: opts.remove_ads,
+  }
+}
+
+async function previewOne(item: FileItem) {
+  try {
+    preview.value = await api.previewSplit(previewBody(item.file_path))
+    previewTitle.value = item.book_name
+  } catch (e) {
+    alert((e as Error).message)
+  }
+}
+
+async function doBatch() {
+  if (!files.value.length) return
+  busy.value = true
+  batchResult.value = null
+  files.value.forEach((f) => {
+    f.status = 'processing'
+    f.error = ''
+  })
+  try {
+    const res = await api.batchSplit({
+      file_paths: files.value.map((f) => f.file_path),
+      book_names: files.value.map((f) => f.book_name),
+      mode: opts.mode,
+      pattern: opts.pattern,
+      use_volume: opts.use_volume,
+      min_words: Number(opts.min_words) || 0,
+      merge_tiny: opts.merge_tiny,
+      max_words: Number(opts.max_words) || 0,
+      remove_ads: opts.remove_ads,
+    })
+    batchResult.value = res
+    for (const r of res.results) {
+      const it = files.value.find((f) => f.file_path === r.file)
+      if (!it) continue
+      it.status = r.ok ? 'done' : 'error'
+      it.chapters = r.total_chapters
+      it.error = r.error
+    }
+  } catch (e) {
+    alert((e as Error).message)
+  } finally {
+    busy.value = false
+  }
+}
+
+// 按卷分组展示
+const groupedChapters = computed(() => {
+  if (!preview.value) return []
+  const groups: { volume: string; items: SplitterPreview['chapters'] }[] = []
+  let cur: { volume: string; items: SplitterPreview['chapters'] } | null = null
+  for (const ch of preview.value.chapters) {
+    const vol = ch.volume || ''
+    if (!cur || cur.volume !== vol) {
+      cur = { volume: vol, items: [] }
+      groups.push(cur)
+    }
+    cur.items.push(ch)
+  }
+  return groups
+})
+</script>
+
+<template>
+  <div class="space-y-4 max-w-3xl">
+    <h2 class="section-title">小说切分</h2>
+    <p class="section-subtitle">自动识别卷/章/回/节、番外、序章等结构，支持广告清理、去重与超大章拆分 · 可一次选择多本批量切分</p>
+
+    <!-- 文件列表 -->
+    <div class="glass-card p-4 space-y-3">
+      <div class="flex items-center justify-between" style="border-bottom: 1px solid var(--glass-border-subtle); padding-bottom: 8px">
+        <h3 class="font-semibold">
+          小说文件列表
+          <span class="text-sm" style="color: var(--color-system-gray)">({{ files.length }})</span>
+        </h3>
+        <div class="flex gap-2">
+          <button @click="triggerAddFiles" class="glass-button">+ 添加文件（可多选）</button>
+          <button @click="clearFiles" :disabled="!files.length" class="glass-button">清空</button>
+          <input ref="fileInput" type="file" accept=".txt" multiple style="display:none" @change="onFilesPicked" />
+        </div>
+      </div>
+
+      <div v-if="!files.length" class="text-sm py-6 text-center" style="color: var(--text-tertiary)">
+        尚未添加小说。点击「添加文件」可一次选择多本 txt，每本将切分到 workspace/书名/blocks/。
+      </div>
+
+      <div v-else class="space-y-2">
+        <div
+          v-for="(f, idx) in files"
+          :key="f.file_path"
+          class="flex items-center gap-2 px-2 py-2 rounded"
+          style="border: 1px solid var(--glass-border-subtle)"
+        >
+          <div class="min-w-0 flex-1">
+            <div class="truncate text-sm" :title="f.file_path">{{ baseName(f.file_path) || f.file_path }}</div>
+            <input v-model="f.book_name" placeholder="书名" class="glass-input mt-1 w-full text-xs" :disabled="busy" />
+          </div>
+          <span
+            class="text-xs px-2 py-0.5 rounded shrink-0"
+            :class="{
+              'text-gray-400': f.status === 'pending',
+              'text-blue-500': f.status === 'processing',
+              'text-green-500': f.status === 'done',
+              'text-red-500': f.status === 'error',
+            }"
+            >{{ statusText(f.status) }}<span v-if="f.status === 'done'"> · {{ f.chapters }}章</span></span
+          >
+          <button @click="previewOne(f)" :disabled="busy" class="glass-button text-xs shrink-0">预览</button>
+          <button @click="removeFile(idx)" :disabled="busy" class="glass-button text-xs shrink-0" style="color: var(--color-system-red)">移除</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 切分模式 -->
+    <div class="glass-card p-4 space-y-3">
+      <h3 class="card-head">切分模式</h3>
+      <div class="seg">
+        <button :class="{ active: opts.mode === 'auto' }" @click="opts.mode = 'auto'">自动检测</button>
+        <button :class="{ active: opts.mode === 'custom' }" @click="opts.mode = 'custom'">自定义正则</button>
+      </div>
+      <div v-if="opts.mode === 'custom'" class="flex items-center gap-2">
+        <label class="w-20 text-sm" style="color: var(--color-system-gray)">章节正则:</label>
+        <input v-model="opts.pattern" class="glass-input flex-1 font-mono text-xs" />
+      </div>
+      <p v-else class="text-xs" style="color: var(--text-tertiary)">
+        自动扫描正文前 800 行，对多套候选正则打分，选出本书最优匹配（支持 第X章/回/节、序章/楔子/番外/尾声、英文 Chapter、数字编号等）
+      </p>
+      <p v-if="preview" class="text-xs" style="color: var(--color-system-gray)">
+        {{ previewTitle }} 检测到的正则：<code class="font-mono">{{ preview.pattern_name }}</code>
+        <span class="opacity-60"> — {{ preview.detected_pattern }}</span>
+      </p>
+    </div>
+
+    <!-- 选项 -->
+    <div class="glass-card p-4 space-y-3">
+      <h3 class="card-head">切分选项</h3>
+      <div class="opt-row">
+        <span class="text-sm" style="color: var(--color-system-gray)">识别卷 / 部 / 篇层级</span>
+        <label class="switch"><input type="checkbox" v-model="opts.use_volume" /><span class="slider"></span></label>
+      </div>
+      <div class="opt-row">
+        <span class="text-sm" style="color: var(--color-system-gray)">清理广告 / 水印行</span>
+        <label class="switch"><input type="checkbox" v-model="opts.remove_ads" /><span class="slider"></span></label>
+      </div>
+      <div class="opt-row">
+        <span class="text-sm" style="color: var(--color-system-gray)">最小字数（短于此值跳过）</span>
+        <input v-model.number="opts.min_words" type="number" min="0" class="glass-input w-28" />
+      </div>
+      <div class="opt-row" :style="{ opacity: opts.min_words > 0 ? 1 : 0.45 }">
+        <span class="text-sm" style="color: var(--color-system-gray)">
+          合并短章到下一章
+          <span class="opacity-60" v-if="opts.min_words === 0">（需设置最小字数）</span>
+        </span>
+        <label class="switch">
+          <input type="checkbox" v-model="opts.merge_tiny" :disabled="opts.min_words === 0" />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="opt-row">
+        <span class="text-sm" style="color: var(--color-system-gray)">最大字数（超出自动拆分，0=不拆）</span>
+        <input v-model.number="opts.max_words" type="number" min="0" class="glass-input w-28" />
+      </div>
+    </div>
+
+    <!-- 操作 -->
+    <div class="flex gap-2 flex-wrap">
+      <button @click="doBatch" :disabled="busy || !files.length" class="glass-button glass-button-primary">
+        批量切分（{{ files.length }} 本）
+      </button>
+      <button @click="inferAll" :disabled="busy || !files.length" class="glass-button">为全部推断书名</button>
+      <span v-if="busy" class="text-sm self-center" style="color: var(--color-system-gray)">处理中…</span>
+    </div>
+
+    <!-- 批量结果 -->
+    <div v-if="batchResult" class="glass-card p-4 space-y-2">
+      <h3 class="card-head">批量结果</h3>
+      <div class="text-sm">
+        共 {{ batchResult.total }} 本 —
+        成功 <b class="text-green-500">{{ batchResult.success }}</b> ·
+        失败 <b class="text-red-500">{{ batchResult.fail }}</b>
+      </div>
+      <div class="space-y-1">
+        <div
+          v-for="r in batchResult.results"
+          :key="r.file"
+          class="text-xs flex justify-between gap-3"
+          :style="{ color: r.ok ? 'var(--text-secondary)' : 'var(--color-system-red)' }"
+        >
+          <span class="truncate" :title="r.file">{{ r.book || baseName(r.file) }}</span>
+          <span class="shrink-0">{{ r.ok ? r.total_chapters + ' 章' : '失败: ' + r.error }}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 单本预览 -->
+    <div v-if="preview" class="glass-card overflow-hidden">
+      <div class="px-4 py-3" style="border-bottom: 1px solid var(--glass-border-subtle)">
+        <div class="flex flex-wrap gap-x-4 gap-y-1 text-sm">
+          <span>{{ previewTitle }}</span>
+          <span>共 <b>{{ preview.total_chapters }}</b> 章</span>
+          <span><b>{{ preview.total_words.toLocaleString() }}</b> 字</span>
+          <span v-if="preview.total_volumes > 0">{{ preview.total_volumes }} 卷</span>
+          <span v-if="preview.dedup_count > 0" class="text-amber-500">去重 {{ preview.dedup_count }} 章</span>
+        </div>
+        <div v-if="preview.metadata?.title || preview.metadata?.author" class="text-xs mt-1" style="color: var(--color-system-gray)">
+          <span v-if="preview.metadata.title">书名：{{ preview.metadata.title }}</span>
+          <span v-if="preview.metadata.author" class="ml-3">作者：{{ preview.metadata.author }}</span>
+        </div>
+        <div class="text-xs mt-1" style="color: var(--text-tertiary)">
+          字数 平均 {{ preview.stats.avg }} / 最小 {{ preview.stats.min }} / 最大 {{ preview.stats.max }} / 中位 {{ preview.stats.median }}
+        </div>
+      </div>
+      <div class="max-h-[50vh] overflow-auto">
+        <table class="glass-table" style="font-size: 12px; width: 100%">
+          <thead>
+            <tr>
+              <th class="px-2 py-1 text-left w-12">序号</th>
+              <th class="px-2 py-1 text-left">标题</th>
+              <th class="px-2 py-1 text-left w-16">字数</th>
+            </tr>
+          </thead>
+          <tbody>
+            <template v-for="g in groupedChapters" :key="g.volume">
+              <tr v-if="g.volume" class="volume-row">
+                <td :colspan="3" class="px-2 py-1 font-medium" style="background: var(--glass-fill-subtle); color: var(--color-system-gray)">{{ g.volume }}</td>
+              </tr>
+              <tr v-for="ch in g.items" :key="ch.index" style="border-top: 1px solid var(--glass-border-subtle)">
+                <td class="px-2 py-1 text-tertiary">{{ ch.index }}</td>
+                <td class="px-2 py-1">{{ ch.title }}</td>
+                <td class="px-2 py-1 text-right" style="color: var(--color-system-gray)">{{ ch.word_count.toLocaleString() }}</td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+        <div v-if="preview.total_chapters > preview.preview_count" class="px-3 py-2 text-center text-xs" style="color: var(--text-tertiary)">
+          仅显示前 {{ preview.preview_count }} 章，共 {{ preview.total_chapters }} 章
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.card-head {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--glass-border-subtle);
+}
+.opt-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.seg {
+  display: inline-flex;
+  border-radius: 10px;
+  padding: 3px;
+  background: var(--glass-fill-subtle);
+  border: 1px solid var(--glass-border-subtle);
+}
+.seg button {
+  border: none;
+  background: transparent;
+  color: var(--color-system-gray);
+  padding: 6px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.seg button.active {
+  background: var(--glass-fill-strong, rgba(255, 255, 255, 0.6));
+  color: var(--text-primary);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+/* 玻璃开关 */
+.switch { position: relative; display: inline-block; width: 42px; height: 24px; flex: none; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.slider {
+  position: absolute; inset: 0; cursor: pointer;
+  background: var(--glass-border-strong, #c7c7cc);
+  border-radius: 999px; transition: .2s;
+}
+.slider:before {
+  content: ''; position: absolute; height: 18px; width: 18px; left: 3px; top: 3px;
+  background: #fff; border-radius: 50%; transition: .2s;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+.switch input:checked + .slider { background: #0a84ff; }
+.switch input:checked + .slider:before { transform: translateX(18px); }
+.switch input:disabled + .slider { opacity: 0.5; cursor: not-allowed; }
+.volume-row td { font-size: 11px; letter-spacing: 0.02em; }
+.text-tertiary { color: var(--text-tertiary); }
+</style>

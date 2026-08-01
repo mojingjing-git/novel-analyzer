@@ -1,0 +1,20 @@
+# 密钥与配置（含 API Key，绝不入库）
+config.json
+.env
+
+# 运行时数据
+workspace/
+queue_state.json
+*.log
+.tmp_verify/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+
+# 前端
+node_modules/
+frontend/dist/
+frontend/.tmp_verify/

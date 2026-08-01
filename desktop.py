@@ -1,0 +1,219 @@
+"""
+pywebview 桌面入口
+
+启动流程：
+1. 找一个可用端口
+2. 后台线程启动 uvicorn (FastAPI)
+3. 轮询 /api/health 等待后端就绪
+4. pywebview 打开原生窗口 (1600x900)
+5. 窗口关闭时终止全部
+
+注意：处理 Windows 中文路径下相对导入失败的问题：
+- 强制切换 cwd 到项目根目录（脚本所在目录）
+- 把项目根目录加入 sys.path
+- 任何路径相关操作都用绝对路径
+"""
+
+import logging
+import os
+import socket
+import sys
+import threading
+import time
+import urllib.request
+from pathlib import Path
+
+# === 关键：解决中文路径下 import backend.app 失败 ===
+PROJECT_ROOT = Path(__file__).resolve().parent
+os.chdir(str(PROJECT_ROOT))
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger("desktop")
+
+
+def _install_crash_diagnostics():
+    """
+    把未捕获异常 / 线程异常 / 原生 stderr 输出全部落盘，便于排查「闪退」。
+    默认情况下桌面端 stderr 没有文件落盘，进程被 os._exit 或渲染进程崩溃带走时
+    任何 traceback / pywebview(WebView2) 原生报错都会丢失，难以定位。
+    """
+    import sys
+    import threading
+
+    crash_path = PROJECT_ROOT / "crash.log"
+    crash_logger = logging.getLogger("crash")
+    crash_logger.setLevel(logging.ERROR)
+    crash_logger.propagate = False
+    if not any(
+        getattr(h, "baseFilename", "") == str(crash_path)
+        for h in crash_logger.handlers
+    ):
+        fh = logging.FileHandler(crash_path, encoding="utf-8")
+        fh.setFormatter(
+            logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+        )
+        crash_logger.addHandler(fh)
+
+    def log_exc(msg, exc_info):
+        crash_logger.error(msg, exc_info=exc_info)
+        # 同时保留解释器默认行为（打印到原 stderr）
+        sys.__excepthook__(*exc_info) if exc_info else None
+
+    def _excepthook(t, v, tb):
+        log_exc("Uncaught exception (main thread)", (t, v, tb))
+
+    sys.excepthook = _excepthook
+
+    def _thread_excepthook(args):
+        log_exc(
+            "Uncaught exception in thread",
+            (args.exc_type, args.exc_value, args.exc_traceback),
+        )
+
+    threading.excepthook = _thread_excepthook
+
+    # 重定向 stderr 到「原 stderr + crash.log」，捕获 pywebview / WebView2 原生报错
+    crash_fh = open(crash_path, "a", encoding="utf-8", buffering=1)
+
+    class _StderrTee:
+        def __init__(self, original, fileobj):
+            self._orig = original
+            self._f = fileobj
+
+        def write(self, s):
+            try:
+                self._f.write(s)
+                self._f.flush()
+            except Exception:
+                pass
+            try:
+                self._orig.write(s)
+            except Exception:
+                pass
+
+        def flush(self):
+            try:
+                self._f.flush()
+            except Exception:
+                pass
+            try:
+                self._orig.flush()
+            except Exception:
+                pass
+
+        def __getattr__(self, name):
+            return getattr(self._orig, name)
+
+    sys.stderr = _StderrTee(sys.stderr, crash_fh)
+    logger.info(f"崩溃诊断已启用，原生报错将写入: {crash_path}")
+
+
+def _find_free_port() -> int:
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+def _start_server(port: int):
+    import uvicorn
+    # 压低访问日志：仅输出应用本身的 logger（LLM 调用、token、流程等），隐藏高频 GET 请求
+    log_config = {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {
+            "default": {
+                "format": "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+                "datefmt": "%Y-%m-%d %H:%M:%S",
+            },
+        },
+        "handlers": {
+            "default": {
+                "formatter": "default",
+                "class": "logging.StreamHandler",
+                "stream": "ext://sys.stderr",
+            },
+        },
+        "loggers": {
+            # uvicorn 本身的访问日志设为 WARNING，避免 GET 请求刷屏
+            "uvicorn.access": {"handlers": ["default"], "level": "WARNING", "propagate": False},
+            "uvicorn.error": {"handlers": ["default"], "level": "INFO", "propagate": False},
+            "uvicorn": {"handlers": ["default"], "level": "INFO", "propagate": False},
+        },
+        "root": {"handlers": ["default"], "level": "INFO"},
+    }
+    uvicorn.run(
+        "backend.app:app",
+        host="127.0.0.1",
+        port=port,
+        log_config=log_config,
+        app_dir=str(PROJECT_ROOT),
+    )
+
+
+def _wait_for_server(port: int, timeout: int = 30) -> bool:
+    for _ in range(timeout * 2):
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health", timeout=2)
+            return True
+        except Exception:
+            time.sleep(0.5)
+    return False
+
+
+def main():
+    _install_crash_diagnostics()
+
+    port = _find_free_port()
+    logger.info(f"启动后端服务: http://127.0.0.1:{port}")
+    logger.info(f"项目根目录: {PROJECT_ROOT}")
+
+    # 后台线程启动后端
+    t = threading.Thread(target=_start_server, args=(port,), daemon=True)
+    t.start()
+
+    # 等后端就绪
+    if not _wait_for_server(port):
+        logger.error("后端启动超时")
+        sys.exit(1)
+    logger.info("后端已就绪")
+
+    # 打开原生窗口
+    try:
+        import webview
+    except ImportError:
+        logger.error("pywebview 未安装，请运行: pip install pywebview")
+        sys.exit(1)
+
+    window = webview.create_window(
+        "小说智能分析器",
+        f"http://127.0.0.1:{port}",
+        width=1600,
+        height=900,
+        min_size=(960, 700),
+        text_select=True,
+    )
+
+    # 记录窗口关闭 / 前端加载异常，便于区分「用户主动关」还是「渲染进程崩溃」
+    def _on_closed():
+        logger.warning("窗口已关闭（可能是用户主动关闭，也可能是渲染进程崩溃）")
+
+    def _on_load_exc(e):
+        logger.error(f"前端页面加载异常: {e}")
+
+    try:
+        window.events.closed += _on_closed
+        window.events.load_exception += _on_load_exc
+    except Exception as e:
+        logger.debug(f"注册窗口事件回调失败（pywebview 版本旧？）: {e}")
+
+    webview.start()
+    # 窗口关闭后退出
+    os._exit(0)
+
+
+if __name__ == "__main__":
+    main()
