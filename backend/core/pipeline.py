@@ -355,7 +355,7 @@ class AnalysisPipeline:
                 block_id, block_chs = remaining_blocks[i]
                 # BUG FIX: 预热 start 事件使用 completed_count（而非循环索引 i），
                 # 避免前端进度条从已完成数"回退"到 0
-                _, completed_count, _, _ = await self.analyze_block_with_progress(
+                _, completed_count, _, _, _ = await self.analyze_block_with_progress(
                     block_id=block_id, block_chs=block_chs, block_size=block_size,
                     total=total, label="预热",
                     progress_count=completed_count, completed_count=completed_count,
@@ -415,10 +415,10 @@ class AnalysisPipeline:
         async def _worker(block_id, block_chs):
             async with sem:
                 if self._stop_requested:
-                    return block_id, block_chs, False, 0.0, (0, 0), None, True  # skipped
-                success, elapsed, ch_tokens, result = await self._analyze_one_block(
+                    return block_id, block_chs, False, 0.0, (0, 0), None, {"retries": 0, "failed_tokens": 0}, True
+                success, elapsed, ch_tokens, result, retry_info = await self._analyze_one_block(
                     analyzer, self.file_processor, state, block_id, block_size)
-                return block_id, block_chs, success, elapsed, ch_tokens, result, False
+                return block_id, block_chs, success, elapsed, ch_tokens, result, retry_info, False
 
         tasks = [asyncio.create_task(_worker(bid, chs)) for bid, chs in remaining]
 
@@ -429,14 +429,14 @@ class AnalysisPipeline:
             if self._stop_requested:
                 break
             try:
-                block_id, block_chs, success, elapsed, ch_tokens, result, skipped = await fut
+                block_id, block_chs, success, elapsed, ch_tokens, result, retry_info, skipped = await fut
                 if skipped:
                     continue
                 _, completed_count = await self._handle_block_outcome(
                     success=success, block_id=block_id, block_chs=block_chs,
                     block_size=block_size, total=total, label="",
                     completed_count=completed_count, elapsed=elapsed,
-                    ch_tokens=ch_tokens, result=result,
+                    ch_tokens=ch_tokens, result=result, retry_info=retry_info,
                 )
             except Exception as e:
                 error_msg = f"块分析异常: {e}"
@@ -491,7 +491,7 @@ class AnalysisPipeline:
                 if self._stop_requested:
                     break
                 state._failed_chapters.pop(block_id, None)
-                _, completed_count, _, _ = await self.analyze_block_with_progress(
+                _, completed_count, _, _, _ = await self.analyze_block_with_progress(
                     block_id=block_id, block_chs=None, block_size=block_size,
                     total=total, label="补跑",
                     progress_count=completed_count, completed_count=completed_count,
@@ -563,16 +563,16 @@ class AnalysisPipeline:
         纯分析+保存，不 emit progress（由调用方负责）。
 
         Returns:
-            (success, elapsed, ch_tokens, result)
+            (success, elapsed, ch_tokens, result, retry_info)
         """
         content = await asyncio.to_thread(file_processor.read_block, block_id, block_size)
         if content is None:
             state.add_failed(block_id, "读取失败")
-            return False, 0.0, (0, 0), None
+            return False, 0.0, (0, 0), None, {"retries": 0, "failed_tokens": 0}
 
         temp_kb = state.get_kb_snapshot(chapter_limit=block_id)
         t_start = time.time()
-        result, ch_tokens = await analyzer.analyze_chapter(
+        result, ch_tokens, retry_info = await analyzer.analyze_chapter(
             block_id, content, temp_kb, block_size=block_size)
         elapsed = time.time() - t_start
 
@@ -580,10 +580,10 @@ class AnalysisPipeline:
             reason = "分析失败（LLM响应解析失败或重试耗尽）"
             state.add_failed(block_id, reason)
             logger.warning(f"块{block_id}分析失败: {reason}，耗时{elapsed:.1f}s，tokens={ch_tokens}")
-            return False, elapsed, ch_tokens, None
+            return False, elapsed, ch_tokens, None, retry_info
 
         await state.add_result(result)
-        return True, elapsed, ch_tokens, result
+        return True, elapsed, ch_tokens, result, retry_info
 
     async def analyze_block_with_progress(
         self, *, block_id: int, block_chs, block_size: int, total: int,
@@ -595,10 +595,10 @@ class AnalysisPipeline:
         包括：emit start → _analyze_one_block → _handle_block_outcome。
 
         Returns:
-            (success, new_completed_count, ch_tokens, result)
+            (success, new_completed_count, ch_tokens, result, retry_info)
         """
         if self._stop_requested:
-            return False, completed_count, (0, 0), None
+            return False, completed_count, (0, 0), None, {"retries": 0, "failed_tokens": 0}
 
         ch_range = _fmt_range(block_id, block_chs, block_size)
         prefix = f"[{label}] " if label else ""
@@ -610,7 +610,7 @@ class AnalysisPipeline:
                 "message": f"{prefix}开始分析{ch_range}..."
             })
 
-        success, elapsed, ch_tokens, result = await self._analyze_one_block(
+        success, elapsed, ch_tokens, result, retry_info = await self._analyze_one_block(
             self._analyzer, self.file_processor, self.state, block_id, block_size
         )
 
@@ -618,20 +618,21 @@ class AnalysisPipeline:
             success=success, block_id=block_id, block_chs=block_chs,
             block_size=block_size, total=total, label=label,
             completed_count=completed_count, elapsed=elapsed,
-            ch_tokens=ch_tokens, result=result,
+            ch_tokens=ch_tokens, result=result, retry_info=retry_info,
         )
-        return success, new_completed, ch_tokens, result
+        return success, new_completed, ch_tokens, result, retry_info
 
     async def _handle_block_outcome(
         self, *, success: bool, block_id: int, block_chs, block_size: int,
         total: int, label: str, completed_count: int, elapsed: float,
-        ch_tokens, result,
+        ch_tokens, result, retry_info: Optional[dict] = None,
     ):
         """单块结果后处理（accumulate + emit done/failed + token stats）。
 
         Returns:
             (success, new_completed_count)
         """
+        retry_info = retry_info or {"retries": 0, "failed_tokens": 0}
         ch_range = _fmt_range(block_id, block_chs, block_size)
         prefix = f"[{label}] " if label else ""
 
@@ -649,12 +650,16 @@ class AnalysisPipeline:
                 "progress": completed_count, "total": total, "elapsed": elapsed,
                 "tokens": ch_tokens[0] + ch_tokens[1],
                 "input_tokens": ch_tokens[0], "output_tokens": ch_tokens[1],
+                "retries": retry_info.get("retries", 0),
+                "failed_tokens": retry_info.get("failed_tokens", 0),
                 "message": f"{prefix}{ch_range}分析完成"
             })
         else:
             await self._emit({
                 "chapter": block_id, "status": "failed",
                 "progress": completed_count, "total": total,
+                "retries": retry_info.get("retries", 0),
+                "failed_tokens": retry_info.get("failed_tokens", 0),
                 "message": f"{prefix}{ch_range}分析失败"
             })
 

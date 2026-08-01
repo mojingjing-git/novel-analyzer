@@ -160,7 +160,40 @@ def test_queue_persistence():
     print("✅ test_queue_persistence passed")
 
 
+def test_record_chapter_stat_accumulates():
+    """每章统计含重试成本字段，且总量累加"""
+    from backend.services.queue_service import AnalysisService
+    svc = object.__new__(AnalysisService)
+    svc._chapter_stats = []
+    svc._token_stats = {}
+    svc._analysis_start_time = 0.0
+    svc._runner_task = None
+    svc._pipeline = None
+    svc._stop_requested = False
+    svc._total_retries = 0
+    svc._total_failed_tokens = 0
+
+    svc._record_chapter_stat({
+        "chapter": 1, "elapsed": 1.0,
+        "input_tokens": 10, "output_tokens": 20,
+        "retries": 1, "failed_tokens": 30,
+    })
+    svc._record_chapter_stat({
+        "chapter": 2, "elapsed": 2.0,
+        "input_tokens": 5, "output_tokens": 5,
+        "retries": 0, "failed_tokens": 0,
+    })
+
+    stats = svc.token_stats()
+    assert stats["total_retries"] == 1
+    assert stats["total_failed_tokens"] == 30
+    assert stats["chapter_stats"][0]["retries"] == 1
+    assert stats["chapter_stats"][0]["failed_tokens"] == 30
+    assert stats["chapter_stats"][0]["input_tokens"] == 10
+
+
 if __name__ == "__main__":
+    test_record_chapter_stat_accumulates()
     test_queue_item_roundtrip()
     test_queue_manager_add_remove()
     test_queue_manager_dedup()

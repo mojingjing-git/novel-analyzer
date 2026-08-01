@@ -58,7 +58,7 @@ class NovelAnalyzer:
         chapter_content: str,
         knowledge_base: KnowledgeBase,
         block_size: int = 1
-    ) -> Tuple[Optional[AnalysisResult], Tuple[int, int]]:
+    ) -> Tuple[Optional[AnalysisResult], Tuple[int, int], dict]:
         """
         分析单个章节（并发安全版本）
 
@@ -69,11 +69,12 @@ class NovelAnalyzer:
             block_size: 本块合并的章节数（写入 result 用于断点续跑时检测 block_size 变更）
 
         Returns:
-            (分析结果, 本章消耗token数)，失败返回 (None, (0, 0))
+            (分析结果, 本章消耗token数, {retries, failed_tokens})，
+            失败返回 (None, 已消耗tokens, retry_info)
         """
         if self._is_stopped:
             logger.info("分析已被停止")
-            return None, (0, 0)
+            return None, (0, 0), {"retries": 0, "failed_tokens": 0}
 
         try:
             # 1. 使用传入的KB构建提示词
@@ -124,18 +125,24 @@ class NovelAnalyzer:
                 return retry_msgs
 
             # 2. 调用LLM（带重试和温度退火，包含JSON解析验证）
+            stats_before = self.llm_client.get_stats()
             success, response, error, token_counts = await self.llm_client.chat_with_retry(
                 messages,
                 max_tokens=self.config.api.max_tokens,
                 validate_response=validate_json_response,
                 retry_messages_builder=build_retry_messages
             )
+            stats_after = self.llm_client.get_stats()
+            retry_info = {
+                "retries": max(0, stats_after.get("total_attempts", 0) - stats_before.get("total_attempts", 0) - 1),
+                "failed_tokens": max(0, stats_after.get("failed_tokens", 0) - stats_before.get("failed_tokens", 0)),
+            }
 
             if not success:
                 logger.error(f"第{chapter_number}章分析失败: {error}")
                 # 保留实际消耗的 tokens（API 已扣费，不能归零）
                 actual_tokens = token_counts if isinstance(token_counts, tuple) else (0, 0)
-                return None, actual_tokens
+                return None, actual_tokens, retry_info
 
             in_tok, out_tok = token_counts if isinstance(token_counts, tuple) else (0, token_counts)
             tokens = in_tok + out_tok
@@ -145,7 +152,7 @@ class NovelAnalyzer:
             result = self._parse_response(response, chapter_number, parsed_cache[0])
             if result is None:
                 logger.error(f"第{chapter_number}章JSON解析失败，LLM响应前800字符:\n{response[:800]}")
-                return None, (in_tok, out_tok)
+                return None, (in_tok, out_tok), retry_info
 
             result.raw_response = response
             result.block_size = block_size
@@ -154,12 +161,12 @@ class NovelAnalyzer:
             logger.debug(f"第{chapter_number}章 result 已在内存中")
 
             logger.info(f"第{chapter_number}章分析完成")
-            return result, (in_tok, out_tok)
+            return result, (in_tok, out_tok), retry_info
 
         except Exception as e:
             logger.error(f"第{chapter_number}章分析异常: {e}", exc_info=True)
             # 尽量保留已消耗的 tokens
-            return None, (0, 0)
+            return None, (0, 0), {"retries": 0, "failed_tokens": 0}
 
     def _parse_response(self, response: str, chapter_number: int,
                          pre_parsed: Optional[dict] = None) -> Optional[AnalysisResult]:

@@ -334,6 +334,8 @@ class AnalysisService:
         self._token_stats: Dict[str, Dict[str, int]] = {}
         # 每章统计记录 [(chapter, elapsed, input_tokens, output_tokens)]
         self._chapter_stats: List[Dict[str, Any]] = []
+        self._total_retries = 0
+        self._total_failed_tokens = 0
         self._analysis_start_time: float = 0.0
         # 启动时自动扫描工作区
         self._auto_scan_workspace()
@@ -359,7 +361,22 @@ class AnalysisService:
             "chapter_stats": self._chapter_stats[-200:],  # 最近200章
             "elapsed": elapsed,
             "running": self.is_running,
+            "total_retries": self._total_retries,
+            "total_failed_tokens": self._total_failed_tokens,
         }
+
+    def _record_chapter_stat(self, payload: dict) -> None:
+        """记录每章统计（含重试成本），供 /api/analysis/token_stats 展示"""
+        self._chapter_stats.append({
+            "chapter": payload.get("chapter", 0),
+            "elapsed": payload.get("elapsed", 0),
+            "input_tokens": payload.get("input_tokens", 0),
+            "output_tokens": payload.get("output_tokens", 0),
+            "retries": payload.get("retries", 0),
+            "failed_tokens": payload.get("failed_tokens", 0),
+        })
+        self._total_retries += payload.get("retries", 0) or 0
+        self._total_failed_tokens += payload.get("failed_tokens", 0) or 0
 
     @property
     def workspace_path(self) -> Path:
@@ -423,6 +440,8 @@ class AnalysisService:
         self._stop_requested = False
         self._token_stats = {}
         self._chapter_stats = []
+        self._total_retries = 0
+        self._total_failed_tokens = 0
         self._analysis_start_time = time.time()
         self._runner_task = asyncio.create_task(self._run_queue())
         return True
@@ -516,12 +535,7 @@ class AnalysisService:
                 })
                 # 记录每章统计
                 if status == "done":
-                    self._chapter_stats.append({
-                        "chapter": payload.get("chapter", 0),
-                        "elapsed": payload.get("elapsed", 0),
-                        "input_tokens": payload.get("input_tokens", 0),
-                        "output_tokens": payload.get("output_tokens", 0),
-                    })
+                    self._record_chapter_stat(payload)
 
         async def on_token_stats(payload: dict) -> None:
             # 累积分类 token 统计
