@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 让 LLM 畸形 JSON 能自动修复且重试提示更精准；把重试次数/失败 token 成本展示到统计面板；完成项目 git 初始化。
+**Goal:** 让 LLM 畸形 JSON 能自动修复（兜底增强，不做重试提示改动）；把重试次数/失败 token 成本展示到统计面板；完成项目 git 初始化。
 
-**Architecture:** 后端解析链新增漏引号定向修复策略（json_utils）+ 解析失败时携带行号诊断、重试提示附出错原文片段（analyzer）；llm_client 增加尝试次数计数器，analyzer→pipeline→queue_service 逐层透传 retry_info 到 token_stats API，前端统计面板展示并去掉运行中门控；git 已初始化完成（验证即可）。
+**Architecture:** 后端解析链新增漏引号定向修复策略（json_utils），`safe_parse_json` 委托 `parse_json_robust` 后对既有调用方自动生效；llm_client 增加尝试次数计数器，analyzer→pipeline→queue_service 逐层透传 retry_info 到 token_stats API，前端统计面板展示并去掉运行中门控；git 已初始化完成（验证即可）。
 
 **Tech Stack:** Python 3.13 / FastAPI / Vue 3 + TS / pytest / json5 / json_repair
 
@@ -14,7 +14,7 @@
 - Windows 环境，PowerShell 命令用 `pwsh`；pytest 运行命令：`python -m pytest backend/tests -q`（在项目根执行）。
 - 前端类型检查：`npx vue-tsc --noEmit`（在 `frontend/` 执行）。
 - 所有新代码遵循现有风格：不加注释之外的装饰性改动；**不引入新依赖**（json5/json_repair 已可用）。
-- `safe_parse_json` 的公开签名 `(text) -> Optional[dict]` 不得改变（其他调用方依赖）；新增 `parse_json_robust` 供 analyzer 使用。
+- `safe_parse_json` 的公开签名 `(text) -> Optional[dict]` 不得改变（其他调用方依赖）；新增 `parse_json_robust`，`safe_parse_json` 内部委托，修复链对 analyzer 等既有调用方自动生效。
 - 每次任务结束提交 git（身份已配置：novel-analyzer / dev@local，仓库级）。
 - **不得提交** config.json、*.log、workspace/、queue_state.json（.gitignore 已排除）。
 
@@ -325,166 +325,7 @@ git commit -m "feat: json 漏引号定向修复 + parse_json_robust 诊断信息
 
 ---
 
-### Task 3: analyzer 重试提示增强（错误位置 + 原文片段）
-
-**Files:**
-- Modify: `backend/core/analyzer.py`
-- Test: `backend/tests/test_json_repair.py`（追加）
-
-**Interfaces:**
-- Consumes: `parse_json_robust(text) -> (dict|None, detail|None)`（Task 2）
-- Produces:
-  - `extract_snippet(raw: str, detail: str, width: int = 60) -> str`（模块级函数）
-  - `analyze_chapter` 的 `validate_json_response` 返回带行号的失败原因；`build_retry_messages` 提示含出错原文片段
-
-- [ ] **Step 1: 写失败测试（extract_snippet 纯函数）**
-
-追加到 `backend/tests/test_json_repair.py`：
-
-```python
-def test_extract_snippet_with_line():
-    """能从诊断信息中的行号截取出错原文片段"""
-    from backend.core.analyzer import extract_snippet
-    raw = 'line1\n{"a": 1, "b": "x"\n"c": 2}'
-    detail = "Expecting ',' delimiter: line 3 column 1 (char 20)"
-    s = extract_snippet(raw, detail)
-    assert '"c": 2' in s
-
-
-def test_extract_snippet_no_position():
-    """诊断无行号时不产生片段"""
-    from backend.core.analyzer import extract_snippet
-    assert extract_snippet('{"a": 1}', "JSON解析失败") == ""
-    assert extract_snippet("", "line 3") == ""
-```
-
-- [ ] **Step 2: 运行测试确认失败**
-
-```bash
-python -m pytest backend/tests/test_json_repair.py -k extract_snippet -v
-```
-
-期望：FAIL（`ImportError: cannot import name 'extract_snippet'`）
-
-- [ ] **Step 3: 实现**
-
-在 `backend/core/analyzer.py`：
-
-a) 顶部导入增加 `re`：
-
-```python
-import logging
-import re
-from typing import Optional, Tuple
-```
-
-b) 模块级新增（放在 `logger = logging.getLogger(__name__)` 之后）：
-
-```python
-_SNIPPET_LINE_RE = re.compile(r"line (\d+)")
-
-
-def extract_snippet(raw: str, detail: str, width: int = 60) -> str:
-    """从原始输出中截取错误位置附近的片段，用于重试提示"""
-    if not raw:
-        return ""
-    m = _SNIPPET_LINE_RE.search(detail or "")
-    if not m:
-        return ""
-    line_no = int(m.group(1))
-    lines = raw.splitlines()
-    line = lines[line_no - 1].strip() if 0 < line_no <= len(lines) else raw[-200:].strip()
-    if len(line) > width:
-        line = line[:width] + "..."
-    return f"出错位置原文：{line}。"
-```
-
-c) `analyze_chapter` 内修改：
-
-- 导入改为使用 `parse_json_robust`：
-
-```python
-from ..utils.json_utils import extract_json_from_text, parse_json_robust
-```
-
-（原 `safe_parse_json` 导入删除）
-
-- 闭包新增（`parsed_cache = [None]` 附近）：
-
-```python
-            parsed_cache = [None]
-            last_raw = [""]
-```
-
-- `validate_json_response` 替换为：
-
-```python
-            def validate_json_response(response: str) -> Tuple[bool, str]:
-                """验证LLM响应是否能成功解析为JSON，并检查必须字段"""
-                logger.debug(f"开始验证响应（长度={len(response)}字符）")
-                json_str = extract_json_from_text(response)
-                if json_str is None:
-                    return False, "无法从响应中提取JSON"
-                last_raw[0] = json_str
-                data, parse_detail = parse_json_robust(json_str)
-                if data is None:
-                    return False, f"JSON解析失败: {parse_detail}"
-                # 检查必须字段是否存在且非空
-                required_fields = ["core_events", "cross_block", "long_context_insights"]
-                missing = [k for k in required_fields if k not in data]
-                if missing:
-                    note = f"（{parse_detail}）" if parse_detail else ""
-                    return False, f"JSON缺少必须字段: {missing}{note}"
-                # cross_block.summary 是最重要的字段，必须非空
-                cb = data.get("cross_block", {})
-                if not isinstance(cb, dict) or not cb.get("summary"):
-                    return False, "cross_block.summary 为空或类型错误"
-                # core_events 必须是列表
-                ce = data.get("core_events", [])
-                if not isinstance(ce, list):
-                    return False, f"core_events 应为列表，实际为 {type(ce).__name__}"
-                parsed_cache[0] = data
-                logger.debug(f"响应验证通过（{len(data)}个顶层字段）")
-                return True, ""
-```
-
-- `build_retry_messages` 替换为：
-
-```python
-            def build_retry_messages(validation_error: str, current_messages: list) -> list:
-                """在user message末尾追加带错误位置的格式修正提示"""
-                snippet = extract_snippet(last_raw[0], validation_error)
-                hint = (f"\n\n[系统提示] 上次输出JSON解析失败：{validation_error}。{snippet}"
-                        f"请严格输出合法JSON：所有键和字符串必须用双引号包裹，"
-                        f"无尾逗号、无Markdown代码块，确保包含core_events、cross_block、"
-                        f"long_context_insights等必须字段。")
-                retry_msgs = [dict(m) for m in current_messages]
-                for msg in reversed(retry_msgs):
-                    if msg.get("role") == "user":
-                        msg["content"] = msg["content"] + hint
-                        break
-                return retry_msgs
-```
-
-- [ ] **Step 4: 运行测试确认通过**
-
-```bash
-python -m pytest backend/tests/test_json_repair.py -k extract_snippet -v
-```
-
-期望：PASS（2 个新测试）
-
-- [ ] **Step 5: 全量回归 + Commit**
-
-```bash
-python -m pytest backend/tests -q
-git add backend/core/analyzer.py backend/tests/test_json_repair.py
-git commit -m "feat: 重试提示携带JSON错误行号与原文片段"
-```
-
----
-
-### Task 4: llm_client 尝试次数计数器（TDD）
+### Task 3: llm_client 尝试次数计数器（TDD）
 
 **Files:**
 - Modify: `backend/core/llm_client.py`
@@ -587,14 +428,14 @@ git commit -m "feat: llm_client 累计 total_attempts 计数器"
 
 ---
 
-### Task 5: analyzer 3 元组返回 + pipeline/queue_service 透传（TDD）
+### Task 4: analyzer 3 元组返回 + pipeline/queue_service 透传（TDD）
 
 **Files:**
 - Modify: `backend/core/analyzer.py`、`backend/core/pipeline.py`、`backend/services/queue_service.py`
 - Test: `backend/tests/test_queue_service.py`（追加）
 
 **Interfaces:**
-- Consumes: `get_stats()["total_attempts"]`、`get_stats()["failed_tokens"]`（Task 4）
+- Consumes: `get_stats()["total_attempts"]`、`get_stats()["failed_tokens"]`（Task 3）
 - Produces:
   - `analyze_chapter(...) -> (result, ch_tokens, retry_info)`；retry_info = `{"retries": int, "failed_tokens": int}`（失败时 result 为 None，retry_info 照常返回）
   - pipeline `_analyze_one_block -> (success, elapsed, ch_tokens, result, retry_info)`
@@ -928,13 +769,13 @@ git commit -m "feat: 重试成本统计透传（analyzer→pipeline→token_stat
 
 ---
 
-### Task 6: 前端统计面板展示重试成本
+### Task 5: 前端统计面板展示重试成本
 
 **Files:**
 - Modify: `frontend/src/api/client.ts`、`frontend/src/pages/StatsPage.vue`
 
 **Interfaces:**
-- Consumes: `token_stats` API 新字段（Task 5）
+- Consumes: `token_stats` API 新字段（Task 4）
 - Produces: 统计面板重试成本可视化
 
 - [ ] **Step 1: 扩展类型定义**
@@ -1043,7 +884,7 @@ git commit -m "feat: 统计面板展示重试次数与失败token成本"
 
 ---
 
-### Task 7: 集成验证与收尾
+### Task 6: 集成验证与收尾
 
 **Files:**
 - 验证全部改动
@@ -1054,7 +895,7 @@ git commit -m "feat: 统计面板展示重试次数与失败token成本"
 python -m pytest backend/tests -q
 ```
 
-期望：全绿（旧 27 + 新 11 = 38）
+期望：全绿（旧 27 + 新 9 = 36）
 
 - [ ] **Step 2: 前端类型检查**
 
@@ -1094,6 +935,6 @@ git commit -m "chore: 集成验证收尾" 2>$null
 
 ## 计划自查记录
 
-- **Spec 覆盖**：① 畸形 JSON（Task 2 修复 + Task 3 提示增强）✓；② 重试成本（Task 4 计数器 → Task 5 透传 → Task 6 展示 + 结束后可见）✓；③ git（Task 1 验证，已初始化）✓
+- **Spec 覆盖**：① 畸形 JSON（Task 2 修复链，经 `safe_parse_json` 委托全局生效；重试提示增强已按用户决定取消）✓；② 重试成本（Task 3 计数器 → Task 4 透传 → Task 5 展示 + 结束后可见）✓；③ git（Task 1 验证，已初始化）✓
 - **占位符扫描**：无 TBD/TODO；每个代码步骤含完整代码
-- **类型一致性**：`parse_json_robust`/`repair_missing_quotes`/`extract_snippet`/`_record_chapter_stat` 在定义处与消费处签名一致；`_analyze_one_block` 5 元组、`_handle_block_outcome` 的 `retry_info` kwarg 在所有调用点（预热/worker）一致
+- **类型一致性**：`parse_json_robust`/`repair_missing_quotes`/`_record_chapter_stat` 在定义处与消费处签名一致；`_analyze_one_block` 5 元组、`_handle_block_outcome` 的 `retry_info` kwarg 在所有调用点（预热/worker）一致

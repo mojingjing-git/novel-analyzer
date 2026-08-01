@@ -2,6 +2,7 @@
 
 日期：2026-08-01
 状态：已获用户批准（2026-08-01）
+范围修订（2026-08-01，用户决定）：取消「重试提示增强」（原 analyzer.py 一节）。畸形 JSON 兜底修复保留——`safe_parse_json` 委托 `parse_json_robust` 后，修复链对所有既有调用方自动生效，无需改 analyzer 的提示逻辑。
 
 ## 背景
 
@@ -22,12 +23,12 @@
 
 `safe_parse_json` 末尾追加策略 8：`repair_missing_quotes` → 重试 `json.loads` → 重试 json5。仍失败返回 None。
 
-### analyzer.py（重试提示增强）
+### analyzer.py（重试提示增强 — 已取消）
 
-- `validate_json_response` 中解析失败时返回带位置的信息：改用 `json_utils.parse_json_robust(text)`（新增），返回 `(dict|None, detail: str|None)`，detail 为最后一次 JSONDecodeError 的行/列（如 `Expecting property name enclosed in double quotes (line 1, col 45)`）及是否经修复后成功。
-- `safe_parse_json` 保持签名不变（包装 `parse_json_robust` 只取 dict），供其他调用方使用。
-- `build_retry_messages` 的提示升级为：「上次输出JSON解析失败：{detail}；出错位置附近原文：{snippet}」。snippet 通过闭包捕获的原始响应，按 detail 中的 line 定位取前后约 60 字符。
-- 修复成功但必填字段校验失败时，detail 包含「已自动修复JSON，但缺少字段 X」。
+- ~~`validate_json_response` 中解析失败时返回带位置的信息：改用 `json_utils.parse_json_robust(text)`（新增），返回 `(dict|None, detail: str|None)`，detail 为最后一次 JSONDecodeError 的行/列（如 `Expecting property name enclosed in double quotes (line 1, col 45)`）及是否经修复后成功。~~
+- `safe_parse_json` 保持签名不变（包装 `parse_json_robust` 只取 dict），供其他调用方使用——修复链因此对所有既有调用方自动生效。
+- ~~`build_retry_messages` 的提示升级为：「上次输出JSON解析失败：{detail}；出错位置附近原文：{snippet}」。snippet 通过闭包捕获的原始响应，按 detail 中的 line 定位取前后约 60 字符。~~
+- ~~修复成功但必填字段校验失败时，detail 包含「已自动修复JSON，但缺少字段 X」。~~
 
 ### 测试
 
@@ -98,7 +99,7 @@
 
 ## 范围外（YAGNI）
 
-- 不做 LLM 提示词大改（仅重试提示增强）。
+- 不做 LLM 提示词大改（重试提示增强已按用户决定取消）。
 - 不做历史报告文件持久化（用户已选「面板+每章+结束后可见」）。
 - 不引入远程仓库/CI。
 - 不处理 330s 硬超时与上下文切块（另行评估）。
