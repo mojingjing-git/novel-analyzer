@@ -39,6 +39,8 @@ export interface ChapterStat {
   elapsed: number
   input_tokens: number
   output_tokens: number
+  retries?: number
+  failed_tokens?: number
 }
 
 export interface TokenStatsResponse {
@@ -46,6 +48,8 @@ export interface TokenStatsResponse {
   chapter_stats: ChapterStat[]
   elapsed: number
   running: boolean
+  total_retries?: number
+  total_failed_tokens?: number
 }
 
 export interface AppConfigDto {

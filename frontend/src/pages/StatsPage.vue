@@ -8,12 +8,10 @@ let timer: ReturnType<typeof setInterval> | null = null
 
 async function refresh() {
   try {
-    // 先查 analysis 状态，仅在运行时才取 token_stats
+    // 运行状态与统计分离：结束后也能查看本次完整统计
     const status = await api.analysisStatus()
     running.value = status?.running ?? false
-    if (running.value) {
-      stats.value = await api.getTokenStats()
-    }
+    stats.value = await api.getTokenStats()
   } catch (e) { console.error(e) }
 }
 onMounted(() => { refresh(); timer = setInterval(refresh, 5000) })
@@ -32,6 +30,8 @@ const totalOut = computed(() => categoryRows.value.reduce((s, r) => s + r.output
 const totalElapsed = computed(() => stats.value?.elapsed?.toFixed(0) || '0')
 const totalChapters = computed(() => stats.value?.chapter_stats?.length || 0)
 const totalOutputTokens = computed(() => stats.value?.chapter_stats?.reduce((s, c) => s + (c.output_tokens || 0), 0) || 0)
+const totalRetries = computed(() => stats.value?.total_retries || 0)
+const totalFailedTokens = computed(() => stats.value?.total_failed_tokens || 0)
 const avgTps = computed(() => {
   const chapters = stats.value?.chapter_stats || []
   const totalTime = chapters.reduce((s, c) => s + (c.elapsed || 0), 0)
@@ -42,7 +42,13 @@ const avgTps = computed(() => {
 
 <template>
   <div class="space-y-4 p-4">
-    <h2 class="section-title">统计面板</h2>
+    <h2 class="section-title">
+      统计面板
+      <span
+        class="ml-2 px-2 py-0.5 rounded-full text-xs align-middle"
+        :class="running ? 'bg-green-100 text-green-600' : 'bg-gray-100 text-gray-500'"
+      >{{ running ? '运行中' : '已结束' }}</span>
+    </h2>
     <div v-if="stats" class="bg-white border border-gray-200 rounded-lg overflow-hidden">
       <div class="px-4 py-2.5 text-sm font-semibold" style="border-bottom: 1px solid var(--glass-border-subtle); letter-spacing: -0.01em">分类 Token 汇总</div>
       <table class="glass-table">
@@ -73,11 +79,13 @@ const avgTps = computed(() => {
         </tbody>
       </table>
     </div>
-    <div v-if="stats" class="grid grid-cols-4 gap-3">
+    <div v-if="stats" class="grid grid-cols-3 gap-3">
       <div class="bg-white border border-gray-200 rounded-lg p-3 text-center"><div class="text-xl font-bold text-cyan-500">{{ totalChapters }}</div><div class="text-xs" style="color: var(--color-system-gray)">总章数</div></div>
       <div class="bg-white border border-gray-200 rounded-lg p-3 text-center"><div class="text-xl font-bold text-green-500">{{ totalElapsed }}s</div><div class="text-xs" style="color: var(--color-system-gray)">累计耗时</div></div>
       <div class="bg-white border border-gray-200 rounded-lg p-3 text-center"><div class="text-xl font-bold text-blue-500">{{ totalOutputTokens.toLocaleString() }}</div><div class="text-xs" style="color: var(--color-system-gray)">输出 Tokens</div></div>
       <div class="bg-white border border-gray-200 rounded-lg p-3 text-center"><div class="text-xl font-bold text-purple-500">{{ avgTps }}</div><div class="text-xs" style="color: var(--color-system-gray)">平均 t/s</div></div>
+      <div class="bg-white border border-gray-200 rounded-lg p-3 text-center"><div class="text-xl font-bold text-amber-500">{{ totalRetries }}</div><div class="text-xs" style="color: var(--color-system-gray)">重试次数</div></div>
+      <div class="bg-white border border-gray-200 rounded-lg p-3 text-center"><div class="text-xl font-bold text-red-500">{{ totalFailedTokens.toLocaleString() }}</div><div class="text-xs" style="color: var(--color-system-gray)">失败Tokens·已扣费</div></div>
     </div>
     <div v-if="stats?.chapter_stats?.length" class="bg-white border border-gray-200 rounded-lg overflow-hidden">
       <div class="px-4 py-2.5 text-sm font-semibold" style="border-bottom: 1px solid var(--glass-border-subtle); letter-spacing: -0.01em">每章统计 ({{ stats.chapter_stats.length }}章)</div>
@@ -88,6 +96,8 @@ const avgTps = computed(() => {
             <th class="px-2 py-1 text-left">耗时(s)</th>
             <th class="px-2 py-1 text-left">输入Tokens</th>
             <th class="px-2 py-1 text-left">输出Tokens</th>
+            <th class="px-2 py-1 text-left">重试</th>
+            <th class="px-2 py-1 text-left">失败Token</th>
             <th class="px-2 py-1 text-left">t/s</th>
           </tr>
         </thead>
@@ -97,6 +107,8 @@ const avgTps = computed(() => {
             <td class="px-2 py-1">{{ s.elapsed?.toFixed(1) }}</td>
             <td class="px-2 py-1">{{ s.input_tokens }}</td>
             <td class="px-2 py-1">{{ s.output_tokens }}</td>
+            <td class="px-2 py-1">{{ s.retries ?? 0 }}</td>
+            <td class="px-2 py-1">{{ (s.failed_tokens ?? 0).toLocaleString() }}</td>
             <td class="px-2 py-1">{{ s.elapsed > 0 ? (s.output_tokens / s.elapsed).toFixed(1) : '-' }}</td>
           </tr>
         </tbody>
