@@ -205,6 +205,8 @@ class AnalysisPipeline:
         self.all_results: list = []  # 累积分析结果，末尾不再重读磁盘
         self._on_progress = on_progress
         self._on_token_stats = on_token_stats
+        self._block_map: dict = {}  # block_id -> 实际章号列表（补跑时按原块恢复）
+        self._rolling_early: int = ROLLING_EARLY_CHAPTERS  # 滚动摘要首生成阈值（可自适应）
 
     async def _emit(self, payload: dict) -> None:
         """发进度（替代旧 progress.emit）"""
@@ -255,6 +257,12 @@ class AnalysisPipeline:
         if not all_chapters:
             raise RuntimeError("未找到章节文件（需要1.txt, 2.txt等格式）")
 
+        # 滚动摘要首生成阈值自适应（QUA-2）：短书按总章数 1/3 触发（否则全书
+        # 分析完都不会生成结构化滚动摘要，prompt 缺失"全书主线概要"层）；
+        # 长书维持配置值（默认 100 章）。
+        cfg_early = self.config.analysis.rolling_early_chapters or ROLLING_EARLY_CHAPTERS
+        self._rolling_early = min(cfg_early, max(30, len(all_chapters) // 3))
+
         # 3. 确定分析范围
         if self.end_chapter is None or self.end_chapter > all_chapters[-1]:
             self.end_chapter = all_chapters[-1]
@@ -264,12 +272,15 @@ class AnalysisPipeline:
             if self.start_chapter <= c <= self.end_chapter
         ]
 
-        # 3a. 块化：将连续章节合并为分析块
+        # 3a. 块化：将连续章节合并为分析块（按"实际存在的章号"切块）
         block_size = max(1, self.config.analysis.block_size)
         blocks = []
         for i in range(0, len(chapters_to_analyze), block_size):
             block_chapters = chapters_to_analyze[i:i + block_size]
             blocks.append((block_chapters[0], block_chapters))
+        # 保存块 -> 实际章号映射：断号目录下 read_block 必须按实际章号读（P0-4），
+        # 补跑阶段 block_chs=None 时也据此恢复原块内容。
+        self._block_map = {bid: chs for bid, chs in blocks}
 
         total = len(blocks)
         logger.info(f"共{total}块待分析（每块{block_size}章），并发数: {self.config.analysis.concurrency}")
@@ -417,7 +428,8 @@ class AnalysisPipeline:
                 if self._stop_requested:
                     return block_id, block_chs, False, 0.0, (0, 0), None, {"retries": 0, "failed_tokens": 0}, True
                 success, elapsed, ch_tokens, result, retry_info = await self._analyze_one_block(
-                    analyzer, self.file_processor, state, block_id, block_size)
+                    analyzer, self.file_processor, state, block_id, block_chs,
+                    block_size=block_size)
                 return block_id, block_chs, success, elapsed, ch_tokens, result, retry_info, False
 
         tasks = [asyncio.create_task(_worker(bid, chs)) for bid, chs in remaining]
@@ -547,7 +559,13 @@ class AnalysisPipeline:
             except Exception as e:
                 logger.warning(f"生成汇总报告失败: {e}")
 
-        # 11. 完成
+        # 11. 完成前释放章节内容缓存（全书内容无界常驻内存，分析结束即清空）
+        try:
+            self.file_processor.clear_cache()
+        except Exception:
+            pass
+
+        # 12. 完成
         logger.info(f"分析任务完成，成功{total_analyzed}块，失败{len(failed_chapters)}块")
         return {
             "stopped": self._stop_requested,
@@ -557,15 +575,21 @@ class AnalysisPipeline:
         }
 
     async def _analyze_one_block(self, analyzer, file_processor, state,
-                                 block_id: int, block_size: int) -> tuple:
+                                 block_id: int, block_chs=None,
+                                 block_size: int = 1) -> tuple:
         """
         分析单个块的公共逻辑（预热/并发/补跑共用）。
         纯分析+保存，不 emit progress（由调用方负责）。
 
+        Args:
+            block_chs: 本块实际章号列表；None 时回退到 _block_map（补跑场景），
+                       再回退 [block_id]（兼容旧调用）。
+
         Returns:
             (success, elapsed, ch_tokens, result, retry_info)
         """
-        content = await asyncio.to_thread(file_processor.read_block, block_id, block_size)
+        chs = block_chs or self._block_map.get(block_id) or [block_id]
+        content = await asyncio.to_thread(file_processor.read_block, chs)
         if content is None:
             state.add_failed(block_id, "读取失败")
             return False, 0.0, (0, 0), None, {"retries": 0, "failed_tokens": 0}
@@ -611,7 +635,8 @@ class AnalysisPipeline:
             })
 
         success, elapsed, ch_tokens, result, retry_info = await self._analyze_one_block(
-            self._analyzer, self.file_processor, self.state, block_id, block_size
+            self._analyzer, self.file_processor, self.state, block_id, block_chs,
+            block_size=block_size,
         )
 
         success, new_completed = await self._handle_block_outcome(
@@ -640,7 +665,8 @@ class AnalysisPipeline:
             completed_count += 1
             self.all_results.append(result)
             # 剔除 raw_response 再广播：否则每个 block_done 携带整段原文（可达 13 万 token），
-            # WS 带宽与前端内存都会被拖垮；raw_response 仅落盘用，前端按需从 /api/books 拉取。
+            # WS 带宽与前端内存都会被拖垮；raw_response 仅保存在内存 result 中，
+            # 落盘与广播均剔除（详见 memory_state.flush_to_disk，前端经 /api/books 读取结构化结果）。
             result_dict = result.to_dict() if result else None
             if isinstance(result_dict, dict):
                 result_dict.pop("raw_response", None)
@@ -732,9 +758,9 @@ class AnalysisPipeline:
         else:
             rolling_data = {}
 
-        # 3. 首次生成（跨过 ROLLING_EARLY_CHAPTERS 边界）
+        # 3. 首次生成（跨过 self._rolling_early 边界；阈值按书长自适应，见 run()）
         has_structured = bool(rolling_data.get("rolling_structured"))
-        if not has_structured and max_chapter >= ROLLING_EARLY_CHAPTERS:
+        if not has_structured and max_chapter >= self._rolling_early:
             await self._generate_early_summary(rolling_client, output_dir, rolling_data, state)
 
         # 3a. 检测旧格式降级（_legacy_text），触发重新初始化
@@ -902,7 +928,7 @@ class AnalysisPipeline:
                     early_results.append(state.results[ch].to_dict())
                 except Exception:
                     pass
-                if len(early_results) >= ROLLING_EARLY_CHAPTERS:
+                if len(early_results) >= self._rolling_early:
                     break
 
         if not early_results:
@@ -946,11 +972,11 @@ class AnalysisPipeline:
                     early_results.append(state.results[ch].to_dict())
                 except Exception as e:
                     logger.warning(f"早期摘要：获取章节 {ch} 失败: {e}")
-                if len(early_results) >= ROLLING_EARLY_CHAPTERS:
+                if len(early_results) >= self._rolling_early:
                     break
 
         if not early_results:
-            logger.warning(f"早期摘要：第1-{ROLLING_EARLY_CHAPTERS}章无 result 数据")
+            logger.warning(f"早期摘要：第1-{self._rolling_early}章无 result 数据")
             return
 
         # 轻量预处理：只取 summary + world_building + unresolved_questions
@@ -978,7 +1004,7 @@ class AnalysisPipeline:
                     if state:
                         async with state._rolling_lock:
                             state.rolling.update(rolling_data)
-                    logger.info(f"早期结构化摘要已生成（第1-{ROLLING_EARLY_CHAPTERS}章，"
+                    logger.info(f"早期结构化摘要已生成（第1-{self._rolling_early}章，"
                                 f"里程碑{len(new_structured.get('global_milestones', []))}条）")
                     return
             logger.warning(f"早期摘要 JSON 解析失败: {content[:200]}")

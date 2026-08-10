@@ -10,14 +10,28 @@ import type { LogEntry } from '../api/useProgressSocket'
 const STORAGE_KEY = 'novel-analyzer-logs'
 const MAX_LOGS = 2000
 
+// 旧数据迁移：早期版本没有 source 字段，Python logging 转发的日志格式为
+// "2026-08-07 10:00:00 [INFO] backend.core.pipeline: ..."，据此把旧技术日志
+// 标记为 python，让"简化日志"面板能正确过滤掉历史会话的技术噪音。
+const PYTHON_LOG_RE = /\[(INFO|WARN|ERROR|DEBUG)\]/
+
+function migrateSource(entry: LogEntry): LogEntry {
+  if (!entry.source && PYTHON_LOG_RE.test(entry.text || '')) {
+    return { ...entry, source: 'python' }
+  }
+  return entry
+}
+
 function loadFromStorage(): LogEntry[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) {
       const parsed = JSON.parse(raw)
       if (Array.isArray(parsed)) {
-        // 过滤掉无效条目
-        return parsed.filter(x => x && typeof x.text === 'string')
+        // 过滤掉无效条目 + 旧数据来源迁移
+        return parsed
+          .filter(x => x && typeof x.text === 'string')
+          .map(migrateSource)
       }
     }
   } catch (e) {
@@ -56,9 +70,9 @@ watch(
 
 export function useLogStore() {
   /** 追加一条日志 */
-  function add(text: string, kind: LogEntry['kind'] = 'info', category: string = 'analysis') {
+  function add(text: string, kind: LogEntry['kind'] = 'info', category: string = 'analysis', source?: string) {
     if (!text) return
-    logs.value.push({ id: nextId++, text, kind, category } as LogEntry & { category?: string })
+    logs.value.push({ id: nextId++, text, kind, category, source } as LogEntry & { category?: string })
     if (logs.value.length > MAX_LOGS) {
       // 保留最新的 MAX_LOGS 条
       logs.value.splice(0, logs.value.length - MAX_LOGS)

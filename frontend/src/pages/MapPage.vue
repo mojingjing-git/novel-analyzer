@@ -126,12 +126,9 @@ const selectedLocation = computed(() => {
   return layout.value.positions[selected.value] || null
 })
 
-const typeColors: Record<string, string> = {
-  region: '#22c55e',
-  city: '#3b82f6',
-  building: '#a855f7',
-  natural: '#10b981',
-  other: '#6b7280',
+// 地点类型 → CSS 类（颜色走系统色 token，亮暗主题自适应）
+function typeClass(t: string): string {
+  return `type-${t || 'other'}`
 }
 </script>
 
@@ -139,28 +136,79 @@ const typeColors: Record<string, string> = {
   <div class="space-y-4 p-4">
     <h2 class="section-title">地图可视化</h2>
     <BookSelector v-model="bookId" />
-    <div v-if="!bookId" class="text-gray-400">请选择书目</div>
-    <div v-else-if="locations.length === 0" class="text-gray-400">暂无数据</div>
+    <div v-if="!bookId" class="glass-card p-8 text-center text-sm" style="color: var(--text-tertiary)">请选择书目</div>
+    <div v-else-if="locations.length === 0" class="glass-card p-8 text-center text-sm" style="color: var(--text-tertiary)">暂无数据</div>
     <div v-else class="flex gap-4">
-      <div class="flex-1 bg-white border border-gray-200 rounded-lg p-4 overflow-x-auto">
-        <div class="text-sm text-gray-500 mb-2">共 {{ locations.length }} 个地点, {{ relationships.length }} 条空间关系</div>
-        <svg :width="svgWidth" :height="layout.totalHeight" class="border border-gray-100 rounded">
-          <line v-for="(line, idx) in spatialLines" :key="'spatial' + idx" :x1="line.x1" :y1="line.y1" :x2="line.x2" :y2="line.y2" stroke="#f97316" stroke-dasharray="5,3" opacity="0.4" stroke-width="1.5" />
-          <line v-for="(edge, idx) in layoutEdges" :key="'hier' + idx" :x1="edge.x1" :y1="edge.y1" :x2="edge.x2" :y2="edge.y2" stroke="#ccc" stroke-width="1.5" />
-          <g v-for="(pos, name) in layout.positions" :key="name" @click="selected = selected === name ? null : name" class="cursor-pointer">
-            <circle :cx="pos.x" :cy="pos.y" :r="selected === name ? 10 : 7" :fill="selected === name ? '#66dae9' : (typeColors[pos.type] || '#22c55e')" fill-opacity="0.3" :stroke="selected === name ? '#66dae9' : (typeColors[pos.type] || '#22c55e')" stroke-width="2" />
-            <text :x="pos.x + 12" :y="pos.y + 4" class="fill-gray-700" style="font-size: 12px">{{ pos.name }}</text>
-            <text v-if="pos.type" :x="pos.x + 12" :y="pos.y + 18" class="fill-gray-400" style="font-size: 9px">{{ pos.type }}</text>
-          </g>
-        </svg>
+      <div class="flex-1 glass-card p-4 overflow-x-auto">
+        <div class="text-sm mb-2" style="color: var(--text-secondary)">共 {{ locations.length }} 个地点, {{ relationships.length }} 条空间关系</div>
+        <div class="viz-stage">
+          <svg :width="svgWidth" :height="layout.totalHeight">
+            <line
+              v-for="(line, idx) in spatialLines"
+              :key="'spatial' + idx"
+              class="viz-spatial"
+              :x1="line.x1" :y1="line.y1" :x2="line.x2" :y2="line.y2"
+              stroke-dasharray="5,3" opacity="0.45" stroke-width="1.5"
+            />
+            <line
+              v-for="(edge, idx) in layoutEdges"
+              :key="'hier' + idx"
+              class="viz-edge"
+              :x1="edge.x1" :y1="edge.y1" :x2="edge.x2" :y2="edge.y2"
+              stroke-width="1.5"
+            />
+            <g
+              v-for="(pos, name) in layout.positions"
+              :key="name"
+              class="viz-loc"
+              :class="[typeClass(pos.type), { 'is-selected': selected === name }]"
+              @click="selected = selected === name ? null : name"
+            >
+              <circle :cx="pos.x" :cy="pos.y" :r="selected === name ? 10 : 7" stroke-width="2" />
+              <text :x="pos.x + 12" :y="pos.y + 4" class="viz-label" style="font-size: 12px">{{ pos.name }}</text>
+              <text v-if="pos.type" :x="pos.x + 12" :y="pos.y + 18" class="viz-type" style="font-size: 9px">{{ pos.type }}</text>
+            </g>
+          </svg>
+        </div>
       </div>
       <div v-if="selectedLocation" class="w-64 shrink-0">
-        <div class="bg-white border border-gray-200 rounded-lg p-4 space-y-2">
+        <div class="glass-card p-4 space-y-2">
           <h3 class="font-semibold pb-2" style="border-bottom: 1px solid var(--glass-border-subtle); letter-spacing: -0.01em">{{ selectedLocation.name }}</h3>
-          <div class="text-sm" style="color: var(--color-system-gray)"><span class="text-gray-400">类型:</span> {{ selectedLocation.type || '未知' }}</div>
-          <div v-if="selectedLocation.desc" class="text-sm" style="color: var(--color-system-gray)"><span class="text-gray-400">描述:</span> {{ selectedLocation.desc }}</div>
+          <div class="text-sm" style="color: var(--text-secondary)"><span style="color: var(--text-tertiary)">类型:</span> {{ selectedLocation.type || '未知' }}</div>
+          <div v-if="selectedLocation.desc" class="text-sm" style="color: var(--text-secondary)"><span style="color: var(--text-tertiary)">描述:</span> {{ selectedLocation.desc }}</div>
         </div>
       </div>
     </div>
   </div>
 </template>
+
+<style scoped>
+.viz-stage {
+  border-radius: 14px;
+  background: var(--glass-fill-subtle);
+  border: 1px solid var(--glass-border-subtle);
+  overflow: auto;
+}
+.viz-edge {
+  stroke: var(--viz-edge);
+}
+.viz-spatial {
+  stroke: var(--color-system-orange);
+}
+/* 地点类型配色：通过 CSS 自定义属性级联，选中态统一橙色高亮 */
+.viz-loc { cursor: pointer; --tc: var(--color-system-gray); }
+.viz-loc.type-region   { --tc: var(--color-system-green); }
+.viz-loc.type-city     { --tc: var(--color-system-blue); }
+.viz-loc.type-building { --tc: var(--color-system-purple); }
+.viz-loc.type-natural  { --tc: var(--color-system-teal); }
+.viz-loc.is-selected   { --tc: var(--color-system-orange); }
+.viz-loc circle {
+  fill: var(--tc);
+  fill-opacity: 0.3;
+  stroke: var(--tc);
+  transition: fill 200ms var(--ease-fluid), stroke 200ms var(--ease-fluid);
+}
+.viz-loc:hover circle { fill-opacity: 0.5; }
+.viz-label { fill: var(--text-primary); }
+.viz-type { fill: var(--text-tertiary); }
+</style>

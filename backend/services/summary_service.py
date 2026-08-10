@@ -53,12 +53,19 @@ class SummaryService:
         }
 
     def start(self, book_id: str, start_chapter: int, end_chapter: int,
-              batch_size: int, concurrency: Optional[int] = None) -> None:
-        """启动总结任务。已在运行抛 RuntimeError，书不存在抛 KeyError，无结果抛 ValueError"""
+              batch_size: int, concurrency: Optional[int] = None,
+              allow_during_analysis: bool = False) -> None:
+        """启动总结任务。已在运行抛 RuntimeError，书不存在抛 KeyError，无结果抛 ValueError
+
+        allow_during_analysis：仅供队列自动总结使用（2026-08-02 spec）——该场景在
+        队列分析任务自身的收尾阶段（_run_queue 内）调用，get_analysis_service()
+        仍为 running，但所有章节已分析完毕、result.json 已完整，读取是安全的。
+        普通用户入口（/api/summary/start）保持护栏：分析期间禁止手动总结。
+        """
         if self.is_running:
             raise RuntimeError("总结任务已在运行中")
         # 并发护栏：分析正在运行时启动总结会读取半成品 chapter_*_result.json，导致报告错乱
-        if get_analysis_service().is_running:
+        if not allow_during_analysis and get_analysis_service().is_running:
             raise RuntimeError("分析任务正在进行中，请先停止或等待其完成后再启动最终总结")
 
         output_dir = book_service.get_output_dir(book_id)

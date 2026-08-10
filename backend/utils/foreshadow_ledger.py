@@ -99,71 +99,17 @@ class ForeshadowLedger:
             return cls()
         return cls.from_dict(data)
 
-    def ingest_batch_evidence(
-        self,
-        batch_idx: int,
-        chapter_start: int,
-        chapter_end: int,
-        evidence: Dict[str, Any]
-    ) -> None:
-        """
-        从批次分析结果中提取伏笔信息并更新账本（兼容旧格式）
-        """
-        # 处理新伏笔
-        for fs in evidence.get('new_foreshadows', []):
-            fs_id = fs.get('id', '')
-            if not fs_id:
-                continue
-            existing = self._find_item(fs_id)
-            if existing:
-                existing.last_seen_chapter = chapter_end
-                existing.last_seen_batch = batch_idx
-                existing.evidence_chapters = list(set(existing.evidence_chapters + fs.get('chapters', [])))
-            else:
-                _conf_raw = fs.get('confidence', 0.8)
-                self.items.append(ForeshadowItem(
-                    id=fs_id,
-                    description=fs.get('desc', ''),
-                    first_seen_chapter=chapter_start,
-                    first_seen_batch=batch_idx,
-                    last_seen_chapter=chapter_end,
-                    last_seen_batch=batch_idx,
-                    evidence_chapters=fs.get('chapters', []),
-                    confidence=_CONFIDENCE_MAP.get(_conf_raw, 0.8) if isinstance(_conf_raw, str) else _conf_raw,
-                    source_type='llm_judged'
-                ))
-
-        # 处理已回收伏笔
-        for fs in evidence.get('resolved_foreshadows', []):
-            fs_id = fs.get('id', '')
-            if not fs_id:
-                continue
-            item = self._find_item(fs_id)
-            if item:
-                item.status = 'resolved'
-                item.resolution = fs.get('resolution', '')
-                item.resolved_chapter = fs.get('resolved_chapter', chapter_end)
-                item.resolved_batch = batch_idx
-                item.source_type = 'llm_judged'
-                item.last_seen_chapter = chapter_end
-                item.last_seen_batch = batch_idx
-
-        # 处理活跃伏笔（更新 last_seen）
-        for fs in evidence.get('active_foreshadows', []):
-            fs_id = fs.get('id', '')
-            if not fs_id:
-                continue
-            item = self._find_item(fs_id)
-            if item:
-                item.last_seen_chapter = chapter_end
-                item.last_seen_batch = batch_idx
-                item.evidence_chapters = list(set(item.evidence_chapters + fs.get('chapters', [])))
-
-    def reconcile_and_update(self, batch_idx: int) -> None:
+    def reconcile_and_update(self, batch_idx: int, current_chapter: Optional[int] = None) -> None:
         """
         批次完成后执行 reconciliation：
-        1. 检查休眠伏笔
+        1. 检查休眠伏笔（章节跨度按"当前处理进度"计算，见 current_chapter 参数）
         2. 更新状态
+
+        2026-08-07 修复（P0-2）：原实现用 self.total_chapters（全书最终章数）
+        计算"多少章未见"，长书会提前把后埋的伏笔判为休眠；应传当前批的 ch_end。
+        current_chapter 为 None 时回退旧行为（total_chapters），兼容历史调用方。
+        注意：休眠判定依赖 last_seen_batch 的单调性，调用方应保证按批次升序调用
+        （最终总结 run() 中在全部批次完成后统一按序执行一遍）。
         """
         for item in self.items:
             if item.status != 'active':
@@ -171,32 +117,14 @@ class ForeshadowLedger:
 
             # 检查休眠条件：批次不活跃 AND 章节跨度
             batch_inactive = (batch_idx - item.last_seen_batch) >= DORMANT_BATCH_THRESHOLD
-            chapter_span = (self.total_chapters - item.last_seen_chapter) >= DORMANT_CHAPTER_THRESHOLD
+            if current_chapter is not None:
+                chapter_span = (current_chapter - item.last_seen_chapter) >= DORMANT_CHAPTER_THRESHOLD
+            else:
+                chapter_span = (self.total_chapters - item.last_seen_chapter) >= DORMANT_CHAPTER_THRESHOLD
 
             if batch_inactive and chapter_span:
                 item.status = 'dormant'
                 item.notes.append(f"批次{batch_idx}时自动标记为休眠（{DORMANT_BATCH_THRESHOLD}批未见，{DORMANT_CHAPTER_THRESHOLD}章未见）")
-
-    def summary_text_for_prompt(self) -> str:
-        """
-        生成供 LLM 使用的伏笔摘要文本
-        """
-        active = [i for i in self.items if i.status == 'active']
-        dormant = [i for i in self.items if i.status == 'dormant']
-
-        lines = []
-        if active:
-            lines.append("【活跃伏笔】")
-            for item in active:
-                chapters_str = ','.join(map(str, item.evidence_chapters[:5]))
-                lines.append(f"- {item.id}: {item.description} (首次出现: 第{item.first_seen_chapter}章, 最近: 第{item.last_seen_chapter}章, 证据章节: [{chapters_str}])")
-
-        if dormant:
-            lines.append("\n【休眠伏笔（长期未出现）】")
-            for item in dormant:
-                lines.append(f"- {item.id}: {item.description} (首次出现: 第{item.first_seen_chapter}章, 最近: 第{item.last_seen_chapter}章)")
-
-        return '\n'.join(lines) if lines else "（暂无伏笔记录）"
 
     def audit_text_for_report(self) -> str:
         """
@@ -240,10 +168,6 @@ class ForeshadowLedger:
 
         return '\n'.join(lines)
 
-    def to_json(self) -> str:
-        """导出为JSON字符串"""
-        return json.dumps(self.to_dict(), ensure_ascii=False, indent=2)
-
     def _find_item(self, fs_id: str) -> Optional[ForeshadowItem]:
         """查找伏笔条目"""
         for item in self.items:
@@ -259,32 +183,3 @@ class ForeshadowLedger:
             'resolved': sum(1 for i in self.items if i.status == 'resolved'),
             'dormant': sum(1 for i in self.items if i.status == 'dormant')
         }
-
-
-def validate_batch_json(data: dict) -> Tuple[bool, str]:
-    """
-    验证批次分析结果的JSON结构（兼容新旧格式）
-
-    Returns:
-        (是否有效, 错误信息)
-    """
-    # 新格式：foreshadow_reconciliation
-    if 'foreshadow_reconciliation' in data:
-        reconciliation = data['foreshadow_reconciliation']
-        if not isinstance(reconciliation, list):
-            return False, "foreshadow_reconciliation 必须为列表类型"
-        return True, ""
-    
-    # 旧格式：foreshadow_evidence
-    if 'foreshadow_evidence' in data:
-        evidence = data['foreshadow_evidence']
-        if not isinstance(evidence, dict):
-            return False, "foreshadow_evidence 必须为字典类型"
-        for key in ['new_foreshadows', 'resolved_foreshadows', 'active_foreshadows']:
-            if key not in evidence:
-                return False, f"foreshadow_evidence 缺少字段: {key}"
-            if not isinstance(evidence.get(key), list):
-                return False, f"foreshadow_evidence.{key} 必须为列表类型"
-        return True, ""
-    
-    return False, "缺少 foreshadow_reconciliation 或 foreshadow_evidence 字段"

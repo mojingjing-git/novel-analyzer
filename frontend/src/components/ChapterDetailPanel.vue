@@ -144,7 +144,7 @@ onUnmounted(() => {
 
 <template>
   <div class="chapter-detail">
-    <div class="cd-report">
+    <div class="cd-report glass-card">
       <div v-if="!bookId" class="cd-placeholder">请先在上方选择书目</div>
       <div v-else-if="loading" class="cd-placeholder">加载中...</div>
       <div v-else-if="error" class="cd-placeholder cd-error">{{ error }}</div>
@@ -173,29 +173,13 @@ onUnmounted(() => {
   flex: 1;
   min-height: 0;
 }
-/* 液态玻璃框：与全局 .glass-card 同款视觉效果 */
+/* 液态玻璃框：直接复用全局 .glass-card（材质/边缘环/光泽带统一由其提供），这里只管布局 */
 .cd-report {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  background: var(--glass-frost);
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
-  border: 1px solid var(--glass-rim-color);
-  box-shadow: var(--glass-shadow), var(--glass-inner);
-  border-radius: var(--radius-glass-lg);
   padding: 16px 18px;
   color: var(--text-primary);
-  position: relative;
-}
-.cd-report::before {
-  content: "";
-  position: absolute;
-  inset: 0 0 auto 0;
-  height: 1px;
-  background: var(--glass-rim);
-  pointer-events: none;
-  border-radius: inherit;
 }
 .cd-placeholder {
   color: var(--text-secondary);

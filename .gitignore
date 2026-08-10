@@ -6,6 +6,8 @@ config.json
 workspace/
 queue_state.json
 *.log
+*.log.*
+*.bak
 .tmp_verify/
 
 # Python

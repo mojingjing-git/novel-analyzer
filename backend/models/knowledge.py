@@ -16,7 +16,6 @@ class KnowledgeBase:
     story_timeline: str = "故事刚开始"
     recent_summaries: List[str] = field(default_factory=list)
     compressed_arcs: List[str] = field(default_factory=list)
-    active_foreshadowing: List[str] = field(default_factory=list)
 
     character_states: Dict[str, str] = field(default_factory=dict)
     verified_facts: List[str] = field(default_factory=list)
@@ -24,7 +23,6 @@ class KnowledgeBase:
     character_relationships: Dict[str, str] = field(default_factory=dict)
     world_building: List[str] = field(default_factory=list)
     thematic_elements: List[str] = field(default_factory=list)
-    pacing_tracker: List[str] = field(default_factory=list)
     foreshadowing_network: List[str] = field(default_factory=list)
     rolling_summary: str = ""  # 兼容旧版单层摘要
     rolling_layer_early: str = ""  # 早期固定摘要（第1-N章）
@@ -75,9 +73,9 @@ class KnowledgeBase:
             return cls()
         # 对所有List[str]字段做类型归一化，防止嵌套列表/字典导致unhashable type错误
         list_str_fields = [
-            'recent_summaries', 'compressed_arcs', 'active_foreshadowing',
+            'recent_summaries', 'compressed_arcs',
             'verified_facts', 'long_term_arcs', 'world_building',
-            'thematic_elements', 'pacing_tracker', 'foreshadowing_network'
+            'thematic_elements', 'foreshadowing_network'
         ]
         normalized = {}
         for field in list_str_fields:
@@ -98,14 +96,12 @@ class KnowledgeBase:
             story_timeline=data.get('story_timeline', '故事刚开始'),
             recent_summaries=normalized['recent_summaries'],
             compressed_arcs=normalized['compressed_arcs'],
-            active_foreshadowing=normalized['active_foreshadowing'],
             character_states=character_states,
             verified_facts=normalized['verified_facts'],
             long_term_arcs=normalized['long_term_arcs'],
             character_relationships=character_relationships,
             world_building=normalized['world_building'],
             thematic_elements=normalized['thematic_elements'],
-            pacing_tracker=normalized['pacing_tracker'],
             foreshadowing_network=normalized['foreshadowing_network'],
             rolling_summary=data.get('rolling_summary', ''),
             rolling_layer_early=data.get('rolling_layer_early', ''),

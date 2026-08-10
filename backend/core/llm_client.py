@@ -16,10 +16,35 @@ from datetime import datetime
 from pathlib import Path
 from typing import Tuple, Optional, List, Callable
 from openai import AsyncOpenAI, APITimeoutError, APIError, AuthenticationError
+import anthropic
+from anthropic import AsyncAnthropic
 
 from ..config.settings import APIConfig
 
 logger = logging.getLogger(__name__)
+
+
+def detect_provider(config: APIConfig) -> str:
+    """判定请求协议格式：显式 provider 优先，否则按特征自动检测。
+
+    auto 检测规则（按序）：
+    1. base_url 含 "anthropic" → anthropic
+    2. api_key 以 "sk-ant-" 开头 → anthropic
+    3. model 以 "claude-" 开头 → anthropic
+    其余 → openai
+    """
+    if config.provider and config.provider != "auto":
+        return "openai" if config.provider == "openai" else "anthropic"
+    base = (config.base_url or "").lower()
+    key = config.api_key or ""
+    model = config.model or ""
+    if "anthropic" in base:
+        return "anthropic"
+    if key.startswith("sk-ant-"):
+        return "anthropic"
+    if model.lower().startswith("claude-"):
+        return "anthropic"
+    return "openai"
 
 
 class FailureLogger:
@@ -111,10 +136,19 @@ class LLMClient:
 
     def __init__(self, config: APIConfig):
         self.config = config
-        self.client = AsyncOpenAI(
-            base_url=config.base_url,
-            api_key=config.api_key if config.api_key else "empty"
-        )
+        self.provider = detect_provider(config)
+        if self.provider == "anthropic":
+            self.client = None
+            self.anthropic = AsyncAnthropic(
+                base_url=config.base_url or None,
+                api_key=config.api_key if config.api_key else "empty",
+            )
+        else:
+            self.anthropic = None
+            self.client = AsyncOpenAI(
+                base_url=config.base_url,
+                api_key=config.api_key if config.api_key else "empty"
+            )
         self._stats_lock = threading.Lock()
         self._request_count = 0
         self._attempts = 0
@@ -122,10 +156,13 @@ class LLMClient:
         self._failed_tokens = 0
         self._cached_tokens = 0
         self._stop_requested = False  # 外部可设置，让进行中的重试链尽快退出
+        self._stop_event = asyncio.Event()  # 触发后立即取消进行中的 API 请求
 
     def request_stop(self):
-        """请求停止：让正在进行的 chat_with_retry 重试链在下一检查点退出"""
+        """请求停止：让正在进行的 chat_with_retry 重试链在下一检查点退出，
+        并立即取消当前进行中的 API 请求（不等超时）"""
         self._stop_requested = True
+        self._stop_event.set()
 
     @staticmethod
     def _strip_thinking(content: str) -> str:
@@ -140,8 +177,32 @@ class LLMClient:
         return content.strip()
 
     @staticmethod
-    async def list_models(base_url: str, api_key: str) -> List[str]:
-        """获取API可用的模型列表"""
+    async def list_models(base_url: str, api_key: str, provider: str = "auto") -> List[str]:
+        """获取API可用的模型列表（支持 openai/anthropic 两种格式）"""
+        if provider == "anthropic" or (provider == "auto" and "anthropic" in (base_url or "").lower()):
+            # Anthropic 格式：GET /models + x-api-key 头
+            if not (base_url or "").strip():
+                logger.error("获取模型列表失败: anthropic 端点 base_url 为空")
+                return []
+            try:
+                import httpx
+                async with httpx.AsyncClient(timeout=30) as hclient:
+                    resp = await hclient.get(
+                        f"{base_url.rstrip('/')}/models",
+                        headers={
+                            "x-api-key": api_key or "",
+                            "anthropic-version": "2023-06-01",
+                        },
+                    )
+                    if resp.status_code != 200:
+                        logger.error(f"获取模型列表失败: HTTP {resp.status_code}")
+                        return []
+                    data = resp.json()
+                    ids = [str(m.get("id", "")) for m in data.get("data", []) if m.get("id")]
+                    return sorted(ids)
+            except Exception as e:
+                logger.error(f"获取模型列表失败: {e}")
+                return []
         try:
             client = AsyncOpenAI(base_url=base_url, api_key=api_key if api_key else "empty")
             result = await client.models.list()
@@ -169,6 +230,184 @@ class LLMClient:
             logger.error(f"获取模型列表失败: {e}")
             return []
 
+    @staticmethod
+    async def probe_thinking_params(base_url: str, api_key: str, model: str,
+                                    provider: str = "auto", max_tokens: int = 1024) -> dict:
+        """探测当前端点实际认哪个禁用思考参数（OpenAI 兼容端点）。
+
+        对每个候选参数发一次微请求（小 prompt，max_tokens=1024，30s 超时，
+        不走重试链/失败日志），判定依据：
+        - content 非空 且 reasoning_content 为空 → 该参数有效
+        - reasoning_content 有内容 → 思考仍在，无效
+        - content 为空但 reasoning 有内容（MiniMax 式拆字段坑）→ 无效且有害
+        - 基线请求就无思考 → 模型默认不思考，无需禁用
+
+        anthropic 协议无需探测（官方参数即 thinking:disabled）。
+
+        返回: {
+          "results": [{"param", "thinking_mode", "reasoning_chars", "content_chars", "worked", "error"}...],
+          "best": {"thinking_mode": dict} 或 None,
+          "default_thinks": bool,
+          "note": str
+        }
+        """
+        if provider == "anthropic" or (provider == "auto" and "anthropic" in (base_url or "").lower()):
+            return {
+                "results": [{
+                    "param": "thinking disabled（anthropic 官方）",
+                    "thinking_mode": {"thinking": {"type": "disabled"}},
+                    "reasoning_chars": 0, "content_chars": 0,
+                    "worked": True, "error": "",
+                }],
+                "best": {"thinking_mode": {"thinking": {"type": "disabled"}}},
+                "default_thinks": True,
+                "note": "anthropic 协议官方禁用思考参数即 thinking:disabled，无需探测",
+            }
+
+        client = AsyncOpenAI(base_url=base_url, api_key=api_key if api_key else "empty")
+        prompt = "计算 123456789 * 987654321 的结果，只输出数字。"
+
+        candidates = [
+            {"param": "无参数（基线）", "thinking_mode": None, "extra": {}},
+            {"param": "thinking: disabled", "thinking_mode": {"thinking": {"type": "disabled"}},
+             "extra": {"extra_body": {"thinking": {"type": "disabled"}}}},
+            {"param": "reasoning_effort: none", "thinking_mode": {"reasoning_effort": "none"},
+             "extra": {"extra_body": {"reasoning_effort": "none"}}},
+            {"param": "enable_thinking: false", "thinking_mode": {"enable_thinking": False},
+             "extra": {"extra_body": {"enable_thinking": False}}},
+        ]
+
+        logger.info(f"开始探测禁用思考参数 - Model: {model}, 端点: {base_url}, "
+                    f"候选 {len(candidates)} 个（并发发送，各 30s 超时）")
+
+        async def probe_one(cand: dict) -> dict:
+            reasoning_chars = 0
+            content_chars = 0
+            worked = False
+            error = ""
+            t0 = time.time()
+            try:
+                resp = await client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=max_tokens,
+                    temperature=0.1,
+                    timeout=30,
+                    **cand["extra"],
+                )
+                msg = resp.choices[0].message
+                content = msg.content or ""
+                reasoning = getattr(msg, "reasoning_content", None) or ""
+                content_chars = len(content.strip())
+                reasoning_chars = len(reasoning.strip())
+                if cand["thinking_mode"] is None:
+                    worked = None  # 基线不判定
+                elif content_chars > 0 and reasoning_chars == 0:
+                    worked = True
+                elif content_chars == 0 and reasoning_chars > 0:
+                    worked = False  # 内容被思考字段抢走（MiniMax 式拆字段坑）
+                    error = "content 为空、思考全在 reasoning_content"
+                else:
+                    worked = False
+            except Exception as e:
+                error = f"{type(e).__name__}: {str(e)[:120]}"
+            dt = time.time() - t0
+            if cand["thinking_mode"] is None:
+                logger.info(f"探测[{cand['param']}] 完成（{dt:.1f}s）: 思考 {reasoning_chars} 字 / "
+                            f"内容 {content_chars} 字（基线{'' if reasoning_chars else '，默认无思考'}）")
+            else:
+                verdict = "✅ 有效" if worked else "❌ 无效"
+                logger.info(f"探测[{cand['param']}] 完成（{dt:.1f}s）: 思考 {reasoning_chars} 字 / "
+                            f"内容 {content_chars} 字 → {verdict}"
+                            + (f"，原因: {error}" if error else ""))
+            return {
+                "param": cand["param"],
+                "thinking_mode": cand["thinking_mode"],
+                "reasoning_chars": reasoning_chars,
+                "content_chars": content_chars,
+                "worked": worked,
+                "error": error,
+            }
+
+        # 4 个候选并发发送，总耗时 ≈ 单个最慢请求
+        results = list(await asyncio.gather(*(probe_one(c) for c in candidates)))
+
+        baseline = results[0]
+        default_thinks = bool(baseline["reasoning_chars"])
+        best = None
+        note = ""
+        if not default_thinks:
+            note = "该模型默认不输出思考链，无需禁用思考"
+        else:
+            for r in results[1:]:
+                if r["worked"]:
+                    best = {"thinking_mode": r["thinking_mode"], "param": r["param"]}
+                    break
+            if best is None:
+                note = "未探测到有效的禁用思考参数（该端点/模型可能不支持关闭思考）"
+
+        if best:
+            logger.info(f"探测完成: 默认思考={default_thinks}, 推荐参数=[{best['param']}] → "
+                        f"{json.dumps(best['thinking_mode'], ensure_ascii=False)}")
+        else:
+            logger.warning(f"探测完成: 默认思考={default_thinks}, 未命中有效参数 - {note}")
+
+        return {"results": results, "best": best, "default_thinks": default_thinks, "note": note}
+
+    def _build_anthropic_payload(self, messages: List[dict], temperature: float, max_tokens: int) -> dict:
+        """Anthropic /v1/messages 载荷构造：system 提取为顶层参数，相邻同角色消息合并。"""
+        system_parts: List[str] = []
+        msgs: List[dict] = []
+        for m in messages:
+            role = str(m.get("role", "user"))
+            content = m.get("content", "")
+            if not isinstance(content, str):
+                content = json.dumps(content, ensure_ascii=False)
+            if role == "system":
+                system_parts.append(content)
+            elif role in ("user", "assistant"):
+                msgs.append({"role": role, "content": content})
+            else:
+                msgs.append({"role": "user", "content": content})
+        # Anthropic 要求 user/assistant 交替；合并相邻同角色消息
+        merged: List[dict] = []
+        for m in msgs:
+            if merged and merged[-1]["role"] == m["role"]:
+                merged[-1]["content"] += "\n\n" + m["content"]
+            else:
+                merged.append(dict(m))
+        payload: dict = {
+            "model": self.config.model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": merged,
+        }
+        if system_parts:
+            payload["system"] = "\n\n".join(system_parts)
+        # 思考控制：Anthropic 认 thinking: {"type": "enabled"/"disabled", "budget_tokens": N}。
+        # 只放行 thinking 键——残留的 enable_thinking 等 OpenAI 系字段会被 SDK 原样透传导致 API 400
+        if self.config.thinking_mode:
+            anthro_extra = {k: v for k, v in self.config.thinking_mode.items() if k == "thinking"}
+            if anthro_extra:
+                payload.update(anthro_extra)
+        return payload
+
+    @staticmethod
+    def _parse_anthropic_response(response) -> Tuple[str, int, int, int]:
+        """Anthropic 响应解析：拼接 text block，丢弃 thinking block。
+        返回 (content, input_tokens, output_tokens, cache_read_tokens)"""
+        text_parts: List[str] = []
+        for block in response.content:
+            btype = getattr(block, "type", None)
+            if btype == "text":
+                text_parts.append(getattr(block, "text", "") or "")
+        content = "".join(text_parts)
+        usage = getattr(response, "usage", None)
+        prompt_tokens = getattr(usage, "input_tokens", 0) or 0
+        completion_tokens = getattr(usage, "output_tokens", 0) or 0
+        cached_tokens = getattr(usage, "cache_read_input_tokens", 0) or 0
+        return content, prompt_tokens, completion_tokens, cached_tokens
+
     async def chat(
         self,
         messages: List[dict],
@@ -178,30 +417,89 @@ class LLMClient:
         if max_tokens is None:
             max_tokens = self.config.max_tokens
 
-        # 结构化输出：仅对远程API生效，本地模型(localhost)跳过
+        # 结构化输出：仅对远程 OpenAI 兼容 API 生效（Anthropic 无 response_format，
+        # prompt 已要求纯 JSON，跳过），本地模型(localhost)跳过
         extra_kwargs = {}
-        if self.config.json_mode != "default" and "localhost" not in self.config.base_url and "127.0.0.1" not in self.config.base_url:
+        if (self.provider != "anthropic" and self.config.json_mode != "default"
+                and "localhost" not in self.config.base_url and "127.0.0.1" not in self.config.base_url):
             extra_kwargs["response_format"] = {"type": "json_object"}
 
-        # 思考模式控制：thinking_mode 非空时注入 extra_body（与 response_format 共存不冲突）
-        if self.config.thinking_mode:
+        # 思考模式控制：OpenAI 兼容用 extra_body；Anthropic 在载荷构造时注入
+        if self.config.thinking_mode and self.provider != "anthropic":
             extra_kwargs["extra_body"] = dict(self.config.thinking_mode)
 
         try:
-            response = await asyncio.wait_for(
-                self.client.chat.completions.create(
-                    model=self.config.model,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    timeout=self.config.timeout,
-                    **extra_kwargs
-                ),
-                timeout=self.config.timeout + 30,  # 硬超时：比 SDK timeout 多 30s 余量
-            )
+            # 三分竞争：API 请求完成 / 用户请求停止 / 硬超时（任选其一先到）
+            if self.provider == "anthropic":
+                anthropic_client = self.anthropic
+                assert anthropic_client is not None  # provider=anthropic 时 __init__ 已构造
+                api_task = asyncio.create_task(
+                    anthropic_client.messages.create(
+                        **self._build_anthropic_payload(messages, temperature, max_tokens)
+                    )
+                )
+            else:
+                openai_client = self.client
+                assert openai_client is not None  # provider=openai 时 __init__ 已构造
+                api_task = asyncio.create_task(
+                    openai_client.chat.completions.create(
+                        model=self.config.model,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        timeout=self.config.timeout,
+                        **extra_kwargs
+                    )
+                )
+            stop_wait = asyncio.create_task(self._stop_event.wait())
+            hard_timeout = asyncio.create_task(asyncio.sleep(self.config.timeout + 30))  # 硬超时：比 SDK timeout 多 30s 余量
+
+            try:
+                done, _pending = await asyncio.wait(
+                    {api_task, stop_wait, hard_timeout},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if api_task in done:
+                    response = api_task.result()
+                elif stop_wait in done:
+                    # 用户请求停止：立即取消进行中的请求，不等超时
+                    logger.info("用户请求停止，取消进行中的 API 请求")
+                    return False, "", "用户请求停止", (0, 0)
+                else:
+                    # 硬超时：取消后走下方 asyncio.TimeoutError 分支
+                    raise asyncio.TimeoutError
+            finally:
+                # 统一清理：正常返回/异常/外部 Task.cancel 都不泄漏子任务
+                # （外部 cancel 时 asyncio.wait 抛 CancelledError，此处确保底层请求被真正取消）
+                for t in (api_task, stop_wait, hard_timeout):
+                    if not t.done():
+                        t.cancel()
+                await asyncio.gather(api_task, stop_wait, hard_timeout, return_exceptions=True)
 
             with self._stats_lock:
                 self._request_count += 1
+
+            if self.provider == "anthropic":
+                content, prompt_tokens, completion_tokens, cached_tokens = self._parse_anthropic_response(response)
+                # total 口径对齐 OpenAI usage.total_tokens（OpenAI 的 total 含缓存命中部分）
+                total_tokens = prompt_tokens + completion_tokens + cached_tokens
+                if not content:
+                    error_msg = "API返回空内容（可能触发内容过滤）"
+                    logger.warning(error_msg)
+                    return False, "", error_msg, (0, 0)
+                with self._stats_lock:
+                    self._total_tokens += total_tokens
+                    self._cached_tokens += cached_tokens
+                original_len = len(content)
+                stripped = self._strip_thinking(content)
+                if stripped:
+                    content = stripped
+                    if original_len > len(content):
+                        logger.debug(f"已移除思考链: {original_len} -> {len(content)} 字符")
+                cache_hint = f"，缓存命中{cached_tokens}" if cached_tokens else ""
+                logger.info(f"API请求成功，使用{total_tokens} tokens (输入{prompt_tokens}+输出{completion_tokens}{cache_hint})")
+                return True, content, "", (prompt_tokens, completion_tokens)
+
             prompt_tokens = 0
             completion_tokens = 0
             cached_tokens = 0
@@ -302,6 +600,61 @@ class LLMClient:
                 max_retries=self.config.max_retries,
                 temperature=temperature,
                 error_type=f"APIError_HTTP{status_code}",
+                error_message=error_msg,
+                messages_length=len(str(messages))
+            )
+            return False, "", error_msg, (0, 0)
+
+        except anthropic.AuthenticationError as e:
+            error_msg = f"认证失败，请检查API Key: {str(e)}"
+            logger.error(error_msg)
+            _get_failure_logger().record_failure(
+                attempt_num=0,
+                max_retries=self.config.max_retries,
+                temperature=temperature,
+                error_type="AuthenticationError",
+                error_message=error_msg,
+                messages_length=len(str(messages))
+            )
+            return False, "", error_msg, (0, 0)
+
+        except anthropic.APITimeoutError as e:
+            error_msg = f"请求超时 (timeout={self.config.timeout}s): {str(e)}"
+            logger.warning(error_msg)
+            _get_failure_logger().record_failure(
+                attempt_num=0,
+                max_retries=self.config.max_retries,
+                temperature=temperature,
+                error_type="TimeoutError",
+                error_message=error_msg,
+                messages_length=len(str(messages))
+            )
+            return False, "", error_msg, (0, 0)
+
+        except anthropic.APIStatusError as e:
+            status_code = getattr(e, 'status_code', None)
+            error_msg = f"API错误 (HTTP {status_code}): {str(e)}"
+            if status_code == 429:
+                logger.warning(f"触发速率限制(429)，建议增加重试等待时间")
+            logger.error(error_msg)
+            _get_failure_logger().record_failure(
+                attempt_num=0,
+                max_retries=self.config.max_retries,
+                temperature=temperature,
+                error_type=f"APIError_HTTP{status_code}",
+                error_message=error_msg,
+                messages_length=len(str(messages))
+            )
+            return False, "", error_msg, (0, 0)
+
+        except anthropic.APIConnectionError as e:
+            error_msg = f"连接失败: {str(e)}"
+            logger.error(error_msg)
+            _get_failure_logger().record_failure(
+                attempt_num=0,
+                max_retries=self.config.max_retries,
+                temperature=temperature,
+                error_type="ConnectionError",
                 error_message=error_msg,
                 messages_length=len(str(messages))
             )

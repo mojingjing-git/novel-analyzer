@@ -6,6 +6,7 @@ export interface LogEntry {
   id: number
   text: string
   kind: 'info' | 'warn' | 'error' | 'state' | 'debug'
+  source?: string  // python / business / block / local / event（见 simplified 过滤注释）
 }
 
 const props = withDefaults(defineProps<{ logs: LogEntry[]; simplified?: boolean }>(), {
@@ -13,9 +14,17 @@ const props = withDefaults(defineProps<{ logs: LogEntry[]; simplified?: boolean 
 })
 const consoleRef = ref<HTMLElement>()
 
-// 简化模式：过滤掉 debug 噪声，只保留信息/状态/警告/错误
+// 简化模式（分析队列页）：
+// 只显示"业务事件流"——队列操作/书级进度/状态变化（source=business/local/event），
+// 过滤掉三类噪音：
+//   1. debug 级别（kind=debug）
+//   2. Python logging 转发的技术日志（source=python，每章 LLM 调用/token 统计等）
+//   3. 逐章完成事件（source=block，有进度条展示，无需逐条刷屏）
+// 完整模式（设置页）保留全部，含上述内容。
 const displayLogs = computed(() =>
-  props.simplified ? props.logs.filter((l) => l.kind !== 'debug') : props.logs
+  props.simplified
+    ? props.logs.filter((l) => l.kind !== 'debug' && l.source !== 'python' && l.source !== 'block')
+    : props.logs
 )
 
 const kindIcons: Record<string, string> = {

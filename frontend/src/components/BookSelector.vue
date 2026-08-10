@@ -28,7 +28,7 @@ onMounted(load)
     <select :value="modelValue" @change="onChange" class="glass-select flex-1">
       <option value="">选择书目...</option>
       <option v-for="b in books" :key="b.id" :value="b.id">
-        {{ b.name }} ({{ b.total_chapters }} 章)
+        {{ b.name }} ({{ b.total_chapters }} 章){{ b.has_report ? ' ✓已总结' : '' }}{{ b.has_aggregated ? ' ✓已聚合' : '' }}
       </option>
     </select>
     <button @click="load" :disabled="loading" class="glass-button btn-compact">

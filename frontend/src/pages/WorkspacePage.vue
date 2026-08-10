@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { api, type WorkspaceNovel, type WorkspaceArchive } from '../api/client'
+import ConfirmDialog from '../components/ConfirmDialog.vue'
 
 interface NovelRow {
   name: string
@@ -18,6 +19,23 @@ const novels = ref<NovelRow[]>([])
 const archives = ref<ArchiveRow[]>([])
 const loading = ref(false)
 const error = ref('')
+
+// 统一确认弹窗状态（替代浏览器原生 confirm()）
+const confirmState = ref<{ title: string; message: string; confirmText: string; danger: boolean; action: () => Promise<void> } | null>(null)
+function askConfirm(title: string, message: string, confirmText: string, danger: boolean, action: () => Promise<void>) {
+  confirmState.value = { title, message, confirmText, danger, action }
+}
+async function runConfirmed() {
+  const s = confirmState.value
+  confirmState.value = null
+  if (!s) return
+  try {
+    await s.action()
+    await load()
+  } catch (e) {
+    error.value = (e as Error).message || String(e)
+  }
+}
 
 function fmtSize(b: number): string {
   if (!b || b < 0) return '0 B'
@@ -57,32 +75,14 @@ async function load() {
     loading.value = false
   }
 }
-async function archive(name: string) {
-  if (!confirm('归档《' + name + '》?')) return
-  try {
-    await api.archiveNovel(name)
-    await load()
-  } catch (e) {
-    alert((e as Error).message)
-  }
+function archive(name: string) {
+  askConfirm('归档小说', `归档《${name}》?`, '归档', false, async () => { await api.archiveNovel(name) })
 }
-async function archiveAll() {
-  if (!confirm('批量归档所有小说?')) return
-  try {
-    await api.archiveAll()
-    await load()
-  } catch (e) {
-    alert((e as Error).message)
-  }
+function archiveAll() {
+  askConfirm('批量归档', '批量归档所有小说?', '全部归档', false, async () => { await api.archiveAll() })
 }
-async function delArchive(name: string) {
-  if (!confirm('删除归档《' + name + '》? 此操作不可恢复')) return
-  try {
-    await api.deleteArchive(name)
-    await load()
-  } catch (e) {
-    alert((e as Error).message)
-  }
+function delArchive(name: string) {
+  askConfirm('删除归档', `删除归档《${name}》? 此操作不可恢复`, '删除', true, async () => { await api.deleteArchive(name) })
 }
 
 onMounted(load)
@@ -95,7 +95,7 @@ onMounted(load)
       <p class="section-subtitle">管理 workspace/ 中的小说与 分析结果/ 归档</p>
     </div>
 
-    <div v-if="error" class="glass-card px-3 py-2 text-sm" style="color: var(--color-system-red)">{{ error }}</div>
+    <div v-if="error" class="glass-tinted-red px-4 py-2 rounded-ios-md text-sm">{{ error }}</div>
 
     <!-- 小说列表 -->
     <div class="glass-card p-4 space-y-3">
@@ -158,5 +158,16 @@ onMounted(load)
         </div>
       </div>
     </div>
+
+    <!-- 统一确认弹窗（玻璃材质） -->
+    <ConfirmDialog
+      v-if="confirmState"
+      :title="confirmState.title"
+      :message="confirmState.message"
+      :confirm-text="confirmState.confirmText"
+      :danger="confirmState.danger"
+      @confirm="runConfirmed"
+      @cancel="confirmState = null"
+    />
   </div>
 </template>

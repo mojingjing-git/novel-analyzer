@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, computed } from 'vue'
+import { ref, watch, computed, onMounted } from 'vue'
 import BookSelector from '../components/BookSelector.vue'
 import { api } from '../api/client'
 
@@ -9,19 +9,44 @@ interface TimelineEvent {
   event: string
   characters: string | string[]
   function: string
+  importance?: string
 }
 
 interface Foreshadow {
   chapter: number
   clue: string
   type: string
+  category?: string
   confidence: number
+  importance?: string
+}
+
+interface CategoryDef {
+  name: string
+  description: string
+  examples: string[]
 }
 
 const bookId = ref('')
 const mode = ref<'events' | 'foreshadows'>('events')
 const events = ref<TimelineEvent[]>([])
 const foreshadows = ref<Foreshadow[]>([])
+const minImportance = ref<'低' | '中' | '高'>('低')
+
+const categories = ref<CategoryDef[]>([])
+const selectedCategories = ref<Set<string>>(new Set())
+const showCategoryFilter = ref(false)
+
+const importanceRank: Record<string, number> = { 低: 0, 中: 1, 高: 2 }
+
+onMounted(async () => {
+  try {
+    const res = await api.getForeshadowCategories()
+    categories.value = res.defs
+    // 默认全选（与 config.analysis.foreshadow_kept_categories 一致）
+    selectedCategories.value = new Set(res.kept.length ? res.kept : res.defs.map(d => d.name))
+  } catch (e) { console.error('加载伏笔分类失败', e) }
+})
 
 watch(bookId, async () => {
   if (!bookId.value) return
@@ -32,15 +57,28 @@ watch(bookId, async () => {
   } catch (e) { console.error(e) }
 })
 
+const filteredEvents = computed(() =>
+  events.value.filter(ev => (importanceRank[ev.importance ?? '中'] ?? 0) >= importanceRank[minImportance.value]),
+)
+
+const filteredForeshadows = computed(() =>
+  foreshadows.value.filter(fs => {
+    if ((importanceRank[fs.importance ?? '中'] ?? 0) < importanceRank[minImportance.value]) return false
+    if (selectedCategories.value.size === 0) return true
+    const cat = fs.category || '其他'
+    return selectedCategories.value.has(cat)
+  }),
+)
+
 const chapters = computed(() => {
   const map = new Map<number, { events: TimelineEvent[]; foreshadows: Foreshadow[] }>()
   if (mode.value === 'events') {
-    for (const ev of events.value) {
+    for (const ev of filteredEvents.value) {
       if (!map.has(ev.chapter)) map.set(ev.chapter, { events: [], foreshadows: [] })
       map.get(ev.chapter)!.events.push(ev)
     }
   } else {
-    for (const fs of foreshadows.value) {
+    for (const fs of filteredForeshadows.value) {
       if (!map.has(fs.chapter)) map.set(fs.chapter, { events: [], foreshadows: [] })
       map.get(fs.chapter)!.foreshadows.push(fs)
     }
@@ -48,11 +86,12 @@ const chapters = computed(() => {
   return [...map.entries()].sort((a, b) => a[0] - b[0])
 })
 
-const typeColors: Record<string, string> = {
-  plant: 'bg-green-100 text-green-700 border-green-300',
-  recall: 'bg-blue-100 text-blue-700 border-blue-300',
-  develop: 'bg-yellow-100 text-yellow-700 border-yellow-300',
-  resolve: 'bg-purple-100 text-purple-700 border-purple-300',
+// 伏笔类型 → 玻璃着色（沿用系统色，亮暗主题自适应）
+const typeTints: Record<string, string> = {
+  plant: 'tl-tint-green',
+  recall: 'tl-tint-blue',
+  develop: 'tl-tint-orange',
+  resolve: 'tl-tint-purple',
 }
 
 const typeLabels: Record<string, string> = {
@@ -62,50 +101,122 @@ const typeLabels: Record<string, string> = {
   resolve: '揭晓',
 }
 
+const importanceBadge: Record<string, string> = {
+  高: 'badge-red',
+  中: 'badge-orange',
+  低: 'badge-gray',
+}
+
 function charStr(c: string | string[]): string {
   if (Array.isArray(c)) return c.join(', ')
   return c
 }
+
+function toggleCategory(name: string) {
+  const next = new Set(selectedCategories.value)
+  if (next.has(name)) next.delete(name); else next.add(name)
+  selectedCategories.value = next
+}
+
+function selectAllCategories() {
+  selectedCategories.value = new Set(categories.value.map(c => c.name))
+}
+
+function clearAllCategories() {
+  selectedCategories.value = new Set()
+}
+
+const categoryStats = computed(() => {
+  // 统计当前 foreshadows 中各 category 出现次数（基于原始数据，不受筛选影响）
+  const map = new Map<string, number>()
+  for (const fs of foreshadows.value) {
+    const cat = fs.category || '其他'
+    map.set(cat, (map.get(cat) ?? 0) + 1)
+  }
+  return map
+})
 </script>
 
 <template>
   <div class="space-y-4 p-4">
     <h2 class="section-title">时间线</h2>
     <BookSelector v-model="bookId" />
-    <div v-if="bookId" class="flex gap-2">
-      <button @click="mode = 'events'" :class="mode === 'events' ? 'bg-cyan-400 text-white' : 'border border-gray-300 text-gray-600'" class="px-3 py-1 rounded text-sm">事件时间线 ({{ events.length }})</button>
-      <button @click="mode = 'foreshadows'" :class="mode === 'foreshadows' ? 'bg-cyan-400 text-white' : 'border border-gray-300 text-gray-600'" class="px-3 py-1 rounded text-sm">伏笔时间线 ({{ foreshadows.length }})</button>
+    <div v-if="bookId" class="flex gap-2 flex-wrap items-center">
+      <button @click="mode = 'events'" class="glass-pill" :class="{ 'is-active': mode === 'events' }">事件时间线 ({{ filteredEvents.length }})</button>
+      <button @click="mode = 'foreshadows'" class="glass-pill" :class="{ 'is-active': mode === 'foreshadows' }">伏笔时间线 ({{ filteredForeshadows.length }})</button>
+      <span class="text-sm ml-2" style="color: var(--text-secondary)">最低重要度:</span>
+      <select v-model="minImportance" class="glass-select" style="width: 92px">
+        <option value="低">全部</option>
+        <option value="中">中及以上</option>
+        <option value="高">只看高</option>
+      </select>
+      <button
+        v-if="mode === 'foreshadows'"
+        @click="showCategoryFilter = !showCategoryFilter"
+        class="glass-pill"
+        :class="{ 'is-active': showCategoryFilter }"
+        :title="'按伏笔分类筛选（已选 ' + selectedCategories.size + '/' + categories.length + '）'"
+      >分类筛选 ({{ selectedCategories.size }})</button>
     </div>
-    <div v-if="!bookId" class="text-gray-400">请选择书目</div>
-    <div v-else-if="chapters.length === 0" class="text-gray-400">暂无数据</div>
+    <div
+      v-if="mode === 'foreshadows' && showCategoryFilter && categories.length"
+      class="glass-card p-3"
+    >
+      <div class="flex items-center justify-between mb-2">
+        <div class="text-sm" style="color: var(--text-secondary)">仅显示勾选分类的伏笔</div>
+        <div class="flex gap-2">
+          <button @click="selectAllCategories" class="glass-pill">全选</button>
+          <button @click="clearAllCategories" class="glass-pill">清空</button>
+        </div>
+      </div>
+      <div class="flex gap-1.5 flex-wrap">
+        <button
+          v-for="cat in categories"
+          :key="cat.name"
+          @click="toggleCategory(cat.name)"
+          class="glass-pill text-xs"
+          :class="{ 'is-active': selectedCategories.has(cat.name) }"
+          :title="cat.description"
+        >
+          {{ cat.name }}<span v-if="categoryStats.has(cat.name)" class="opacity-60 ml-1">({{ categoryStats.get(cat.name) }})</span>
+        </button>
+      </div>
+    </div>
+    <div v-if="!bookId" class="glass-card p-8 text-center text-sm" style="color: var(--text-tertiary)">请选择书目</div>
+    <div v-else-if="chapters.length === 0" class="glass-card p-8 text-center text-sm" style="color: var(--text-tertiary)">暂无数据</div>
     <div v-else class="space-y-3">
       <div v-for="[ch, group] in chapters" :key="ch" class="flex gap-3">
         <div class="shrink-0 w-16 text-right">
-          <div class="inline-block bg-cyan-50 text-cyan-600 text-xs font-medium px-2 py-1 rounded">第{{ ch }}章</div>
+          <span class="glass-badge badge-blue" style="font-size: 11px; padding: 4px 10px">第{{ ch }}章</span>
         </div>
         <div class="flex-1 space-y-2">
           <template v-if="mode === 'events'">
-            <div v-for="(ev, idx) in group.events" :key="idx" class="bg-white border border-gray-200 rounded-lg p-3 text-sm">
+            <div v-for="(ev, idx) in group.events" :key="idx" class="tl-card">
               <div class="flex items-start gap-2">
-                <span class="text-xs text-gray-400 mt-0.5">#{{ idx + 1 }}</span>
+                <span class="text-xs mt-0.5" style="color: var(--text-tertiary)">#{{ idx + 1 }}</span>
                 <div class="flex-1">
-                  <p class="text-gray-800">{{ ev.event }}</p>
-                  <div class="flex gap-3 mt-1 text-xs text-gray-500">
+                  <p style="color: var(--text-primary)">{{ ev.event }}</p>
+                  <div class="flex gap-3 mt-1 text-xs" style="color: var(--text-secondary)">
                     <span v-if="charStr(ev.characters)">角色: {{ charStr(ev.characters) }}</span>
                     <span v-if="ev.function">功能: {{ ev.function }}</span>
                   </div>
                 </div>
+                <span v-if="ev.importance" class="glass-badge shrink-0" :class="importanceBadge[ev.importance] || 'badge-gray'">{{ ev.importance }}</span>
               </div>
             </div>
           </template>
           <template v-else>
-            <div v-for="(fs, idx) in group.foreshadows" :key="idx" :class="['rounded-lg border p-3 text-sm', typeColors[fs.type] || 'bg-gray-50 border-gray-200 text-gray-700']">
+            <div v-for="(fs, idx) in group.foreshadows" :key="idx" class="tl-card" :class="typeTints[fs.type] || ''">
               <div class="flex items-start gap-2">
                 <span class="text-xs font-medium mt-0.5">{{ typeLabels[fs.type] || fs.type }}</span>
                 <div class="flex-1">
                   <p>{{ fs.clue }}</p>
-                  <div class="mt-1 text-xs opacity-70">置信度: {{ (fs.confidence * 100).toFixed(0) }}%</div>
+                  <div class="mt-1 text-xs opacity-70 flex gap-2 items-center">
+                    <span v-if="fs.category" class="glass-badge badge-blue" style="font-size: 10px; padding: 2px 6px">{{ fs.category }}</span>
+                    <span>置信度: {{ (fs.confidence * 100).toFixed(0) }}%</span>
+                  </div>
                 </div>
+                <span v-if="fs.importance" class="glass-badge shrink-0" :class="importanceBadge[fs.importance] || 'badge-gray'">{{ fs.importance }}</span>
               </div>
             </div>
           </template>
@@ -114,3 +225,22 @@ function charStr(c: string | string[]): string {
     </div>
   </div>
 </template>
+
+<style scoped>
+.tl-card {
+  background: var(--glass-clear);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-rim-color);
+  box-shadow: var(--glass-inner);
+  border-radius: 14px;
+  padding: 12px 14px;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+/* 伏笔类型着色：低饱和系统色底 + 同色描边，暗色下依然和谐 */
+.tl-tint-green  { background: rgba(52, 199, 89, 0.1);  border-color: rgba(52, 199, 89, 0.25); }
+.tl-tint-blue   { background: rgba(0, 122, 255, 0.1);  border-color: rgba(0, 122, 255, 0.25); }
+.tl-tint-orange { background: rgba(255, 149, 0, 0.1);  border-color: rgba(255, 149, 0, 0.25); }
+.tl-tint-purple { background: rgba(175, 82, 222, 0.1); border-color: rgba(175, 82, 222, 0.25); }
+</style>

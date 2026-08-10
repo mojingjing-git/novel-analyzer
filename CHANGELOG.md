@@ -1,0 +1,216 @@
+# 小说智能分析器 — 完整更新日志
+
+> 覆盖从 2026-03-03 首个雏形脚本到当前 Web 正式版（F:\AI\小说分析器）的全部历史版本。
+> 历史版本存档路径：`E:\AI\小说`（雏形期，2026/3）→ `F:\tool\novel_analyzer`（PyQt6 桌面版，2026/4-6）→ `F:\AI\微型集群`（PySide6 迭代期，2026/6-7）→ `F:\AI\小说分析器`（Web 正式版，2026/8 至今）。
+
+---
+
+## 阶段总览
+
+| 阶段 | 时间 | 版本形态 | 技术栈 | 存档位置 |
+|---|---|---|---|---|
+| 一、雏形期 | 2026-03-03 ~ 03-18 | 单文件脚本 → 四合一工作台 | tkinter + OpenAI SDK（Qwen 系） | `E:\AI\小说` |
+| 二、PyQt6 桌面版 | 2026-04-15 ~ 06-01 | PyQt6 桌面应用（Git 化） | PyQt6 + openai SDK | `F:\tool\novel_analyzer` |
+| 三、PySide6 迭代期 | 2026-06-14 ~ 07-29 | v0.5 → v0.9.x → 多分支 → Web 原型 | PySide6 → FastAPI+React | `F:\AI\微型集群` |
+| 四、Web 正式版 | 2026-08-01 ~ 至今 | FastAPI + Vue3 + pywebview | FastAPI + Vue3 + Tailwind | `F:\AI\小说分析器` |
+
+---
+
+## 阶段一：雏形期（2026-03-03 ~ 03-18）`E:\AI\小说`
+
+### 2026-03-03 ｜ 项目源头：单块 LLM 分析雏形（`1/` 目录）
+
+- 首个脚本 `run.py`（404 行 GUI 版）与更原始的纯命令行版本（`无明显问题会自动重置版.txt`，174 行）
+- 核心思想从第一天起就没变过：**把小说按块喂给 LLM，强制输出 JSON 结构化分析（核心事件/人物弧光/伏笔/逻辑漏洞/跨块呼应/知识更新），用 `knowledge.json` 做跨块记忆**
+- 本地 **LM Studio qwen3-8b** 推理，OpenAI 兼容接口；每 20 块触发主线压缩
+- 实际分析《死人经》405 块；`compressed_arcs` 里残留 `<think>` 思考痕迹（早期清洗 bug 见证）
+
+### 2026-03-05 ｜ 多模型分支与聚合闭环
+
+- **`deepseek1` / `ver.1-20260304`**：同一脚本（MD5 相同）交给 DeepSeek 重写整理，API 转向阿里云 DashScope（qwen3-coder-flash）；新增**长上下文模式**与「洞察」输出（跨章模式/伏笔网络/节奏）
+- **`kimi1`**：Kimi 独立实现版，新增**聚合闭环**：分析 → 聚合报告（AnalysisAggregator）→ 精简（JSON Optimizer Pro）→ LLM 输入；`0.0.1聚合.py` 指纹去重合并工具
+- 本地 LM Studio 版（qwen3.5-9b）与云端版并行验证
+
+### 2026-03-07 ｜ 三小件工具 + ver.1.1 系列
+
+- **`ver.1.1-20260307`**：长上下文模式正式化（max_arc_length=2000）；`ver1.1-fork`（本地 9B 对比测试）；**`ver1.1-fork2`：结构化世界观记忆**——初始化并回写 10 个知识库字段（world_building/long_term_arcs/foreshadowing_network/character_relationships/thematic_elements/pacing_tracker），从"只记时间线+摘要"升级为结构化记忆
+- **`拆书小软件`**：不调 LLM 的 txt 章节切分工具（多编码检测 GBK/Big5、13 种章节关键词、按目标字数分块）
+- **`聚合去重小软件`**：按块号合并去重、角色关系推导、Markdown 报告
+- **`角色卡小软件`**：从聚合结果提取全部角色 → 事件/弧光/关系统计 → 标准 Markdown 角色卡 + 索引（实战：《三侠五义》300+ 角色卡）
+
+### 2026-03-08 ~ 03-18 ｜ 四合一工作台（雏形期收官）
+
+- **`完整工作流/release-1.0.0`**：分割 → 拆解（分析）→ 汇总 → 人物卡四件套流水线
+- **`工作台v1.0.0`**：单文件四合一统一工作台（1995/2422 行，NovelSplitter/NovelAnalyzer/AnalysisMerger/RoleCardGenerator 集成进一个 tkinter 界面）
+- **`工作台v1.0.1`**（3/18 最后修改）：配置切到本地 unsloth/qwen3.5-9b，雏形期结束
+
+**本阶段定型的核心机制（沿用至今）**：OpenAI 兼容接口、JSON 强约束 prompt、温度退火重试（0.1→0.05→0.0）、knowledge.json 跨块记忆、思考链剥离。
+
+---
+
+## 阶段二：PyQt6 桌面版（2026-04-15 ~ 06-01）`F:\tool\novel_analyzer`
+
+### 2026-04-15 ~ 04-28 ｜ 从脚本到正式应用
+
+- 4/15：《三侠五义》121 章 txt 就绪；4/18 首次运行（E 盘），LM Studio 本地模型，串行逐章分析 55 章，两阶段重试机制上线
+- 4/22：`RETRY_MECHANISM.md`（温度退火 0.1→0.05→0.0 + 指数退避 2^n 秒）、命令行聚合 CLI
+- 4/25-27：小说切分工具 CLI → **PyQt6 GUI 版**（`cuttttttt*.py`，编码探测/分词）
+- 4/28：**正式定型**——requirements、main.py、README、应用图标、PyInstaller spec（`novel_analyzer.spec`，应用名"小说智能分析器"）；完成 64 章聚合 + characters.xlsx 导出；项目从 E 盘迁至 F 盘
+
+### 2026-05-07 ｜ Git 化与首轮大修
+
+- 建立 git 仓库（`.gitignore` 排除 workspace/日志/产物）
+- **首提交即修复 14 个 bug**：GUI 闪退、数据反序列化、路径硬编码等（`f78048e`）
+
+### 2026-05-16 ｜ 功能爆发周（git 可考）
+
+- **block_size 功能**：多章合并为一个分析块（每块 N 章），块 ID 取首章号
+- **伏笔回收机制**：`active_foreshadowing` 带编号注入 prompt，`resolved_foreshadowing` 显式回收，回收后不再截断增长
+- 评审反馈修复：子串匹配阈值调优（10→6 字符）、去魔法数、补 debug 日志
+
+### 2026-05-17 ｜ 最终总结页上线
+
+- **FinalSummaryPage**：批量 LLM 分析全书脉络（分卷摘要 + 全书报告），配套修复：`json_mode=default` 强制（DeepSeek json_object 模式坑）、报告/卷摘要自动保存、章节按数值排序
+- **并行模式实绩**：半小时完成《三侠五义》全书 121 章分析（串行预热 + 分片并行 + 断点续跑 + 失败 3 轮补跑）
+- GUI 五个主标签页成型：分析结果 / 数据聚合 / 角色卡生成器 / 最终总结 / 统计面板；顶部 Prompt 预览、小说切分、工作区管理、风格分析入口
+- 12 维度数据聚合 + Excel 多 Sheet 导出 + 角色卡（HTML/MD/TXT）
+
+### 2026-05-27 ~ 06-01 ｜ 创作辅助转型（未提交的开发）
+
+- 核心模块二次大改：KB 截断上限、llm_client、analyzer、json_utils 等 8 文件（**未提交 git**）
+- **`blueprint_generator.py`**：全书结构蓝图生成（GUI）
+- **`workspace_manager.py`**：多书归档管理器（GUI）
+- **`style_analyzer.py` v2**：代码统计 + LLM 七维评分（叙事距离/句法节奏/感官密度/词汇层级/比喻策略/情感表达/对话比重）
+- **`batch_style_v2.py` + `show_comparison.py`**：5 本书批量风格对比（三侠五义/圣墟/大王饶命/永夜君王/超神机械师）
+- **skills/ 创作工作流技能**：拆书 → 蓝图 → 世界观 → 角色映射 → 新书生成 → 验证（从"分析工具"向"创作辅助平台"演进）
+
+---
+
+## 阶段三：PySide6 迭代期（2026-06-14 ~ 07-29）`F:\AI\微型集群`
+
+> 技术栈统一迁移到 **PySide6**，多分支并行开发；此阶段确立了最终总结 4 阶段、伏笔账本、滚动总结、内存化、队列、Web 化等全部关键能力。
+
+### v0.5 稳定版 ｜ 基础分析器定型
+
+- "六路上下文注入"（故事历史/前情摘要/时间线/角色状态/世界观/伏笔网络）
+- 分片队列并发（按并发数分桶）、断点续跑、失败补跑 3 轮、温度退火、思考链过滤
+- 最终总结分批 + 汇总、数据聚合/Excel/角色卡/风格提取（单层 LLM 七维评分）
+- 产物三件套格式：`chapter_N_result.json` + `chapter_N_data.json` + `chapter_N_report.md`（含冗余写盘，后续优化点）
+
+### v0.6 ｜ 测试体系 + 伏笔账本
+
+- **"九路上下文注入"**：新增角色关系/已验证事实/主题元素
+- **tests/ 测试体系**（11 个测试文件）
+- **`utils/foreshadow_ledger.py` 伏笔账本**（active/resolved/dormant 状态机）与伏笔审计报告
+- 滚动总结以"批次 Rolling"初版形态出现；最终总结并发批次设计文档（06-16）
+- 吞吐率/剩余时间预测、完整 API 配置
+
+### dev 主干（git 05-07 ~ 06-24）｜ v0.7 → v0.9.0 → v0.9.1
+
+| 日期 | 里程碑 |
+|---|---|
+| 06-17 | 并发批处理 + 伏笔账本 |
+| **06-18** | **批次 Rolling Summary + KV Cache 优化**（prompt 分层：早期固定 + 近期滚动） |
+| **06-20** | **v0.9.0 性能优化 + 结构化滚动总结 + 全量测试覆盖**；v0.9.1 修复 10 个 bug |
+| 06-21 | **风格提取两层架构**（14 项统计硬指标 + 8 维 LLM 语义） |
+| 06-22~24 | 设置界面完善（双主题 one_dark/one_light） |
+
+### 07-07 ｜ UI 分支：win11 风格
+
+- **Fluent Design 双主题**（themes/fluent.qss + fluent-dark.qss）
+- **伏笔账本图形页**（gui/foreshadow_page.py）、设置对话框（滚动总结触发章数）、模型查询弹窗
+- 毛玻璃效果原型（liquid_glass_demo.html）
+
+### 07-16 ｜ 桌面版打包交付
+
+- **构建版 0.0.1**：PyInstaller 成品「小说智能分析器.exe」（qwen2.5-72b-instruct-1m / DashScope）
+
+### 07-21 ｜ 内存化 IO 优化（关键性能里程碑）
+
+- 设计文档：《MemoryState 全内存 IO 优化设计》（实测每章 IO 开销 30-50s，目标 <1ms）
+- **`core/memory_state.py`**：全部 AnalysisResult + KnowledgeBase 常驻内存，threading.Lock 并发安全，checkpoint_interval（默认 5 批）落盘，KB 快照子集缓存，删除 data.json 冗余写
+- **流式并发池**替代批次 barrier 同步（提交：`feat: MemoryState 全内存 IO 优化 + 流式并发池`）
+
+### 07-26 ~ 07-29 ｜ 多书队列 + Web 化（架构转型）
+
+- **`core/queue_manager.py`**：多小说顺序分析队列（QueueItem 状态机 pending/running/done/failed/skipped、queue_state.json 持久化、check_api 预检）；实跑《卡徒》514 章（block_size=2）
+- 07-28：内嵌 Web 工程副本 + 打包成品 NovelAnalyzerWeb.exe
+- **07-29 `novel_analyzer_web_dev`**：**Web 版诞生** —— FastAPI（app.py 工厂 + 8 组路由 + ws.py WebSocket + progress_hub 进度广播）+ **React 19 + TypeScript + Vite** 前端（14 个页面）+ pywebview 桌面壳 + PyInstaller spec
+
+---
+
+## 阶段四：Web 正式版（2026-08-01 ~ 至今）`F:\AI\小说分析器`
+
+> 当前版本。从 web_dev 快照起步：前端从 React 重写为 **Vue 3 + Tailwind 4 + TypeScript**（体积更小、与桌面壳集成更顺），后端在 FastAPI 架构上持续演进。
+
+### 08-01 ｜ Git 初始化 + 畸形 JSON 修复 + 重试成本可见
+
+- `init: 小说分析器代码快照`（含设计文档），GitHub Actions CI 配置
+- **json 漏引号定向修复** + `parse_json_robust` 诊断信息（8 级容错链：直接解析 → 截尾 → 去注释 → 漏引号修复 → json5 → ast → json-repair → 单引号转换）
+- **重试成本可见**：llm_client 累计 total_attempts → analyzer → pipeline → token_stats → 统计面板展示重试次数与失败 token 成本（"API 已扣费不能归零"哲学）；重试归因改按调用统计（并发准确）、耗时冻结、失败章节计入统计
+- 12 个提交完成本批（设计 → 计划 → 实现 → 修正闭环）
+
+### 08-02 ｜ 队列自动总结 + 书目标记（spec：auto-summary-and-book-marks）
+
+- **队列完成后自动总结**：所有书分析完成后逐本串行执行最终总结（`auto_summary` 配置 + `allow_during_analysis` 护栏——仅自动总结可绕开"分析期间禁手动总结"）
+- 总结批次/并发参数持久化到 config.json（取代 localStorage）
+- 书目标记：书目状态摘要（has_report/has_ledger/has_audit/has_aggregated）、工作区扫描自动发现新书
+
+### 08-07 ｜ 性能与正确性优化批（QUA/PERF/P0 系列）
+
+- **P0-1 知识库快照隔离**：KB 快照子集缓存，低章号块读不到未来章节知识（并发正确性）
+- **P0-2 休眠判定统一收尾**：批次并发使 last_seen_batch 非单调 → 全部批次完成后按批次升序统一 reconcile
+- **P0-4 断号目录**：块划分按实际存在的章号（容错缺失章）
+- **PERF-2 伏笔去重倒排索引**：关键词倒排 + SequenceMatcher ≥0.6 精筛
+- **QUA-1 卷摘要压缩**：最终报告卷摘要超阈值（8 万字符）分层压缩（首尾组保留全文、中间组截半）
+- **PERF-1 风格统计单次正则**：8 组词表合并单条正则一次 finditer（避免约 120 次全文扫描）
+- 测试补全：快照缓存不泄漏未来章节、断号目录、休眠判定、去重倒排语义
+
+### 08-09 ｜ 伏笔 50 类分类体系（治本）
+
+- **50 类功能分类定义**（`FORESHADOW_CATEGORY_DEFS`，8 组 50 类，schema 版本号管理，兜底"其他"）
+- 先落地 **LLM 归一化兜底版**（实测教训：单批 >100 条质量退化、思考链吃光 max_tokens、每批落盘防崩溃丢进度），《北宋穿越指南》497 章全量验证：1663 种 type 全量映射、0 幻觉、700 条伏笔总表、2786 条时间线全分类
+- **随后改为源头约束主线**：分析 prompt 内嵌 50 类表（恒定文本注入 system 前缀，KV cache 友好），`type` 字段禁止自创；归一化版作为分支备份（`F:\AI\小说分析器 - 归一化兜底版`）
+- 旧书靠 per-book `foreshadow_type_map.json`（含 schema 校验）被动兜底，零 LLM 调用
+- 配套：伏笔总表三维过滤（重要度/置信度/类别）+ 分层截断（高 500/中 200）；时间线 50 类 chip 筛选；设置页类别勾选；`GET /api/foreshadow/categories`
+
+### 08-09 ｜ 总结阶段独立模型选择（应对大模型延迟问题）
+
+- 诊断：M2.7 思考模型在 50-110K 字符大 prompt 上延迟 5-15 分钟，630s 硬超时卡在延迟中位数 → 大量请求被误杀（实测记录：M2.7 官方 issue 报告平均响应 ~650s；**非安全审核**——涉敏错误码 1026/1027 会秒回错误响应，而全部失败都是"API 无响应"）
+- **`summary_model` + `summary_thinking_mode`**：总结页独立模型下拉（复用同一 base_url/api_key，重型任务切 M3 等）+ 思考模式三档（自动 / mimo·GLM·M3 禁用思考 / DeepSeek·Qwen 禁用思考），持久化到 config.json
+- **实测效果**：切 `deepseek-v4-flash` 后最终报告 3 分 21 秒一次通过（167K tokens），对比 M2.7 卡 630s×3 轮仍失败
+- `summary_timeout` 默认 600s 与 max_tokens 告警阈值（64K→65537）微调
+
+### 08-09 ｜ 最终总结断点续跑补全
+
+- 阶段 1/4 卷摘要断点此前已有（volume_N.md 一完成即写 + recon_N.json 失败不写 → 重启只补调和 + manifest 校验 batch_size/ch 范围）
+- **新增阶段 2/4 复检续跑**：每完成一批复检立即落盘 ledger（进 `_lock` 防并发写竞争），崩溃/停止后重启只对仍 active 的伏笔复检，已回收的不重复付费
+- 配套：README 完整文档
+
+### 未提交清单（当前工作区）
+
+- 08-02 之后的所有里程碑（自动总结/优化批/伏笔 50 类/模型选择/复检续跑）尚未 git 提交
+- 系统备份：`F:\AI\小说分析器 - 归一化兜底版`（08-09，伏笔归一化分支完整快照）
+
+---
+
+## 核心机制演进主线
+
+| 机制 | 雏形期（3月） | PyQt6/PySide6 期（4-7月） | Web 版（8月） |
+|---|---|---|---|
+| 分析引擎 | 单块顺序 + knowledge.json | 串行预热 + 分片/流式并发 + 失败 3 轮补跑 | 同上 + 快照隔离（并发正确性） |
+| 记忆 | timeline + 压缩弧光 | 结构化滚动总结（里程碑/范式层/因果链/势头） | 同上 + 断号容错 + KV cache 前缀优化 |
+| 伏笔 | 无 | 回收机制 → 伏笔账本（06-16/06-17） | **50 类分类体系**（源头约束+映射兜底）+ 总表过滤 |
+| 最终总结 | 无 | 分批卷摘要+报告（05-17）→ 4 阶段（调和/复检/风格/报告） | 4 阶段 + **完整断点续跑** + 独立模型/思考选择 |
+| 容错 | 温度退火 | + 指数退避 + 7 层 JSON 容错 + FailureLogger | + 漏引号定向修复 + 重试成本透明 |
+| GUI/形态 | tkinter | PyQt6 → PySide6（Fluent 主题） | **FastAPI + Vue3 + pywebview** |
+| 队列 | 无 | 无（单书）→ QueueManager（07-26） | 队列服务 + 自动总结 + 断点恢复 |
+
+## 实际战绩（可复现的里程碑结果）
+
+- 《三侠五义》121 章：5/17 并行模式半小时全书分析 + 最终总结报告（PyQt6 版）
+- 5 本书批量风格对比（6/1）：三侠五义/圣墟/大王饶命/永夜君王/超神机械师
+- 《卡徒》514 章队列分析（7 月底，block_size=2 断点续跑验证）
+- 《北宋穿越指南》497 章（8/9）：伏笔 50 类归一化全量映射 1663 种 type、0 幻觉、时间线 2786 条
+- 《白首妖师》500 章（8/9）：新约束 prompt 首战（48 种 type 全合法），最终报告经切换 deepseek-v4-flash 一次通过
+- 归档书目：87+ 本（微型集群/分析结果），覆盖玄幻/武侠/都市/科幻等题材

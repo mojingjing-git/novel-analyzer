@@ -64,13 +64,29 @@ def extract_dialogues(text):
     return dialogues
 
 
-def word_density(text, words, total_chars):
-    total = sum(text.count(w) for w in words)
-    return total / max(total_chars / 1000, 1)
+# PERF-1：全部词表合并为单条正则，一次 finditer 完成所有指标计数。
+# 原实现对每个词表各扫一遍全文（感官26+比喻10+心理17+口语13+文言20+时间14+
+# 视角18 ≈ 120 次 O(n) 扫描），千章书会做 12 万次全文遍历；单遍正则把该阶段
+# CPU 开销降低 1-2 个数量级。最长优先排序避免短词先匹配吃掉长词。
+_WORD_METRIC: Dict[str, str] = {}
+for _words, _metric in (
+    (SENSORY_WORDS, 'sensory'), (METAPHOR_WORDS, 'metaphor'),
+    (PSYCHO_WORDS, 'psycho'), (COLLOQUIAL, 'colloquial'),
+    (LITERARY, 'literary'), (FOLLOW_MARKERS, 'follow'),
+    (GOD_MARKERS, 'god'), (TIME_WORDS, 'time'),
+):
+    for _w in _words:
+        _WORD_METRIC[_w] = _metric
+_ALL_WORD_RE = re.compile("|".join(map(re.escape, sorted(_WORD_METRIC, key=len, reverse=True))))
 
 
-def count_markers(text, markers):
-    return sum(text.count(m) for m in markers)
+def count_word_metrics(text: str) -> Dict[str, int]:
+    """单遍扫描统计全部词表命中次数（PERF-1）。"""
+    counts = {m: 0 for m in ('sensory', 'metaphor', 'psycho', 'colloquial',
+                             'literary', 'follow', 'god', 'time')}
+    for m in _ALL_WORD_RE.finditer(text):
+        counts[_WORD_METRIC[m.group(0)]] += 1
+    return counts
 
 
 def _read_text_multi_encoding(f: Path) -> Optional[str]:
@@ -109,6 +125,9 @@ def analyze_chapter_stats(text: str) -> Optional[Dict]:
     cjk_chars = [c for c in text if CJK_CHAR.match(c)]
     ttr = len(set(cjk_chars)) / max(len(cjk_chars), 1)
 
+    # PERF-1：单遍扫描获取全部词表命中（替代原先 ~120 次全文 count）
+    wm = count_word_metrics(text)
+
     return {
         'total_chars': total,
         'sentence_count': len(sents),
@@ -116,13 +135,13 @@ def analyze_chapter_stats(text: str) -> Optional[Dict]:
         'dialogue_ratio': dial_chars / max(total, 1),
         'avg_sentence_length': avg_sl,
         'short_sentence_ratio': short / max(len(sent_lens), 1),
-        'sensory_density': word_density(text, SENSORY_WORDS, total),
-        'metaphor_freq': word_density(text, METAPHOR_WORDS, total),
-        'psychological_density': word_density(text, PSYCHO_WORDS, total),
-        'colloquial_count': sum(text.count(w) for w in COLLOQUIAL),
-        'literary_count': sum(text.count(w) for w in LITERARY),
-        'follow_markers': count_markers(text, FOLLOW_MARKERS),
-        'god_markers': count_markers(text, GOD_MARKERS),
+        'sensory_density': wm['sensory'] / max(total / 1000, 1),
+        'metaphor_freq': wm['metaphor'] / max(total / 1000, 1),
+        'psychological_density': wm['psycho'] / max(total / 1000, 1),
+        'colloquial_count': wm['colloquial'],
+        'literary_count': wm['literary'],
+        'follow_markers': wm['follow'],
+        'god_markers': wm['god'],
         # 句法扩展
         'sentence_length_std': std_sl,
         'long_sentence_ratio': long / max(len(sent_lens), 1),
@@ -133,7 +152,7 @@ def analyze_chapter_stats(text: str) -> Optional[Dict]:
         'question_density': text.count('？') / max(total / 1000, 1),
         'period_density': text.count('。') / max(total / 1000, 1),
         'ttr': ttr,
-        'time_word_density': word_density(text, TIME_WORDS, total),
+        'time_word_density': wm['time'] / max(total / 1000, 1),
     }
 
 
@@ -201,16 +220,36 @@ def sample_chapters(blocks_dir: Path, n: int = 6) -> List[Tuple[int, str]]:
             text = _read_text_multi_encoding(f)
             if text is None:
                 continue
-            # 随机位置取 1500 字（避免总是开头）
+            # 随机位置取 1500 字（避免总是开头）。
+            # P1-5：改为在原文上按"第 offset 个汉字"定位窗口，保留标点/引号/段落，
+            # 否则对话与节奏分析失去核心证据（原实现把长章采样文本的标点全剥了）。
             cjk_len = count_cjk(text)
             if cjk_len > 1500:
                 offset = rng.randint(0, cjk_len - 1500)
-                chars = [c for c in text if CJK_CHAR.match(c)]
-                text = ''.join(chars[offset:offset + 1500])
+                start = _locate_cjk_offset(text, offset)
+                end = _locate_cjk_offset(text, offset + 1500)
+                if start is not None:
+                    text = text[start:end or len(text)]
             samples.append((ch_num, text))
         except Exception:
             continue
     return samples
+
+
+def _locate_cjk_offset(text: str, n: int) -> Optional[int]:
+    """返回文本中第 n 个汉字（1-based）的字符下标；n 超界返回 None。
+
+    用于在保留标点的前提下按汉字数定位采样窗口（P1-5）。
+    """
+    if n <= 0:
+        return 0
+    cnt = 0
+    for i, c in enumerate(text):
+        if CJK_CHAR.match(c):
+            cnt += 1
+            if cnt >= n:
+                return i
+    return None
 
 
 # ============================================================
@@ -279,11 +318,12 @@ async def call_llm_semantic(prompt: str, api_config: dict) -> Optional[dict]:
         api_key=api_config['api_key'],
         model=api_config['model'],
         max_tokens=20000,
-        timeout=120,
+        timeout=api_config.get('timeout', 120),
         temperature=0.3,
         temperature_step=0.1,
         temperature_max_retries=2,
         backoff_max_retries=1,
+        thinking_mode=api_config.get('thinking_mode', {}),
     ))
 
     messages = [
@@ -401,8 +441,11 @@ async def analyze_book(blocks_dir: Path, book_name: str, use_llm: bool = True,
 
     if use_llm:
         # 必须 load() 才会从 config.json 读取真实配置（base_url/api_key/model），
-        # 否则 ConfigManager().config 永远是默认配置（空 key/空 model）
-        cfg = ConfigManager().load()
+        # 否则 ConfigManager().config 永远是默认配置（空 key/空 model）。
+        # 显式传项目根 config.json，避免依赖进程 cwd（cwd 变化时相对路径读不到配置）。
+        from ..config.settings import ConfigManager
+        _config_path = Path(__file__).resolve().parent.parent.parent / "config.json"
+        cfg = ConfigManager(_config_path).load()
         api_config = {
             "base_url": cfg.api.base_url,
             "api_key": cfg.api.api_key,

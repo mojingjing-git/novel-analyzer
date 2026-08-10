@@ -11,6 +11,28 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from backend.models.analysis_result import AnalysisResult, CoreEvent, CharacterArc, Foreshadowing, Location, SpatialRel
 
 
+def test_importance_parsing():
+    """core_events/foreshadowing 的 importance：英文归一化、非法值/缺省按中"""
+    data = {
+        "chapter_number": 1,
+        "core_events": [
+            {"id": 1, "event": "A", "importance": "高"},
+            {"id": 2, "event": "B"},
+            {"id": 3, "event": "C", "importance": "low"},
+            {"id": 4, "event": "D", "importance": "垃圾值"},
+        ],
+        "foreshadowing": [
+            {"clue": "x", "importance": "中"},
+            {"clue": "y"},
+            {"clue": "z", "importance": "High"},
+        ],
+    }
+    result = AnalysisResult.from_dict(data)
+    assert [e.importance for e in result.core_events] == ["高", "中", "低", "中"]
+    assert [f.importance for f in result.foreshadowing] == ["中", "中", "高"]
+    print("✅ test_importance_parsing passed")
+
+
 def test_basic_roundtrip():
     """基本字段往返"""
     data = {

@@ -9,13 +9,14 @@ import asyncio
 import json
 import logging
 import re
+import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 from ..models.analysis_result import AnalysisResult
 from ..models.knowledge import KnowledgeBase
 from ..config.constants import (
-    MAX_COMPRESSED_ARCS, MAX_RECENT_SUMMARIES, MAX_PACING_TRACKER,
+    MAX_COMPRESSED_ARCS, MAX_RECENT_SUMMARIES,
     MAX_FORESIGHT_NETWORK, MAX_WORLD_BUILDING, MAX_VERIFIED_FACTS,
     MAX_LONG_TERM_ARCS, MAX_THEMATIC_ELEMENTS, ROLLING_FILE_NAME,
 )
@@ -40,9 +41,10 @@ class MemoryState:
         self._seen_world: Set[str] = set()
         self._seen_themes: Set[str] = set()
         self._seen_arcs: Set[str] = set()
-        # get_kb_snapshot 子集缓存
+        # get_kb_snapshot 子集缓存（仅缓存"已构建的最大 limit"，保证不含未来章节）
         self._snapshot_cache_limit: Optional[int] = None
         self._snapshot_cache_kb: Optional[KnowledgeBase] = None
+        self._snapshot_lock = threading.Lock()  # 快照缓存并发保护（事件循环内短临界区）
         # 知识库限制（来自配置，默认回退到常量）
         self._kb_limits = kb_limits or {}
 
@@ -53,7 +55,12 @@ class MemoryState:
         self._failed_chapters.pop(result.chapter_number, None)
         async with self._kb_lock:
             self._merge_one(result)
-            self._snapshot_cache_limit = None  # 使子集缓存失效
+            # 子集缓存失效策略（2026-08-07 优化）：仅当新结果的章号落在已缓存
+            # limit 区间内才失效（该结果无法被"按章号区间增量扩展"覆盖）；
+            # 区间外的新结果（正常顺序分析）可直接增量扩展，避免每块全量重建 KB。
+            if (self._snapshot_cache_limit is not None
+                    and result.chapter_number <= self._snapshot_cache_limit):
+                self._snapshot_cache_limit = None
 
     def add_failed(self, chapter_number: int, error: str) -> None:
         """记录失败章节"""
@@ -63,29 +70,48 @@ class MemoryState:
         """
         获取 KB 快照（调用方拥有独立副本）。
         chapter_limit 为 None 或 >= 最大章号时返回当前 KB 深拷贝，
-        否则从子集结果重建 KB（带缓存，同批内命中率接近 100%）。
+        否则返回"仅包含章号 <= chapter_limit 结果"的子集 KB。
+
+        正确性约束（2026-08-07 修复）：子集缓存只允许在请求 limit 等于或大于
+        缓存 limit 时复用/扩展；绝不能用覆盖更大章号的缓存回答更小的 limit，
+        否则并发分析中低章号块会"读到未来章节知识"（原实现 bug，P0-1）。
         """
         # 快照 keys 避免并发修改
         keys = list(self.results.keys())
         if chapter_limit is None or not keys or chapter_limit >= max(keys):
             return KnowledgeBase.from_dict(self.kb.to_dict())
 
-        # 子集缓存：如果缓存的 snapshot 覆盖了请求的 chapter_limit，直接复用
-        if self._snapshot_cache_kb is not None and self._snapshot_cache_limit is not None:
-            if chapter_limit <= self._snapshot_cache_limit:
+        with self._snapshot_lock:
+            cached_limit = self._snapshot_cache_limit
+
+            # 命中：请求与缓存 limit 精确相等
+            if cached_limit is not None and chapter_limit == cached_limit:
                 return KnowledgeBase.from_dict(self._snapshot_cache_kb.to_dict())
 
-        # 缓存未命中，从子集构建
-        snapshot = list(self.results.items())
-        subset = [r for ch, r in snapshot if ch <= chapter_limit]
-        kb = self._build_kb_from_results(subset)
+            # 命中：请求 limit 大于缓存 limit → 增量扩展（O(新增章节数)，非全量重建）
+            if cached_limit is not None and chapter_limit > cached_limit:
+                new_results = sorted(
+                    (r for ch, r in self.results.items() if cached_limit < ch <= chapter_limit),
+                    key=lambda r: r.chapter_number,
+                )
+                kb = KnowledgeBase.from_dict(self._snapshot_cache_kb.to_dict())
+                if new_results:
+                    self._extend_kb(kb, new_results)
+                self._snapshot_cache_limit = chapter_limit
+                self._snapshot_cache_kb = kb
+                return KnowledgeBase.from_dict(kb.to_dict())
 
-        # 更新缓存（取最大的 chapter_limit，覆盖更多后续请求）
-        if self._snapshot_cache_limit is None or chapter_limit > self._snapshot_cache_limit:
-            self._snapshot_cache_limit = chapter_limit
-            self._snapshot_cache_kb = kb
-
-        return KnowledgeBase.from_dict(kb.to_dict())
+            # 未命中：请求 limit 小于缓存 limit（或首次构建）→ 从子集重建，
+            # 保证不包含任何 > chapter_limit 的未来章节
+            subset = sorted(
+                (r for ch, r in self.results.items() if ch <= chapter_limit),
+                key=lambda r: r.chapter_number,
+            )
+            kb = self._build_kb_from_results(subset)
+            if cached_limit is None or chapter_limit > cached_limit:
+                self._snapshot_cache_limit = chapter_limit
+                self._snapshot_cache_kb = kb
+            return KnowledgeBase.from_dict(kb.to_dict())
 
     async def flush_to_disk(self, output_dir: Path) -> int:
         """
@@ -296,7 +322,20 @@ class MemoryState:
         kb.world_building = kb.world_building[-L.get('max_world_building', MAX_WORLD_BUILDING):]
         kb.thematic_elements = kb.thematic_elements[-L.get('max_thematic_elements', MAX_THEMATIC_ELEMENTS):]
         kb.foreshadowing_network = kb.foreshadowing_network[-L.get('max_foreshadow_network', MAX_FORESIGHT_NETWORK):]
-        kb.pacing_tracker = kb.pacing_tracker[-L.get('max_pacing_tracker', MAX_PACING_TRACKER):]
+
+    def _extend_kb(self, kb: KnowledgeBase, new_results: List[AnalysisResult]) -> None:
+        """将新结果增量合并进已有 KB（快照扩展用；须在 _snapshot_lock 内调用）。
+
+        去重集合从 KB 现存字段重建（verified_facts 等本身就是去重后的列表），
+        与 _merge_result_into 的语义保持一致。
+        """
+        seen_facts = set(kb.verified_facts)
+        seen_world = set(kb.world_building)
+        seen_themes = set(kb.thematic_elements)
+        seen_arcs = set(kb.long_term_arcs)
+        for r in new_results:
+            self._merge_result_into(r, kb, seen_facts, seen_world, seen_themes, seen_arcs)
+        self._trim_kb(kb)
 
     def _build_kb_from_results(self, results: List[AnalysisResult]) -> KnowledgeBase:
         """从结果列表构建全新 KB（用于 get_kb_snapshot 子集场景）"""

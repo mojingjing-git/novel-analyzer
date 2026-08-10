@@ -47,18 +47,104 @@ async function loadAggFiles() {
 }
 
 async function viewAggFile(name: string) {
-  try { const res = await api.getAggregateFile(bookId.value, name); aggContent.value = res.content; aggIsJson.value = res.is_json } catch (e) { alert((e as Error).message) }
+  try { const res = await api.getAggregateFile(bookId.value, name); aggContent.value = res.content; aggIsJson.value = res.is_json } catch (e) { aggError.value = (e as Error).message }
 }
 
+const aggNotice = ref('')
 async function exportExcel() {
-  try { await api.exportAggregateExcel(bookId.value); alert('导出成功') } catch (e) { alert((e as Error).message) }
+  aggError.value = ''
+  aggNotice.value = ''
+  try { await api.exportAggregateExcel(bookId.value); aggNotice.value = '导出成功' } catch (e) { aggError.value = (e as Error).message }
 }
 
 // ===== 区块二：最终总结 =====
 const startCh = ref(1)
 const endCh = ref(99999)
+// 0802 spec：批次/并发参数持久化到后端 config.json（取代 localStorage）
 const batchSize = ref(30)
 const concurrency = ref(2)
+// 总结专用模型/思考覆盖：空=跟随全局设置
+const summaryModel = ref('')
+const summaryThinking = ref('{}')
+const modelOptions = ref<string[]>([])
+let paramsLoaded = false
+let persistTimer: ReturnType<typeof setTimeout> | null = null
+let persistVersion = 0
+const paramSaveError = ref('')
+watch(batchSize, () => { if (paramsLoaded) schedulePersist() })
+watch(concurrency, () => { if (paramsLoaded) schedulePersist() })
+watch(summaryModel, () => { if (paramsLoaded) schedulePersist() })
+watch(summaryThinking, () => { if (paramsLoaded) schedulePersist() })
+
+// 防抖 + 版本号串行化：连续修改只触发一次写入；写入时重新读服务器最新配置再全量回写，
+// 避免多个并发 PUT 基于旧快照互相覆盖（旧实现的竞态：快速改两个参数会丢其中一个）。
+function schedulePersist() {
+  persistVersion++
+  const myVersion = persistVersion
+  if (persistTimer) clearTimeout(persistTimer)
+  persistTimer = setTimeout(async () => {
+    persistTimer = null
+    await persistSummaryParams()
+    if (myVersion !== persistVersion) schedulePersist() // 写入期间又有改动，补一轮
+  }, 600)
+}
+
+async function persistSummaryParams() {
+  try {
+    paramSaveError.value = ''
+    // 注意：PUT /api/settings 是全量替换（缺失字段回退默认值），
+    // 必须基于完整配置修改后整体写回，否则会重置 api_key 等其它配置。
+    const cfg = await api.getSettings()
+    cfg.analysis.summary_batch_size = batchSize.value
+    cfg.analysis.summary_concurrency = concurrency.value
+    cfg.api.summary_model = summaryModel.value
+    cfg.api.summary_thinking_mode = jsonStringToDict(summaryThinking.value)
+    await api.putSettings(cfg)
+  } catch (e) {
+    // 分析运行中 PUT 会返回 409：显式提示，避免用户以为改成功
+    paramSaveError.value = '保存总结参数失败: ' + (e as Error).message
+  }
+}
+
+// 思考控制选项（JSON 字符串 ↔ dict，按参数名区分，不按厂商模型命名）
+const THINKING_OPTIONS = [
+  { value: '{}', label: '自动（跟随全局设置）' },
+  { value: '{"thinking":{"type":"disabled"}}', label: 'thinking: disabled' },
+  { value: '{"reasoning_effort":"none"}', label: 'reasoning_effort: none' },
+  { value: '{"enable_thinking":false}', label: 'enable_thinking: false' },
+]
+
+function dictToJsonString(v: Record<string, unknown> | undefined): string {
+  if (!v || Object.keys(v).length === 0) return '{}'
+  return JSON.stringify(v)
+}
+function jsonStringToDict(s: string): Record<string, unknown> {
+  try { return s === '{}' ? {} : JSON.parse(s) } catch { return {} }
+}
+
+async function loadSummaryParams() {
+  try {
+    const cfg = await api.getSettings()
+    batchSize.value = cfg.analysis.summary_batch_size ?? 30
+    concurrency.value = cfg.analysis.summary_concurrency ?? 2
+    summaryModel.value = cfg.api.summary_model ?? ''
+    summaryThinking.value = dictToJsonString(cfg.api.summary_thinking_mode)
+    // 当前模型不在列表时补一项（支持列表接口没返回的自定义模型）
+    if (summaryModel.value && !modelOptions.value.includes(summaryModel.value)) {
+      modelOptions.value.push(summaryModel.value)
+    }
+  } catch (e) { console.error('读取总结参数失败:', e) }
+  paramsLoaded = true
+}
+async function loadModelOptions() {
+  try {
+    const res = await api.getModels()
+    modelOptions.value = res.models ?? []
+    if (summaryModel.value && !modelOptions.value.includes(summaryModel.value)) {
+      modelOptions.value.push(summaryModel.value)
+    }
+  } catch (e) { console.error('获取模型列表失败:', e) }
+}
 const summaryStatus = ref<SummaryStatus | null>(null)
 const report = ref('')
 let pollTimer: ReturnType<typeof setInterval> | null = null
@@ -125,11 +211,13 @@ const showProgress = computed(() => {
   return ['complete', 'failed', 'stopped'].includes(s.phase)
 })
 
+const summaryError = ref('')
 async function startSummary() {
+  summaryError.value = ''
   try { await api.startSummary(bookId.value, startCh.value, endCh.value, batchSize.value, concurrency.value) }
-  catch (e) { alert((e as Error).message) }
+  catch (e) { summaryError.value = (e as Error).message }
 }
-async function stopSummary() { try { await api.stopSummary() } catch (e) { alert((e as Error).message) } }
+async function stopSummary() { try { await api.stopSummary() } catch (e) { summaryError.value = (e as Error).message } }
 async function refreshSummaryStatus() { try { summaryStatus.value = await api.summaryStatus() } catch (e) { console.error(e) } }
 async function loadReport() {
   if (!bookId.value) return
@@ -146,7 +234,7 @@ watch(bookId, async () => {
   await loadReport()
 })
 
-onMounted(() => { refreshSummaryStatus(); loadAggFiles(); loadReport(); pollTimer = setInterval(refreshSummaryStatus, 2000) })
+onMounted(() => { loadSummaryParams(); loadModelOptions(); refreshSummaryStatus(); loadAggFiles(); loadReport(); pollTimer = setInterval(refreshSummaryStatus, 2000) })
 onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 </script>
 
@@ -177,15 +265,34 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
         </div>
         <div class="flex items-center gap-2">
           <label class="text-sm shrink-0" style="color: var(--color-system-gray)">并发数:</label>
-          <input v-model.number="concurrency" type="number" min="1" max="4" class="glass-input flex-1" />
+          <input v-model.number="concurrency" type="number" min="1" max="20" class="glass-input flex-1" />
         </div>
       </div>
+
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div class="flex items-center gap-2">
+          <label class="text-sm shrink-0" style="color: var(--color-system-gray)" title="最终总结专用模型，复用同一 base_url/api_key；空=跟随全局模型（重型任务可切 MiniMax-M3 等）">总结模型:</label>
+          <select v-model="summaryModel" class="glass-input flex-1">
+            <option value="">跟随全局设置</option>
+            <option v-for="m in modelOptions" :key="m" :value="m">{{ m }}</option>
+          </select>
+        </div>
+        <div class="flex items-center gap-2">
+          <label class="text-sm shrink-0" style="color: var(--color-system-gray)" title="总结专用思考控制，空=跟随全局；M3/mimo/GLM 用 thinking 参数，DeepSeek/Qwen 用 enable_thinking（M2.x 关不掉思考）">思考模式:</label>
+          <select v-model="summaryThinking" class="glass-input flex-1">
+            <option v-for="o in THINKING_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
+          </select>
+        </div>
+      </div>
+      <p v-if="paramSaveError" class="glass-tinted-red px-3 py-2 rounded text-sm">{{ paramSaveError }}</p>
 
       <div class="flex gap-2">
         <button v-if="!summaryStatus?.running" @click="startSummary" :disabled="!bookId" class="glass-button glass-button-primary">开始总结</button>
         <button v-else @click="stopSummary" class="glass-button glass-button-danger">停止</button>
         <button @click="loadReport" :disabled="!bookId" class="glass-button">加载报告</button>
       </div>
+
+      <p v-if="summaryError" class="glass-tinted-red px-3 py-2 rounded text-sm">{{ summaryError }}</p>
 
       <!-- 细化进度条：对齐旧版日志「最终总结」部分的 4 阶段粒度 -->
       <div v-if="showProgress" class="summary-progress">
@@ -228,11 +335,12 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
         <button @click="loadAggFiles" :disabled="!bookId" class="glass-button">刷新文件</button>
         <button @click="exportExcel" :disabled="!bookId" class="glass-button">导出Excel</button>
       </div>
-      <p v-if="aggError" class="glass-tinted-red px-3 py-2 rounded text-sm" style="color: var(--color-system-red)">{{ aggError }}</p>
+      <p v-if="aggError" class="glass-tinted-red px-3 py-2 rounded text-sm">{{ aggError }}</p>
+      <p v-if="aggNotice" class="glass-tinted-green px-3 py-2 rounded text-sm">{{ aggNotice }}</p>
       <div v-if="aggFiles.length" class="flex gap-2 flex-wrap">
         <button v-for="f in aggFiles" :key="f.name" @click="viewAggFile(f.name)" class="glass-button" style="font-size: 12px">{{ f.name }} ({{ f.size_kb }}KB)</button>
       </div>
-      <pre v-if="aggContent" class="bg-gray-900 text-green-400 p-4 rounded text-xs overflow-auto">{{ aggIsJson ? JSON.stringify(aggContent, null, 2) : aggContent }}</pre>
+      <pre v-if="aggContent" class="code-surface code-green p-4 overflow-auto max-h-96">{{ aggIsJson ? JSON.stringify(aggContent, null, 2) : aggContent }}</pre>
     </section>
   </div>
 </template>
@@ -244,12 +352,12 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   flex-direction: column;
   gap: 12px;
   padding: 14px 16px;
-  border-radius: 12px;
+  border-radius: 14px;
   background: var(--glass-frost);
   border: 1px solid var(--glass-rim-color);
-  backdrop-filter: blur(10px) saturate(160%);
-  -webkit-backdrop-filter: blur(10px) saturate(160%);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4), 0 1px 3px rgba(0, 0, 0, 0.06);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-inner);
 }
 
 .step-row {
@@ -266,7 +374,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   border-radius: 10px;
   font-size: 12px;
   border: 1px solid var(--glass-rim-color);
-  background: rgba(0, 0, 0, 0.03);
+  background: var(--glass-fill-subtle);
   color: var(--text-tertiary);
   transition: all 0.3s ease;
 }
@@ -279,7 +387,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   justify-content: center;
   font-size: 11px;
   flex-shrink: 0;
-  background: rgba(0, 0, 0, 0.06);
+  background: var(--glass-fill-subtle);
   color: var(--text-secondary);
 }
 .step-label {
@@ -308,13 +416,14 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 .bar {
   height: 8px;
   border-radius: 999px;
-  background: rgba(0, 0, 0, 0.08);
+  background: var(--glass-fill-subtle);
   overflow: hidden;
 }
 .bar-fill {
   height: 100%;
   border-radius: 999px;
-  background: linear-gradient(90deg, #0a84ff, #5ac8fa);
+  background: linear-gradient(90deg, var(--color-system-blue), #5ac8fa);
+  box-shadow: 0 0 8px rgba(0, 122, 255, 0.4);
   transition: width 0.45s ease;
 }
 

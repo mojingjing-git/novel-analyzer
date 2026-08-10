@@ -9,6 +9,12 @@ import re
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 
+from backend.config.constants import (
+    FORESHADOW_CATEGORY_DEFS,
+    FORESHADOW_CATEGORY_FALLBACK,
+    FORESHADOW_CATEGORY_SCHEMA_VERSION,
+    FORESHADOW_TYPE_MAP_FILE,
+)
 from backend.models.analysis_result import AnalysisResult
 from backend.utils.aggregate_utils import JSONAggregator
 
@@ -20,9 +26,30 @@ def _load_results(output_dir: Path) -> List[AnalysisResult]:
     return aggregator.load_all_chapters()
 
 
+def _load_type_category_map(output_dir: Path) -> Dict[str, str]:
+    """
+    加载 per-book type→category 映射（final_summary 服务持久化的文件）。
+    映射缺失/schema 不匹配/解析失败：返回空 dict，调用方降级到原始 type 显示。
+    """
+    map_path = output_dir / FORESHADOW_TYPE_MAP_FILE
+    if not map_path.exists():
+        return {}
+    try:
+        with open(map_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if data.get("schema_version") != FORESHADOW_CATEGORY_SCHEMA_VERSION:
+            return {}
+        return data.get("mapping", {}) or {}
+    except Exception as e:
+        logger.debug(f"viz_service 加载 type 映射失败: {e}，按原始 type 降级显示")
+        return {}
+
+
 def timeline_data(output_dir: Path) -> Dict[str, Any]:
     """时间线数据：核心事件泳道 + 伏笔埋设/回收"""
     results = _load_results(output_dir)
+    type_to_cat = _load_type_category_map(output_dir)
+    valid_names = {name for name, _, _ in FORESHADOW_CATEGORY_DEFS}
     events = []
     foreshadows = []
 
@@ -35,19 +62,29 @@ def timeline_data(output_dir: Path) -> Dict[str, Any]:
                 "event": event.event,
                 "characters": event.characters,
                 "function": event.function,
+                "importance": event.importance,
             })
         for fs in result.foreshadowing:
+            ftype = fs.type or ""
+            # 源头约束落地后 type 即合法类别；旧数据才查映射兜底
+            if ftype in valid_names:
+                category = ftype
+            else:
+                category = type_to_cat.get(ftype, FORESHADOW_CATEGORY_FALLBACK)
             foreshadows.append({
                 "chapter": ch,
                 "clue": fs.clue,
-                "type": fs.type,
+                "type": ftype,
+                "category": category,
                 "confidence": fs.confidence,
+                "importance": fs.importance,
             })
 
     return {
         "events": events,
         "foreshadows": foreshadows,
         "chapters": [r.chapter_number for r in results],
+        "category_map_loaded": bool(type_to_cat),
     }
 
 

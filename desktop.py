@@ -23,8 +23,23 @@ import time
 import urllib.request
 from pathlib import Path
 
+# === 关键：Windows 下 stdout/stderr 默认按 GBK 编码；本项目大量 print 含中文/emoji
+# （如 ⚠️），一旦重定向到文件（run_desktop.bat 的 run.log）就会抛 UnicodeEncodeError，
+# 进而让配置加载、请求处理等链路整体崩溃、所有接口返回 500。
+# 重配为 UTF-8 + errors='replace'，确保任何 print 都不会中断进程。
+import io as _io
+try:
+    if hasattr(sys.stdout, "buffer"):
+        sys.stdout = _io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "buffer"):
+        sys.stderr = _io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 # === 关键：解决中文路径下 import backend.app 失败 ===
-PROJECT_ROOT = Path(__file__).resolve().parent
+# NOVEL_ROOT 允许从“本地副本”启动进程（WebView2 要求进程路径在本地盘），
+# 同时把所有数据/日志仍指向共享盘上的真实项目根目录。
+PROJECT_ROOT = Path(os.environ.get("NOVEL_ROOT") or str(Path(__file__).resolve().parent)).resolve()
 os.chdir(str(PROJECT_ROOT))
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -164,6 +179,25 @@ def _wait_for_server(port: int, timeout: int = 30) -> bool:
     return False
 
 
+class Api:
+    """暴露给前端的 pywebview JS API（window.pywebview.api）"""
+
+    def pick_files(self):
+        """
+        打开系统文件对话框选择 txt 小说，返回文件路径列表。
+        （Windows WebView2 的 <input type=file> 不给 File 对象注入 path 属性，
+        必须走后端 create_file_dialog 才能拿到真实本地路径。）
+        """
+        import webview
+
+        window = webview.windows[0]
+        return window.create_file_dialog(
+            webview.FileDialog.OPEN,
+            allow_multiple=True,
+            file_types=("TXT 文件 (*.txt)",),
+        )
+
+
 def main():
     _install_crash_diagnostics()
 
@@ -195,6 +229,7 @@ def main():
         height=900,
         min_size=(960, 700),
         text_select=True,
+        js_api=Api(),
     )
 
     # 记录窗口关闭 / 前端加载异常，便于区分「用户主动关」还是「渲染进程崩溃」

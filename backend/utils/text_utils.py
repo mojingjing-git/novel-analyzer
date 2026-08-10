@@ -5,7 +5,7 @@
 """
 
 from pathlib import Path
-from typing import List
+from typing import Dict, List
 
 
 def detect_and_decode(file_path: Path, encoding_priority: List[str]) -> str:
@@ -198,8 +198,9 @@ def deduplicate_foreshadows(
     2. SequenceMatcher 精筛：候选对相似度 >= similarity_threshold -> 确认重复
 
     Args:
-        clues: [(chapter, clue_text) 或 (chapter, clue_text, type, confidence), ...]
-               支持 2 元组和 4 元组两种格式，向后兼容。
+        clues: [(chapter, clue_text) 或 (chapter, clue_text, type, confidence) 或
+                (chapter, clue_text, type, confidence, importance), ...]
+               支持 2/4/5 元组多种格式，向后兼容。importance 字段用于透传到结果。
         keyword_overlap_min: 关键词交集最小数量（粗筛阈值）
         similarity_threshold: SequenceMatcher 相似度阈值（精筛阈值）
 
@@ -214,19 +215,25 @@ def deduplicate_foreshadows(
             "merged_count": int,      # 合并了多少条原始线索
             "type": str,              # 伏笔类型（代表条目的 type，可能为空）
             "confidence": str,        # 置信度（代表条目的 confidence，可能为空）
+            "importance": str,        # 重要度（合并条目中的最高重要度，5 元组时存在）
         }
     """
     if not clues:
         return []
 
-    # 预处理：每条 clue 提取关键词 + 归一化文本，兼容 2 元组和 4 元组
+    # 预处理：每条 clue 提取关键词 + 归一化文本，兼容 2/4/5 元组
     entries = []
     for item in clues:
-        if len(item) >= 4:
+        if len(item) >= 5:
+            chapter, clue_text, ftype, conf, imp = (
+                item[0], item[1], item[2], item[3], item[4]
+            )
+        elif len(item) >= 4:
             chapter, clue_text, ftype, conf = item[0], item[1], item[2], item[3]
+            imp = ""
         elif len(item) >= 2:
             chapter, clue_text = item[0], item[1]
-            ftype, conf = "", ""
+            ftype, conf, imp = "", "", ""
         else:
             continue
         if not clue_text or not str(clue_text).strip():
@@ -238,20 +245,30 @@ def deduplicate_foreshadows(
             'normalized': _normalize_for_dedup(str(clue_text)),
             'type': str(ftype) if ftype else "",
             'confidence': str(conf) if conf else "",
+            'importance': str(imp) if imp else "",
         })
 
     if not entries:
         return []
 
-    # 分组：每条 entry 归入某个"伏笔组"
+    # 分组：每条 entry 归入某个"伏笔组"。
+    # PERF-2：关键词倒排索引替代"与全部已有组逐一比较"（原实现 O(N²)，
+    # 长书数千条线索时需做百万级关键词交集 + SequenceMatcher 精筛）；
+    # 现在只与共享 >=1 个关键词的组比较，语义与旧逻辑等价（粗筛阈值不变）。
     groups = []  # 每组 = [entry_indices...]
+    keyword_index: Dict[str, set] = {}  # 关键词 -> 含该关键词的组号集合
 
     for i, entry in enumerate(entries):
         matched_group = None
 
-        for g_idx, group in enumerate(groups):
+        # 候选组：与本条目共享任意关键词的组
+        candidates = set()
+        for kw in entry['keywords']:
+            candidates |= keyword_index.get(kw, set())
+
+        for g_idx in sorted(candidates):
             # 取组内第一条作为代表
-            rep = entries[group[0]]
+            rep = entries[groups[g_idx][0]]
 
             # 粗筛：关键词交集
             overlap = entry['keywords'] & rep['keywords']
@@ -268,8 +285,14 @@ def deduplicate_foreshadows(
 
         if matched_group is not None:
             groups[matched_group].append(i)
+            g = matched_group
         else:
             groups.append([i])
+            g = len(groups) - 1
+
+        # 更新倒排索引
+        for kw in entry['keywords']:
+            keyword_index.setdefault(kw, set()).add(g)
 
     # 构建去重结果
     catalog = []
@@ -283,12 +306,15 @@ def deduplicate_foreshadows(
         # 取最高置信度（高>中>低）
         conf_order = {"高": 3, "中": 2, "低": 1}
         best_conf = max(members, key=lambda e: conf_order.get(e['confidence'], 0))
+        # 取最高重要度（高>中>低；5 元组输入时存在）
+        imp_order = {"高": 3, "中": 2, "低": 1}
+        best_imp = max(members, key=lambda e: imp_order.get(e['importance'], 0))
         # 取最常见的 type
-        type_counts = {}
+        type_counts: Dict[str, int] = {}
         for m in members:
             if m['type']:
                 type_counts[m['type']] = type_counts.get(m['type'], 0) + 1
-        best_type = max(type_counts, key=type_counts.get) if type_counts else rep['type']
+        best_type = max(type_counts, key=lambda k: type_counts[k], default=rep['type'])
 
         catalog.append({
             'id': f"fs_{g_idx + 1:03d}",
@@ -299,6 +325,7 @@ def deduplicate_foreshadows(
             'merged_count': len(members),
             'type': best_type,
             'confidence': best_conf['confidence'],
+            'importance': best_imp['importance'],
         })
 
     return catalog

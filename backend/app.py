@@ -9,6 +9,7 @@ import asyncio
 import logging
 import os
 import sys
+from contextlib import asynccontextmanager
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from backend.api import (
     routes_viz,
     routes_workspace,
     routes_aggregate,
+    routes_foreshadow,
     ws,
 )
 from backend.progress_hub import get_hub, install_log_forwarder
@@ -40,7 +42,10 @@ if getattr(sys, "frozen", False):
     _log_dir.mkdir(parents=True, exist_ok=True)
     LOG_FILE = _log_dir / "analyzer.log"
 else:
-    PROJECT_ROOT = Path(__file__).resolve().parent.parent
+    # NOVEL_ROOT 允许从“本地副本”启动进程（WebView2 需本地路径），
+    # 同时让数据/日志仍落在共享盘真实项目根。
+    _novel_root = os.environ.get("NOVEL_ROOT")
+    PROJECT_ROOT = Path(_novel_root).resolve() if _novel_root else Path(__file__).resolve().parent.parent
     LOG_FILE = PROJECT_ROOT / "analyzer.log"
 FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
 
@@ -53,10 +58,10 @@ logging.getLogger().addHandler(_file_handler)
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Novel Analyzer Web", version="0.1.0")
-
-    @app.on_event("startup")
-    async def _startup():
+    # P2-12：@app.on_event("startup") 已被 FastAPI 弃用（DeprecationWarning），
+    # 迁移到 lifespan 上下文管理器（行为等价）。
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
         install_log_forwarder()  # 内部使用 asyncio.create_task，需在事件循环中调用
 
         # 把未检索的 asyncio 任务异常写入日志（默认只打到 stderr，桌面端会丢失）
@@ -74,6 +79,9 @@ def create_app() -> FastAPI:
             loop.set_exception_handler(_exc_handler)
         except Exception as e:
             logger.debug(f"设置 asyncio 异常处理器失败: {e}")
+        yield
+
+    app = FastAPI(title="Novel Analyzer Web", version="0.1.0", lifespan=lifespan)
 
     # 开发期前端跑在 vite dev server（不同端口），需要 CORS
     app.add_middleware(
@@ -97,6 +105,7 @@ def create_app() -> FastAPI:
     app.include_router(routes_workspace.router)
     app.include_router(routes_prompt.router)
     app.include_router(routes_aggregate.router)
+    app.include_router(routes_foreshadow.router)
 
     @app.get("/api/health")
     async def health():

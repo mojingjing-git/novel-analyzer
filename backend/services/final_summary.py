@@ -16,9 +16,15 @@ from pathlib import Path
 from typing import List, Dict, Optional, Tuple, Callable
 
 from backend.config.settings import AppConfig
+from backend.config.constants import (
+    FORESHADOW_CATEGORY_DEFS,
+    FORESHADOW_CATEGORY_FALLBACK,
+    FORESHADOW_CATEGORY_SCHEMA_VERSION,
+    FORESHADOW_TYPE_MAP_FILE,
+)
 from backend.core.llm_client import LLMClient
 from backend.core.style_analyzer import extract_style_profile
-from backend.utils.json_utils import safe_load_json, extract_json_from_text, safe_parse_json
+from backend.utils.json_utils import safe_load_json, safe_save_json, extract_json_from_text, safe_parse_json
 from backend.utils.text_utils import deduplicate_foreshadows
 from backend.utils.foreshadow_ledger import ForeshadowLedger, ForeshadowItem
 
@@ -350,8 +356,6 @@ def extract_key_fields(data: dict) -> Optional[dict]:
         'summary': summary,
         'link': cb.get('contextual_link', ''),
         'foreshadow': first_clue,
-        'activeFS': lci.get('active_foreshadowing', []),
-        'resolvedFS': lci.get('resolved_foreshadowing', []),
         'holes': plot_holes,
         'timeline': uk.get('timeline', ''),
         'events': events,
@@ -504,6 +508,7 @@ class FinalSummaryRunner:
         self.batch_size = max(1, batch_size if batch_size is not None else 1)
         self.concurrency = max(1, concurrency if concurrency is not None else self.config.analysis.concurrency)
         self._lock = asyncio.Lock()
+        self._checkpoint_lock = asyncio.Lock()  # 断点 checkpoint 落盘/读写的互斥保护
         self._stop_requested = False
         self._on_progress = on_progress
         self._on_token_stats = on_token_stats
@@ -515,7 +520,15 @@ class FinalSummaryRunner:
         self._tokens_recheck = (0, 0)        # 全书伏笔复检
         self._tokens_style = (0, 0)          # 风格提取
 
-        _api_cfg = replace(self.config.api, json_mode="default")
+        # 总结专用模型/思考覆盖：summary_model 空则跟随全局 model；
+        # summary_thinking_mode 空则跟随全局 thinking_mode（兼容 mimo/GLM/DeepSeek 等各厂商参数）
+        _api_cfg = replace(
+            self.config.api,
+            model=self.config.api.summary_model or self.config.api.model,
+            json_mode="default",
+            timeout=self.config.api.summary_timeout,
+            thinking_mode=self.config.api.summary_thinking_mode or self.config.api.thinking_mode,
+        )
         self._llm = LLMClient(_api_cfg)
 
         self.ledger_path = ledger_path or (self.output_dir / "foreshadow_ledger.json")
@@ -667,27 +680,48 @@ class FinalSummaryRunner:
             ]
         }
 
-    # 重要伏笔类型（用于过滤低价值条目，如"能力展示"、"细节"等不算伏笔）
-    IMPORTANT_TYPES = {
-        "悬念", "线索", "伏笔", "世界观伏笔", "情节伏笔", "角色伏笔",
-        "角色命运", "角色背景", "世界观揭秘", "设定揭示", "剧情伏笔",
-        "角色关系伏笔", "角色成长伏笔", "威胁预告", "威胁预警",
-        "世界观线索", "世界观铺垫/伏笔", "设定伏笔", "关键道具/伏笔",
-        "情节钩子", "身份/关系伏笔", "世界观与阴谋伏笔", "伏笔升级/矛盾",
-        "悬念/未解之谜", "新线索", "信息差",
-    }
+    # type→category 归一化映射文件路径（per-book 持久化）
+    def _foreshadow_type_map_path(self) -> Path:
+        return self.output_dir / FORESHADOW_TYPE_MAP_FILE
 
-    def _build_foreshadow_catalog(self, results: List[dict], max_items: int = 300) -> list:
+    def _load_foreshadow_type_map(self) -> Optional[Dict[str, str]]:
+        """加载 per-book type→category 映射（旧数据被动兜底，无 LLM 调用）。
+        返回 None 表示文件不存在或 schema 不匹配。"""
+        path = self._foreshadow_type_map_path()
+        if not path.exists():
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            # schema 版本检查：常量改了定义时自动失效
+            if data.get("schema_version") != FORESHADOW_CATEGORY_SCHEMA_VERSION:
+                logger.info(f"伏笔 type 映射 schema 版本不匹配 "
+                            f"({data.get('schema_version')} -> {FORESHADOW_CATEGORY_SCHEMA_VERSION})，映射失效按原始 type 兜底")
+                return None
+            valid_names = {name for name, _, _ in FORESHADOW_CATEGORY_DEFS}
+            mapping = data.get("mapping", {})
+            # 丢弃任何不在 50 类中的键（防御：旧版本残留或被手动改过）
+            return {k: v for k, v in mapping.items() if v in valid_names}
+        except Exception as e:
+            logger.warning(f"加载伏笔 type 映射失败: {e}，按原始 type 兜底")
+            return None
+
+    async def _build_foreshadow_catalog(self, results: List[dict]) -> list:
         """
         从逐章分析结果的 foreshadowing 字段构建伏笔总表。
-        纯代码扫描，不调用 LLM。用 deduplicate_foreshadows 去重。
-        提取 type 和 confidence 字段，用于过滤低价值条目。
 
-        Args:
-            results: _load_results 的返回值
-            max_items: 总表最大条目数（超出按 confidence 排序截断）
+        流程：
+        1. 收集所有 unique type + 5 元组线索 (ch, clue, type, conf, importance)
+        2. 解析 category：type 已是 50 类之一则直接用；否则查 per-book 映射文件兜底
+           （旧书在 prompt 约束落地前产出的自由式 type，靠映射文件归一；新书源头已约束）
+        3. 过滤：importance >= min_importance AND confidence >= min_confidence AND category ∈ kept_categories
+        4. 去重（text_utils.deduplicate_foreshadows，6 元组）
+        5. 综合排序：importance * 100 + confidence * 10 + evidence_count
+        6. 分层截断：importance=高 取到 max_high 上限，中 取到 max_mid 上限
         """
+        a = self.config.analysis
         all_clues = []
+        unique_types = set()
         for r in results:
             ch = r.get("ch", 0)
             foreshadows = r.get("foreshadowing_raw", [])
@@ -699,38 +733,103 @@ class FinalSummaryRunner:
                 clue = fs.get("clue", "")
                 if not clue or len(clue.strip()) < 15:
                     continue
-                ftype = fs.get("type", "")
-                conf = fs.get("confidence", "中")
-                all_clues.append((ch, clue, ftype, conf))
+                ftype = fs.get("type", "") or ""
+                conf = fs.get("confidence", "中") or "中"
+                imp = fs.get("importance", "中") or "中"
+                all_clues.append((ch, clue, ftype, conf, imp))
+                if ftype:
+                    unique_types.add(ftype)
 
-        logger.info(f"伏笔总表原始数据：{len(all_clues)} 条线索")
+        logger.info(f"伏笔总表原始数据：{len(all_clues)} 条线索，{len(unique_types)} 种 type")
 
-        # 按重要度过滤：只保留重要类型的伏笔（不管置信度）
-        filtered = [
-            item for item in all_clues
-            if item[2] in self.IMPORTANT_TYPES
-        ]
-        # 记录被丢弃的类型，帮助发现 LLM 产出的意料之外的类型
-        dropped_types = {}
-        for item in all_clues:
-            if item[2] not in self.IMPORTANT_TYPES:
-                dropped_types[item[2]] = dropped_types.get(item[2], 0) + 1
-        if dropped_types:
-            logger.info(f"IMPORTANT_TYPES 过滤丢弃: {dropped_types}")
-        logger.info(f"重要度过滤后：{len(filtered)} 条（重要类型，原 {len(all_clues)} 条）")
+        # 被动兜底：type 不在 50 类内的旧数据查 per-book 映射（无 LLM 调用）
+        valid_names = {name for name, _, _ in FORESHADOW_CATEGORY_DEFS}
+        type_to_category = self._load_foreshadow_type_map() or {}
 
-        catalog = deduplicate_foreshadows(filtered)
+        # 应用 category：给每条线索补 category
+        categorized = []
+        skipped_importance = 0
+        skipped_confidence = 0
+        skipped_category = 0
+        for ch, clue, ftype, conf, imp in all_clues:
+            # importance 阈值
+            if not self._imp_at_least(imp, a.foreshadow_min_importance):
+                skipped_importance += 1
+                continue
+            # confidence 阈值
+            if not self._imp_at_least(conf, a.foreshadow_min_confidence):
+                skipped_confidence += 1
+                continue
+            # category 解析：type 合法直接用；否则查映射；仍无则 fallback
+            if ftype in valid_names:
+                category = ftype
+            else:
+                category = type_to_category.get(ftype, FORESHADOW_CATEGORY_FALLBACK)
+            if category not in set(a.foreshadow_kept_categories):
+                skipped_category += 1
+                continue
+            categorized.append((ch, clue, ftype, conf, imp, category))
 
-        # 按置信度排序，截断到 max_items
+        logger.info(
+            f"伏笔过滤：原 {len(all_clues)} 条 → "
+            f"过滤后 {len(categorized)} 条（importance 丢 {skipped_importance}, "
+            f"confidence 丢 {skipped_confidence}, category 丢 {skipped_category}）"
+        )
+
+        # 去重（5 元组 + importance 透传）
+        catalog = deduplicate_foreshadows(categorized)
+
+        # 综合排序：importance * 100 + confidence * 10 + evidence_count
+        imp_order = {"高": 3, "中": 2, "低": 1}
         conf_order = {"高": 3, "中": 2, "低": 1}
-        catalog.sort(key=lambda c: conf_order.get(c.get("confidence", ""), 0), reverse=True)
-        if len(catalog) > max_items:
-            logger.info(f"伏笔总表截断：{len(catalog)} -> {max_items} 条")
-            catalog = catalog[:max_items]
+        for c in catalog:
+            c["_sort_key"] = (
+                imp_order.get(c.get("importance", "中"), 0) * 100
+                + conf_order.get(c.get("confidence", "中"), 0) * 10
+                + min(len(c.get("evidence_chapters", [])), 99)
+            )
+        catalog.sort(key=lambda c: c["_sort_key"], reverse=True)
+        for c in catalog:
+            c.pop("_sort_key", None)
 
-        self._next_foreshadow_id = len(catalog) + 1
-        logger.info(f"伏笔总表构建完成：{len(all_clues)} 条原始 -> {len(filtered)} 条过滤 -> {len(catalog)} 条去重")
-        return catalog
+        # 分层截断：importance=高 全部保留到 max_high，中 截到 max_mid
+        high_items = [c for c in catalog if c.get("importance") == "高"]
+        mid_items = [c for c in catalog if c.get("importance") == "中"]
+        other_items = [c for c in catalog if c.get("importance") not in ("高", "中")]
+        # 其他（如空字符串）按 confidence 排序
+        other_items.sort(
+            key=lambda c: conf_order.get(c.get("confidence", "中"), 0),
+            reverse=True,
+        )
+
+        truncated = []
+        max_high = a.max_foreshadow_catalog_high
+        max_mid = a.max_foreshadow_catalog_mid
+        if max_high == -1 or len(high_items) <= max_high:
+            truncated.extend(high_items)
+        else:
+            truncated.extend(high_items[:max_high])
+            logger.info(f"高 importance 截断: {len(high_items)} -> {max_high}")
+        if len(mid_items) <= max_mid:
+            truncated.extend(mid_items)
+        else:
+            truncated.extend(mid_items[:max_mid])
+            logger.info(f"中 importance 截断: {len(mid_items)} -> {max_mid}")
+        truncated.extend(other_items)
+
+        self._next_foreshadow_id = len(truncated) + 1
+        logger.info(
+            f"伏笔总表构建完成：{len(all_clues)} 条原始 -> {len(categorized)} 条过滤 -> "
+            f"{len(truncated)} 条入总表（高 {len(high_items)}, 中 {len(mid_items)}, "
+            f"其他 {len(other_items)}）"
+        )
+        return truncated
+
+    @staticmethod
+    def _imp_at_least(value: str, threshold: str) -> bool:
+        """判断 value 是否 >= threshold（高>=中>=低）。"""
+        order = {"高": 3, "中": 2, "低": 1}
+        return order.get(value, 0) >= order.get(threshold, 0)
 
     def _format_catalog_for_prompt(self, catalog: list, max_chapter: int = 99999) -> str:
         """
@@ -764,8 +863,15 @@ class FinalSummaryRunner:
     def _build_active_foreshadows_block(self, ch_start: int, ch_end: int, foreshadow_catalog: list = None) -> str:
         """构建【当前伏笔清单】文本块，使用伏笔总表的原始 clue"""
         if foreshadow_catalog:
-            # 从伏笔总表取截至本批的条目
-            items = [c for c in foreshadow_catalog if c["first_seen"] <= ch_end]
+            # 从伏笔总表取截至本批的条目；P1-7：仅保留账本中仍为 active 的条目——
+            # 已回收伏笔不再进入后续批次的 reconciliation，避免反复重审（token 浪费）
+            # 与"翻案"式状态抖动。
+            ledger_map = {i.id: i for i in self.ledger.items}
+            items = [
+                c for c in foreshadow_catalog
+                if c["first_seen"] <= ch_end
+                and (c["id"] not in ledger_map or ledger_map[c["id"]].status == 'active')
+            ]
         else:
             # 降级：用账本活跃列表
             active_items = [i for i in self.ledger.items if i.status == 'active']
@@ -873,6 +979,127 @@ class FinalSummaryRunner:
 
         return "\n".join(parts)
 
+    # 最终报告上下文预算保护（QUA-1）
+    # 阈值与组大小改为读取 self.config.analysis.volume_compress_threshold / volume_compress_group（用户在设置中可调）
+
+    def _compress_volume_summaries(self, volume_summaries: List[str]) -> str:
+        """
+        卷摘要拼接总字符超阈值时做轻量分层压缩（同步、零额外 LLM 调用）：
+        - 首尾各 1 组保留全文（故事开端与结局信息最密）；
+        - 中间组每条截断至 1/2 并标注省略，保留整体脉络。
+        保证任意长度的小说都能进入最终报告调用，且上下文不超出模型有效注意力。
+        """
+        threshold = self.config.analysis.volume_compress_threshold
+        group_size = self.config.analysis.volume_compress_group
+        joined = "\n\n".join(volume_summaries)
+        if len(joined) <= threshold or len(volume_summaries) <= 1:
+            return joined
+        logger.info(f"最终报告卷摘要超阈值（{len(joined)} 字符 > {threshold}），"
+                    f"执行分层压缩（{len(volume_summaries)} 卷，组大小 {group_size}）")
+        groups = [volume_summaries[i:i + group_size]
+                  for i in range(0, len(volume_summaries), group_size)]
+        parts = []
+        n = len(groups)
+        for gi, g in enumerate(groups):
+            if gi == 0 or gi == n - 1:
+                parts.append("\n\n".join(g))
+            else:
+                trimmed = [vs[:len(vs) // 2] + "\n（此处已压缩，省略后半）" for vs in g]
+                parts.append("\n\n".join(trimmed))
+        return "\n\n".join(parts)
+
+    # ==================== 卷摘要断点续跑（2026-08-07） ====================
+    # checkpoint 目录：{output_dir}/final_summary_checkpoint/
+    #   volume_{idx}.md    批次卷摘要（一完成即写，不等 reconciliation）
+    #   recon_{idx}.json   批次 reconciliation 结果（完成后写；失败不写→下次补）
+    #   manifest.json      批次元数据（batch_size + start/end 校验用）
+    # 恢复规则：batch_size 或批次 ch 范围与当前不一致时视为无效，忽略旧断点。
+
+    @property
+    def _checkpoint_dir(self) -> Path:
+        return self.output_dir / "final_summary_checkpoint"
+
+    async def _save_checkpoint_batch(self, idx: int, ch_start: int, ch_end: int,
+                                     summary_text: Optional[str], recon_data: Optional[dict]) -> None:
+        """落盘单个批次的断点（卷摘要与 reconciliation 各自独立写，两步互不阻塞）。
+
+        卷摘要先写、reconciliation 后写：即使 reconciliation 阶段停止/失败，
+        已完成的卷摘要也已落盘，下次重跑只需补 reconciliation（快速），
+        不必重跑最耗时的卷摘要 LLM 调用。
+        """
+        cp = self._checkpoint_dir
+        await asyncio.to_thread(cp.mkdir, parents=True, exist_ok=True)
+        vf = cp / f"volume_{idx}.md"
+        rf = cp / f"recon_{idx}.json"
+        async with self._checkpoint_lock:
+            if summary_text is not None and not vf.exists():
+                await asyncio.to_thread(vf.write_text, summary_text, encoding="utf-8")
+            # reconciliation 失败返回 None 时不落盘 → 下次重跑补 reconciliation
+            if recon_data is not None and not rf.exists():
+                await asyncio.to_thread(safe_save_json, recon_data, rf)
+            # 更新 manifest（原子写；并发批次经 _checkpoint_lock 串行）
+            manifest_path = cp / "manifest.json"
+            m = await asyncio.to_thread(safe_load_json, manifest_path)
+            if not isinstance(m, dict):
+                m = {"batch_size": self.batch_size, "batches": {}}
+            m["batch_size"] = self.batch_size
+            entry = m.setdefault("batches", {}).setdefault(str(idx), {})
+            entry["start"] = ch_start
+            entry["end"] = ch_end
+            if vf.exists():
+                entry["summary"] = f"volume_{idx}.md"
+            if rf.exists():
+                entry["recon"] = f"recon_{idx}.json"
+            m["batches"][str(idx)] = entry
+            await asyncio.to_thread(safe_save_json, m, manifest_path)
+
+    async def _load_checkpoint(self, batch_tasks: List[tuple]) -> Tuple[Dict[int, str], Dict[int, dict]]:
+        """从断点恢复已完成批次。
+
+        Returns:
+            (volume_results: {idx: 卷摘要文本}, recon_results: {idx: reconciliation dict})
+        校验失败（batch_size 变化 / 批次 ch 范围不匹配 / 文件缺失）的批次不恢复，
+        本次重新生成。
+        """
+        cp = self._checkpoint_dir
+        manifest_path = cp / "manifest.json"
+        if not manifest_path.exists():
+            return {}, {}
+        m = await asyncio.to_thread(safe_load_json, manifest_path)
+        if not isinstance(m, dict) or m.get("batch_size") != self.batch_size:
+            logger.info(f"断点 checkpoint batch_size({m.get('batch_size') if isinstance(m, dict) else '?'})"
+                        f"与当前({self.batch_size})不一致，忽略旧断点")
+            return {}, {}
+        batches = m.get("batches") or {}
+        volume_results: Dict[int, str] = {}
+        recon_results: Dict[int, dict] = {}
+        for idx, ch_start, ch_end, _prompt in batch_tasks:
+            b = batches.get(str(idx))
+            if not isinstance(b, dict):
+                continue
+            if b.get("start") != ch_start or b.get("end") != ch_end:
+                logger.debug(f"批次{idx} ch 范围与断点({b.get('start')}-{b.get('end')})不匹配，忽略")
+                continue
+            if b.get("summary"):
+                vf = cp / b["summary"]
+                if vf.exists():
+                    try:
+                        text = await asyncio.to_thread(vf.read_text, encoding="utf-8")
+                        if text.strip():
+                            volume_results[idx] = text
+                    except Exception:
+                        pass
+            if b.get("recon"):
+                rf = cp / b["recon"]
+                if rf.exists():
+                    try:
+                        rd = await asyncio.to_thread(safe_load_json, rf)
+                        if isinstance(rd, dict):
+                            recon_results[idx] = rd
+                    except Exception:
+                        pass
+        return volume_results, recon_results
+
     async def _run_style_extraction(self) -> Optional[dict]:
         """调用 style_analyzer 提取风格特征"""
         # 优先书目录下的 blocks（web 版按书目录组织），降级 working_directory
@@ -886,7 +1113,9 @@ class FinalSummaryRunner:
         api_config = {
             'base_url': self.config.api.base_url,
             'api_key': self.config.api.api_key,
-            'model': self.config.api.model,
+            'model': self.config.api.summary_model or self.config.api.model,
+            'thinking_mode': self.config.api.summary_thinking_mode or self.config.api.thinking_mode,
+            'timeout': self.config.api.summary_timeout,
         }
 
         try:
@@ -933,10 +1162,14 @@ class FinalSummaryRunner:
         return "\n".join(parts)
 
     def _apply_reconciliation(self, batch_idx: int, ch_start: int, ch_end: int, foreshadow_data: Optional[dict]) -> None:
-        """应用 LLM 的 reconciliation 结果到账本"""
+        """应用 LLM 的 reconciliation 结果到账本。
+
+        P0-2：休眠判定不在此处执行——批次并发完成导致 last_seen_batch 非单调，
+        即时判定结果随完成顺序漂移；统一由 run() 在全部批次完成后按 batch_idx
+        升序、以各批真实 ch_end 为"当前进度"执行 reconcile_and_update。
+        """
         if foreshadow_data is None:
             logger.warning(f"批次{batch_idx}：reconciliation 缺失，伏笔状态保持不变")
-            self.ledger.reconcile_and_update(batch_idx)
             return
         reconciliation = foreshadow_data.get('reconciliation', []) or []
         for item in reconciliation:
@@ -961,7 +1194,6 @@ class FinalSummaryRunner:
                 if existing:
                     existing.last_seen_chapter = ch_end
                     existing.last_seen_batch = batch_idx
-        self.ledger.reconcile_and_update(batch_idx)
 
     async def _run_global_foreshadow_recheck(self, volume_summaries: List[str],
                                              foreshadow_catalog: list = None) -> None:
@@ -993,6 +1225,12 @@ class FinalSummaryRunner:
         full_text = "\n\n".join(volume_summaries)
         recheck_batch_size = 40
         total_rechecked = 0
+
+        # 复检上下文策略（2026-08-07 用户决策）：维持原逻辑——每个子批都携带
+        # 全量卷摘要，不做任何裁剪。理由：① 回收事件可能发生在伏笔任何后续章节，
+        # 裁剪必然伴随召回损失（大跨度伏笔尤甚）；② 跨子批的卷摘要前缀相同，
+        # 支持 KV cache 的厂商（MiniMax）只有第一份全文付全价，后续子批只付增量，
+        # 裁剪省下的输入 token 远不及一次漏判的代价。
 
         # 准备所有复检子批次
         recheck_batches = []
@@ -1041,7 +1279,14 @@ class FinalSummaryRunner:
                  for _, prompt in recheck_batches]
         for coro in asyncio.as_completed(tasks):
             try:
-                total_rechecked += await coro
+                batch_resolved = await coro
+                total_rechecked += batch_resolved
+                # 阶段2 续跑（2026-08-09）：每完成一批立即落盘 ledger。
+                # 崩溃/停止后重启时 recheck_items 只取 active 伏笔，
+                # 已回收的自动排除 → 只对剩余伏笔重新复检，不再重复付费。
+                if batch_resolved > 0:
+                    async with self._lock:
+                        self.ledger.save(self.ledger_path)
             except Exception as e:
                 logger.error(f"复检批次异常: {e}")
 
@@ -1063,9 +1308,8 @@ class FinalSummaryRunner:
         self.ledger.total_chapters = total_chapters
         logger.info(f"加载{total_chapters}章，分为{total_batches}批，每批{self.batch_size}章")
 
-        # 构建伏笔总表（纯代码扫描，不调用 LLM）
-        foreshadow_catalog = self._build_foreshadow_catalog(
-            results, max_items=self.config.analysis.max_foreshadow_catalog)
+        # 构建伏笔总表（async：含 type→category LLM 归一化调用）
+        foreshadow_catalog = await self._build_foreshadow_catalog(results)
 
         # 同步伏笔总表到账本（账本为空时初始化，让 reconciliation 有条目可更新）
         existing_ids = {i.id for i in self.ledger.items}
@@ -1104,40 +1348,63 @@ class FinalSummaryRunner:
         })
 
         logger.info(f"开始并发卷摘要：{len(batch_tasks)}批，并发数={self.concurrency}")
-        self._emit_progress({"type": "status", "message": f"正在并发分析{len(batch_tasks)}批（并发{self.concurrency}）..."})
 
-        volume_results: Dict[int, str] = {}  # batch_idx -> summary text
+        # 断点续跑：恢复已完成批次的卷摘要/reconciliation，跳过对应 LLM 调用
+        # （卷摘要是全流程最耗时的阶段，中途停止后重跑无需重复付费）
+        volume_results, recon_results = await self._load_checkpoint(batch_tasks)
+        restored = len(volume_results)
+        if restored:
+            logger.info(f"断点续跑：恢复 {restored}/{len(batch_tasks)} 批卷摘要，跳过对应 LLM 调用")
+            self._emit_progress({"type": "status",
+                                 "message": f"已从断点恢复 {restored} 批卷摘要，继续剩余批次..."})
+        else:
+            self._emit_progress({"type": "status", "message": f"正在并发分析{len(batch_tasks)}批（并发{self.concurrency}）..."})
+
         semaphore = asyncio.Semaphore(min(self.concurrency, len(batch_tasks)))
 
         async def process_batch_collect(idx: int, ch_start: int, ch_end: int, prompt: str):
-            """并发采集：卷摘要 + reconciliation（两次 LLM 调用）"""
+            """并发采集：卷摘要 + reconciliation（断点恢复的批次跳过对应 LLM 调用）"""
             async with semaphore:
                 if self._stop_requested:
                     return None
-                summary_response = await self._call_llm_summary(prompt)
-                if self._stop_requested:
-                    return None
-                if summary_response is None:
-                    # 失败批次不入 volume_results（仅记失败状态），避免占位文本污染最终报告；
-                    # 否则 not volume_results 永不成立、『所有批次均失败』的 RuntimeError 变死代码。
-                    return {"status": "failed", "idx": idx, "ch_start": ch_start, "ch_end": ch_end}
 
-                volume_summary = extract_analysis_text(summary_response)
-                volume_results[idx] = volume_summary
-                elapsed = time.time() - t_start
+                # 卷摘要：优先用断点恢复值，否则调用 LLM 并立即落盘（不等 reconciliation，
+                # 防止 reconciliation 阶段停止导致已完成的卷摘要白做）
+                if idx in volume_results:
+                    volume_summary = volume_results[idx]
+                    elapsed = 0.0
+                    restored_batch = True
+                else:
+                    summary_response = await self._call_llm_summary(prompt)
+                    if self._stop_requested:
+                        return None
+                    if summary_response is None:
+                        # 失败批次不入 volume_results（仅记失败状态），避免占位文本污染最终报告；
+                        # 否则 not volume_results 永不成立、『所有批次均失败』的 RuntimeError 变死代码。
+                        return {"status": "failed", "idx": idx, "ch_start": ch_start, "ch_end": ch_end}
+                    volume_summary = extract_analysis_text(summary_response)
+                    volume_results[idx] = volume_summary
+                    elapsed = time.time() - t_start
+                    restored_batch = False
+                    await self._save_checkpoint_batch(idx, ch_start, ch_end, volume_summary, None)
 
-                # 伏笔 reconciliation
-                active_block = self._build_active_foreshadows_block(ch_start, ch_end, foreshadow_catalog)
-                reconciliation_prompt = RECONCILIATION_USER_TEMPLATE.format(
-                    book_name=self.book_name, start=ch_start, end=ch_end,
-                    batch_summary=volume_summary,
-                    active_foreshadows_block=active_block
-                )
-                foreshadow_data = await self._call_llm_reconciliation(reconciliation_prompt)
+                # 伏笔 reconciliation：断点已存结果则跳过 LLM，否则调用并落盘
+                if idx in recon_results:
+                    foreshadow_data = recon_results[idx]
+                else:
+                    active_block = self._build_active_foreshadows_block(ch_start, ch_end, foreshadow_catalog)
+                    reconciliation_prompt = RECONCILIATION_USER_TEMPLATE.format(
+                        book_name=self.book_name, start=ch_start, end=ch_end,
+                        batch_summary=volume_summary,
+                        active_foreshadows_block=active_block
+                    )
+                    foreshadow_data = await self._call_llm_reconciliation(reconciliation_prompt)
+                    if foreshadow_data is not None:
+                        await self._save_checkpoint_batch(idx, ch_start, ch_end, None, foreshadow_data)
                 return {
                     "status": "done", "idx": idx, "ch_start": ch_start, "ch_end": ch_end,
                     "volume_summary": volume_summary, "elapsed": elapsed,
-                    "foreshadow_data": foreshadow_data,
+                    "foreshadow_data": foreshadow_data, "restored": restored_batch,
                 }
 
         tasks = [asyncio.create_task(process_batch_collect(idx, start, end, prompt))
@@ -1152,7 +1419,7 @@ class FinalSummaryRunner:
                     self._emit_progress({
                         "type": "batch_done", "batch": idx, "total_batches": total_batches,
                         "elapsed": result["elapsed"],
-                        "message": f"[卷{idx}/{total_batches}] 完成"
+                        "message": f"[卷{idx}/{total_batches}] {'已从断点恢复' if result.get('restored') else '完成'}"
                     })
                     async with self._lock:
                         self._apply_reconciliation(
@@ -1165,6 +1432,13 @@ class FinalSummaryRunner:
                     })
             except Exception as e:
                 logger.error(f"卷异常: {e}")
+
+        # 休眠判定统一收尾（P0-2）：批次并发完成使 last_seen_batch 非单调，
+        # 批次内即时判定不可复现；此处按批次升序、以各批真实 ch_end 为"当前进度"
+        # 执行一遍 reconcile，保证休眠名单确定且不误判后埋伏笔。
+        if not self._stop_requested:
+            for idx, _ch_start, ch_end, _prompt in sorted(batch_tasks, key=lambda t: t[0]):
+                self.ledger.reconcile_and_update(idx, ch_end)
 
         if self._stop_requested:
             self._emit_progress({"type": "status", "message": "已停止"})
@@ -1181,6 +1455,11 @@ class FinalSummaryRunner:
 
         # 全书伏笔复检
         await self._run_global_foreshadow_recheck(volume_summaries, foreshadow_catalog)
+        if self._stop_requested:
+            # 复检可能已回收伏笔，保存账本保留进度后退出
+            self.ledger.save(self.ledger_path)
+            self._emit_progress({"type": "status", "message": "已停止"})
+            return None
         self.ledger.save(self.ledger_path)
         self._emit_progress({"type": "ledger_updated", "counts": self.ledger.get_item_count()})
 
@@ -1191,6 +1470,9 @@ class FinalSummaryRunner:
         })
         style_profile = await self._run_style_extraction()
         style_text = self._format_style_for_prompt(style_profile) if style_profile else "（风格分析未完成）"
+        if self._stop_requested:
+            self._emit_progress({"type": "status", "message": "已停止"})
+            return None
 
         # 生成最终报告
         self._emit_progress({
@@ -1201,13 +1483,17 @@ class FinalSummaryRunner:
         audit_text = self.ledger.audit_text_for_report()
         final_prompt = FINAL_USER_TEMPLATE.format(
             book_name=self.book_name,
-            volume_summaries="\n\n".join(volume_summaries),
+            volume_summaries=self._compress_volume_summaries(volume_summaries),
             foreshadow_context=foreshadow_context,
             foreshadow_audit=audit_text,
             style_profile=style_text,
             final_min_words=self.config.analysis.final_report_min_words
         )
         final_report = await self._call_llm_final(final_prompt)
+        if self._stop_requested:
+            # 用户停止：返回 None（状态为已停止），不抛失败
+            self._emit_progress({"type": "status", "message": "已停止"})
+            return None
         if final_report is None:
             raise RuntimeError("最终汇总LLM调用失败")
 

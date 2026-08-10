@@ -12,6 +12,7 @@ export interface LogEntry {
   text: string
   kind: 'info' | 'warn' | 'error' | 'state' | 'debug'
   category?: string  // analysis / style / splitter / aggregate / summary ...
+  source?: string    // python=Python logging转发的技术日志 / business=业务消息 / block=逐章完成事件 / local=前端操作 / event=状态事件
 }
 
 // ============ 单例状态 ============

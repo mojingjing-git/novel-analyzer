@@ -50,10 +50,13 @@ def _candidate_roots() -> List[Path]:
             if archive.exists():
                 roots.append(archive)
 
-    # 工作区目录（workspace/）作为候选根
+    # 工作区目录（workspace/）及其归档目录作为候选根
     ws = service.workspace_path
     if ws.exists():
         roots.append(ws)
+        archive = ws / "分析结果"
+        if archive.exists():
+            roots.append(archive)
 
     # 去重（保持顺序）
     seen = set()

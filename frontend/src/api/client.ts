@@ -50,6 +50,23 @@ export interface TokenStatsResponse {
   running: boolean
   total_retries?: number
   total_failed_tokens?: number
+  cached_tokens?: number
+}
+
+export interface ProbeThinkingItem {
+  param: string
+  thinking_mode: Record<string, unknown> | null
+  reasoning_chars: number
+  content_chars: number
+  worked: boolean | null
+  error: string
+}
+
+export interface ProbeThinkingResult {
+  results: ProbeThinkingItem[]
+  best: { thinking_mode: Record<string, unknown>; param: string } | null
+  default_thinks: boolean
+  note: string
 }
 
 export interface AppConfigDto {
@@ -59,6 +76,7 @@ export interface AppConfigDto {
     model: string
     max_tokens: number
     timeout: number
+    summary_timeout: number
     max_retries: number
     json_mode: string
     temperature: number
@@ -66,6 +84,9 @@ export interface AppConfigDto {
     temperature_max_retries: number
     backoff_max_retries: number
     thinking_mode: Record<string, unknown>
+    summary_model: string
+    summary_thinking_mode: Record<string, unknown>
+    provider: string
   }
   analysis: {
     max_arc_length: number
@@ -78,7 +99,11 @@ export interface AppConfigDto {
     max_character_states: number
     max_world_items: number
     max_foreshadow_entries: number
-    max_foreshadow_catalog: number
+    foreshadow_kept_categories: string[]
+    foreshadow_min_importance: string
+    foreshadow_min_confidence: string
+    max_foreshadow_catalog_high: number
+    max_foreshadow_catalog_mid: number
     batch_summary_min_words: number
     final_report_min_words: number
     rolling_early_chapters: number
@@ -88,6 +113,9 @@ export interface AppConfigDto {
     rolling_archive_trigger_count: number
     checkpoint_interval: number
     auto_archive: boolean
+    auto_summary: boolean
+    summary_concurrency: number
+    summary_batch_size: number
     max_compressed_arcs: number
     max_recent_summaries: number
     max_pacing_tracker: number
@@ -96,6 +124,8 @@ export interface AppConfigDto {
     max_verified_facts: number
     max_long_term_arcs: number
     max_thematic_elements: number
+    volume_compress_threshold: number
+    volume_compress_group: number
   }
   gui: {
     window_width: number
@@ -131,6 +161,8 @@ export interface BookInfo {
   name: string
   source: 'workspace' | 'archive'
   total_chapters: number
+  has_report?: boolean
+  has_aggregated?: boolean
 }
 
 export interface SummaryStatus {
@@ -174,25 +206,30 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     headers: { 'Content-Type': 'application/json' },
     ...options,
   })
+  // 关键：响应体只读取一次。之前先 res.json() 再 res.text() 会因为流已被消费而抛
+  // “body stream already read”。现在统一读成文本，再按需要 JSON.parse。
+  const text = await res.text()
+  let data: unknown = null
+  try {
+    data = text ? JSON.parse(text) : null
+  } catch {
+    data = null
+  }
   if (!res.ok) {
-    let rawDetail: unknown = undefined
-    let message = `${res.status} ${res.statusText}`
-    try {
-      const data = await res.json()
-      rawDetail = data.detail ?? data
-      message = typeof data.detail === 'string' && data.detail
-        ? data.detail
-        : JSON.stringify(data.detail ?? data)
-    } catch {
-      message = (await res.text()) || message
-    }
+    const detail =
+      data && typeof data === 'object' && 'detail' in data
+        ? (data as Record<string, unknown>).detail
+        : undefined
+    const message =
+      typeof detail === 'string' && detail
+        ? detail
+        : text || `${res.status} ${res.statusText}`
     const err = new Error(message)
     ;(err as Error & { status?: number; detail?: unknown }).status = res.status
-    ;(err as Error & { status?: number; detail?: unknown }).detail = rawDetail
+    ;(err as Error & { status?: number; detail?: unknown }).detail = detail
     throw err
   }
-  const text = await res.text()
-  return text ? JSON.parse(text) : {}
+  return (data ?? {}) as T
 }
 
 export const api = {
@@ -205,8 +242,10 @@ export const api = {
     request<{ ok: boolean }>('/api/settings', { method: 'PUT', body: JSON.stringify(config) }),
   getPresets: () => request<{ presets: Record<string, { base_url: string; api_key: string; model: string }> }>('/api/settings/presets'),
   getModels: () => request<{ models: string[] }>('/api/settings/models'),
-  previewModels: (params: { base_url?: string; api_key?: string }) =>
+  previewModels: (params: { base_url?: string; api_key?: string; provider?: string }) =>
     request<{ models: string[] }>('/api/settings/preview/models', { method: 'POST', body: JSON.stringify(params) }),
+  probeThinking: (params: { base_url?: string; api_key?: string; provider?: string }) =>
+    request<ProbeThinkingResult>('/api/settings/probe-thinking', { method: 'POST', body: JSON.stringify(params) }),
 
   // 分析控制
   startAnalysis: () => request<{ ok: boolean }>('/api/analysis/start', { method: 'POST' }),
@@ -302,9 +341,17 @@ export const api = {
     request<{ book_id: string; chapter: number; chapter_label: string; chapter_total_chars: number; chapter_truncated: boolean; system_prompt: string; user_prompt: string; system_len: number; user_len: number; total_len: number; params: Record<string, unknown> }>('/api/prompt/preview', { method: 'POST', body: JSON.stringify({ book_id, max_chars }) }),
 
   // 可视化
-  getTimeline: (book_id: string) => request<{ events: unknown[]; foreshadows: unknown[] }>(`/api/viz/${book_id}/timeline`),
-  getGraph: (book_id: string) => request<{ nodes: unknown[]; edges: unknown[] }>(`/api/viz/${book_id}/graph`),
-  getMap: (book_id: string) => request<{ locations: unknown[]; relationships: unknown[] }>(`/api/viz/${book_id}/map`),
+  getTimeline: (book_id: string) => request<{ events: unknown[]; foreshadows: unknown[]; category_map_loaded?: boolean }>(`/api/viz/timeline/${book_id}`),
+  getForeshadowCategories: () => request<{
+    schema_version: number
+    fallback: string
+    defs: { name: string; description: string; examples: string[] }[]
+    kept: string[]
+    min_importance: string
+    min_confidence: string
+  }>('/api/foreshadow/categories'),
+  getGraph: (book_id: string) => request<{ nodes: unknown[]; edges: unknown[] }>(`/api/viz/graph/${book_id}`),
+  getMap: (book_id: string) => request<{ locations: unknown[]; relationships: unknown[] }>(`/api/viz/map/${book_id}`),
 
   // 聚合
   runAggregate: (book_id: string, include_raw: boolean) =>

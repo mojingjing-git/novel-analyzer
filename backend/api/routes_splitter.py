@@ -5,6 +5,7 @@ POST /api/splitter/save        — 保存 blocks 目录（支持工作区模式�
 POST /api/splitter/infer_name  — 从文件名推断书名
 """
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Optional
@@ -112,7 +113,8 @@ async def save_split(req: SplitterSaveRequest) -> dict:
         )
         if req.output_dir:
             # 手动指定输出目录模式
-            return splitter_service.save_split(
+            return await asyncio.to_thread(
+                splitter_service.save_split,
                 path,
                 Path(req.output_dir),
                 options=options,
@@ -123,7 +125,8 @@ async def save_split(req: SplitterSaveRequest) -> dict:
                 req.book_name = splitter_service.infer_book_name(path)
             service = get_service()
             workspace = service.workspace_path
-            return splitter_service.save_to_workspace(
+            return await asyncio.to_thread(
+                splitter_service.save_to_workspace,
                 path,
                 workspace,
                 req.book_name,

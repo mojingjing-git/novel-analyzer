@@ -5,7 +5,7 @@
 """
 
 from typing import List
-from ..config.constants import DEFAULT_MAX_ARC_LENGTH
+from ..config.constants import DEFAULT_MAX_ARC_LENGTH, FORESHADOW_CATEGORY_DEFS
 from ..models.knowledge import KnowledgeBase
 
 SYSTEM_PROMPT = """# Role: 小说结构分析师
@@ -43,13 +43,18 @@ SYSTEM_PROMPT = """# Role: 小说结构分析师
 7. long_context_insights 只输出 thematic_elements、pattern、foreshadowing_network、pacing 四个字段。不要输出 character_states、character_relationships、verified_facts、relationship_evolution、long_term_arcs、active_foreshadowing、resolved_foreshadowing。
 8. `locations` 记录本章明确出现或首次提及的地点：`name` 用原文地名；`parent` 填其所属的上级地点（如"主峰"的 parent 是"青云门"），无上级或不明确时填 `""`；`type` 填地点类型（城市/宗门/秘境/国家/建筑等）；`description` 一句话描述。只记录有情节意义的地点，不要罗列一笔带过的泛称。
 9. `spatial_relationships` 记录本章明确陈述的地点间空间关系（如"A 在 B 以北"、"C 距 D 三百里"），`from`/`to` 必须是 locations 中出现过或前文已知的地名，`relation` 用原文表述。没有明确空间信息时填空数组。
+10. `importance` 标注该事件/伏笔对全书主线的重要程度：`高`（推动主线、决定人物命运、全书关键转折）、`中`（影响当前情节线、推进支线）、`低`（局部细节、氛围渲染、日常过渡）。每章 core_events 中 `高` 不超过 2 条。
+
+## 伏笔分类约束（重要）
+
+`foreshadowing` 的 `type` 字段必须从下列 50 类中选**一个**，禁止自创类型。找不到完全匹配时选最接近的类别，实在无法归类才选"其他"。这是全书统一分类，同义/近义必须归到同一类。
 
 ## Output Schema (纯JSON，无markdown包裹)
 
 {
-  "core_events": [{"id": 1, "event": "事件", "characters": "角色", "function": "作用"}],
+  "core_events": [{"id": 1, "event": "事件", "characters": "角色", "function": "作用", "importance": "高|中|低"}],
   "character_arcs": [{"name": "角色", "surface_action": "表面行为", "inner_motivation": "深层动机", "change_delta": "变化量", "driver": "触发事件"}],
-  "foreshadowing": [{"clue": "原文细节", "type": "类型", "implication": "未来暗示", "confidence": "高|中|低"}],
+  "foreshadowing": [{"clue": "原文细节", "type": "伏笔分类表中的类别", "implication": "未来暗示", "confidence": "高|中|低", "importance": "高|中|低"}],
   "plot_holes": ["逻辑漏洞"],
   "locations": [{"name": "地点名", "parent": "上级地点或空", "type": "地点类型", "description": "一句话描述"}],
   "spatial_relationships": [{"from": "地点A", "to": "地点B", "relation": "空间关系描述"}],
@@ -72,6 +77,13 @@ SYSTEM_PROMPT = """# Role: 小说结构分析师
 }
 
 """
+
+# 伏笔 50 类定义表：恒定文本，追加在 SYSTEM_PROMPT 后（前缀稳定，KV cache 友好）。
+# 仅注入 name + description；anchors 用于后端校验/页面展示，不占 prompt 体积。
+FORESHADOW_CATEGORY_TEXT = "\n".join(
+    f"  {name}：{desc}" for name, desc, _ in FORESHADOW_CATEGORY_DEFS
+)
+
 
 class PromptBuilder:
     """提示词构建器"""
@@ -188,6 +200,9 @@ class PromptBuilder:
         # 同时把累积去重、极少变化的 [已知世界观] / [主题元素] 挪进 system，
         # 与固定的 SYSTEM_PROMPT 合并成稳定前缀。
         system_prompt = f"""{SYSTEM_PROMPT}
+
+[伏笔分类表]
+{FORESHADOW_CATEGORY_TEXT}
 
 [已知世界观]
 {world_text}

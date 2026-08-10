@@ -6,6 +6,7 @@ import ChapterDetailPanel from '../components/ChapterDetailPanel.vue'
 import BookSelector from '../components/BookSelector.vue'
 import ProgressBar from '../components/ProgressBar.vue'
 import TokenBadge from '../components/TokenBadge.vue'
+import ConfirmDialog from '../components/ConfirmDialog.vue'
 import { api, type AnalysisStatus, type TokenStatsResponse } from '../api/client'
 import { useProgressSocket, type ProgressMessage } from '../api/useProgressSocket'
 import { useLogStore } from '../composables/useLogStore'
@@ -22,8 +23,9 @@ let pollTimer: ReturnType<typeof setInterval> | null = null
 
 const { logs: storeLogs, add, clear } = useLogStore()
 const logs = computed(() => storeLogs.value)
-// 简化日志（过滤 debug 噪声）的条数，用于标题展示
-const logsSimplifiedCount = computed(() => logs.value.filter((l) => l.kind !== 'debug').length)
+// 简化日志（过滤 debug + Python 技术日志 + 逐章块事件）的条数，用于标题展示；
+// 与 LogConsole simplified 的过滤规则保持一致，避免"标题计数与实际显示不符"
+const logsSimplifiedCount = computed(() => logs.value.filter((l) => l.kind !== 'debug' && l.source !== 'python' && l.source !== 'block').length)
 
 // 最终总结进度反馈（后端通过 WS 广播 summary_progress，此前 QueuePage 完全忽略）
 const summaryHint = ref('')
@@ -88,17 +90,27 @@ function handleStart() { withBusy(async () => { await api.startAnalysis(); add('
 function handleStop() { withBusy(async () => { await api.stopAnalysis(); add('分析已停止', 'warn', 'analysis') }, '停止分析') }
 function handleScanWorkspace() { withBusy(async () => { const res = await api.scanWorkspace(); add(`扫描完成，新增 ${res.added} 本小说`, 'info', 'analysis') }, '扫描工作区') }
 function handleRemove(index: number) { withBusy(async () => { await api.removeQueueItem(index); add(`已移出队列项 #${index}`, 'info', 'analysis') }, '移出队列') }
-function handleDelete(index: number) {
-  if (!confirm('确定要删除该小说吗？文件将被移入系统回收站。')) return
-  withBusy(async () => {
-    await api.deleteBook(index)
-    add(`已删除队列项 #${index} 并移入回收站`, 'warn', 'analysis')
-  }, '删除小说')
-}
+function handleDelete(index: number) { deleteTarget.value = index }
 function handleMoveUp(index: number) { withBusy(async () => { await api.moveQueueItemUp(index) }, '上移') }
 function handleMoveDown(index: number) { withBusy(async () => { await api.moveQueueItemDown(index) }, '下移') }
 function handleReset(index: number) { withBusy(async () => { await api.resetQueueItem(index); add(`已重置队列项 #${index} 为待处理`, 'info', 'analysis') }, '重跑') }
 function handleClear() { withBusy(async () => { await api.clearQueue(); add('队列已清空', 'info', 'analysis') }, '清空队列') }
+
+// 删除确认：用玻璃弹窗替代浏览器原生 confirm()
+const deleteTarget = ref<number | null>(null)
+const deleteTargetName = computed(() => {
+  if (deleteTarget.value === null) return ''
+  return status.value?.items?.[deleteTarget.value]?.name ?? `#${deleteTarget.value}`
+})
+function confirmDelete() {
+  const idx = deleteTarget.value
+  deleteTarget.value = null
+  if (idx === null) return
+  withBusy(async () => {
+    await api.deleteBook(idx)
+    add(`已删除队列项 #${idx} 并移入回收站`, 'warn', 'analysis')
+  }, '删除小说')
+}
 
 const statusBadgeClass: Record<string, string> = {
   pending: 'badge-gray', running: 'badge-blue', done: 'badge-green',
@@ -303,6 +315,17 @@ onUnmounted(() => {
     <div v-if="status?.items?.length && !status?.running" class="flex justify-end">
       <button @click="handleClear" :disabled="busy" class="glass-button" style="color: var(--color-system-red); padding: 6px 14px">清空队列</button>
     </div>
+
+    <!-- 删除确认（玻璃弹窗） -->
+    <ConfirmDialog
+      v-if="deleteTarget !== null"
+      title="删除小说"
+      :message="`确定要删除《${deleteTargetName}》吗？文件将被移入系统回收站。`"
+      confirm-text="删除"
+      :danger="true"
+      @confirm="confirmDelete"
+      @cancel="deleteTarget = null"
+    />
   </div>
 </template>
 

@@ -5,11 +5,14 @@
 """
 
 import json
+import logging
 import os
 import dataclasses
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import List, Optional
+
+logger = logging.getLogger(__name__)
 
 from .constants import (
     DEFAULT_BASE_URL, DEFAULT_API_KEY, DEFAULT_MODEL,
@@ -20,12 +23,12 @@ from .constants import (
     DEFAULT_MAX_CHARACTER_STATES_IN_PROMPT,
     DEFAULT_MAX_WORLD_ITEMS_IN_PROMPT,
     DEFAULT_MAX_FORESHADOW_ENTRIES_IN_PROMPT,
-    DEFAULT_MAX_FORESHADOW_CATALOG,
     DEFAULT_BATCH_SUMMARY_MIN_WORDS,
     DEFAULT_FINAL_REPORT_MIN_WORDS,
-    MAX_OUTPUT_TOKENS, DEFAULT_TIMEOUT, MAX_RETRIES,
+    DEFAULT_VOLUME_COMPRESS_THRESHOLD, DEFAULT_VOLUME_COMPRESS_GROUP,
+    MAX_OUTPUT_TOKENS, DEFAULT_TIMEOUT, DEFAULT_SUMMARY_TIMEOUT, MAX_RETRIES,
     DEFAULT_TEMPERATURE, DEFAULT_TEMPERATURE_STEP,
-    TEMPERATURE_SEQUENCE, TEMPERATURE_MAX_RETRIES, BACKOFF_MAX_RETRIES,
+    TEMPERATURE_MAX_RETRIES, BACKOFF_MAX_RETRIES,
     ENCODING_CANDIDATES,
     CONFIG_FILE_NAME, KNOWLEDGE_FILE_NAME,
     DEFAULT_CHECKPOINT_INTERVAL,
@@ -36,6 +39,12 @@ from .constants import (
     MAX_PACING_TRACKER, MAX_FORESIGHT_NETWORK,
     MAX_WORLD_BUILDING, MAX_VERIFIED_FACTS,
     MAX_LONG_TERM_ARCS, MAX_THEMATIC_ELEMENTS,
+    FORESHADOW_CATEGORY_DEFS, FORESHADOW_CATEGORY_FALLBACK,
+    FORESHADOW_CATEGORY_SCHEMA_VERSION,
+    DEFAULT_FORESHADOW_MIN_IMPORTANCE,
+    DEFAULT_FORESHADOW_MIN_CONFIDENCE,
+    DEFAULT_MAX_FORESHADOW_CATALOG_HIGH,
+    DEFAULT_MAX_FORESHADOW_CATALOG_MID,
 )
 
 
@@ -53,14 +62,17 @@ class APIConfig:
     model: str = DEFAULT_MODEL
     max_tokens: int = MAX_OUTPUT_TOKENS
     timeout: int = DEFAULT_TIMEOUT
+    summary_timeout: int = DEFAULT_SUMMARY_TIMEOUT  # 最终总结阶段 API 超时（秒）。比 timeout 长，因为最终报告 prompt 输入更大（11 万字符级）；final_summary 服务创建 LLMClient 时会覆盖 timeout 字段使用此值
     max_retries: int = MAX_RETRIES
     json_mode: str = "default"  # default/qwen/deepseek/glm47
     temperature: float = DEFAULT_TEMPERATURE
     temperature_step: float = DEFAULT_TEMPERATURE_STEP
-    temperature_sequence: List[float] = field(default_factory=lambda: TEMPERATURE_SEQUENCE.copy())
     temperature_max_retries: int = TEMPERATURE_MAX_RETRIES
     backoff_max_retries: int = BACKOFF_MAX_RETRIES
     thinking_mode: dict = field(default_factory=dict)  # {}=自动过滤, {"thinking":{"type":"disabled"}}=mimo/GLM, {"enable_thinking":false}=DeepSeek/Qwen
+    summary_model: str = ""      # 最终总结专用模型；空=跟随 model（复用同一 base_url/api_key，重型任务可切 M3 等）
+    summary_thinking_mode: dict = field(default_factory=dict)  # 最终总结专用思考控制；空=跟随 thinking_mode
+    provider: str = "auto"       # 协议格式：auto=自动检测 / openai=OpenAI兼容 / anthropic=Anthropic /v1/messages
 
 
 @dataclass
@@ -76,9 +88,23 @@ class AnalysisConfig:
     max_character_states: int = DEFAULT_MAX_CHARACTER_STATES_IN_PROMPT
     max_world_items: int = DEFAULT_MAX_WORLD_ITEMS_IN_PROMPT
     max_foreshadow_entries: int = DEFAULT_MAX_FORESHADOW_ENTRIES_IN_PROMPT
-    max_foreshadow_catalog: int = DEFAULT_MAX_FORESHADOW_CATALOG
+    # 伏笔分类（治本核心）：50 类功能分类（人物/情节/冲突/关系/设定/主题/题材），
+    # 通过 LLM 归一化把 LLM 自由产出的 type 字符串映射到这 50 类之一
+    # 默认全启用（用户可取消勾选，但应保留"其他"作为兜底）
+    foreshadow_kept_categories: List[str] = field(default_factory=lambda: [name for name, _, _ in FORESHADOW_CATEGORY_DEFS])
+    # 最低保留重要度（"高"/"中"/"低"）：filter 阶段丢弃低于该等级的所有伏笔
+    foreshadow_min_importance: str = DEFAULT_FORESHADOW_MIN_IMPORTANCE
+    # 最低保留置信度（"高"/"中"/"低"）：importance 已收一道，confidence 兜底过滤
+    foreshadow_min_confidence: str = DEFAULT_FORESHADOW_MIN_CONFIDENCE
+    # 分层上限：importance=高 最多保留多少（-1=无上限）
+    max_foreshadow_catalog_high: int = DEFAULT_MAX_FORESHADOW_CATALOG_HIGH
+    # 分层上限：importance=中 最多保留多少
+    max_foreshadow_catalog_mid: int = DEFAULT_MAX_FORESHADOW_CATALOG_MID
     batch_summary_min_words: int = DEFAULT_BATCH_SUMMARY_MIN_WORDS
     final_report_min_words: int = DEFAULT_FINAL_REPORT_MIN_WORDS
+    # 最终报告卷摘要压缩（QUA-1）：拼接总字符超过阈值时做轻量分层压缩（首尾各 1 组保留全文，中间组截断到 1/2）
+    volume_compress_threshold: int = DEFAULT_VOLUME_COMPRESS_THRESHOLD
+    volume_compress_group: int = DEFAULT_VOLUME_COMPRESS_GROUP
     rolling_early_chapters: int = ROLLING_EARLY_CHAPTERS
     rolling_max_milestones: int = ROLLING_MAX_MILESTONES
     rolling_max_momentum: int = ROLLING_MAX_MOMENTUM
@@ -86,6 +112,10 @@ class AnalysisConfig:
     rolling_archive_trigger_count: int = ROLLING_ARCHIVE_TRIGGER_COUNT
     checkpoint_interval: int = DEFAULT_CHECKPOINT_INTERVAL  # 每 N 批自动落盘，0=只在结束时落盘
     auto_archive: bool = False  # 队列分析完成后自动归档整个小说目录到 分析结果/
+    # 队列完成后自动总结（2026-08-02 spec）
+    auto_summary: bool = False        # 队列全部书分析完成后，逐本自动执行最终总结
+    summary_concurrency: int = 2      # 最终总结并发数（默认 2，避免高并发触发 API 超时）
+    summary_batch_size: int = 30      # 最终总结每批章节数
     # 知识库限制
     max_compressed_arcs: int = MAX_COMPRESSED_ARCS
     max_recent_summaries: int = MAX_RECENT_SUMMARIES
@@ -131,6 +161,13 @@ class AppConfig:
         analysis_data = data.get('analysis', {})
         gui_data = data.get('gui', {})
 
+        # 兼容旧配置：temperature_sequence 已废弃（P1-9，从未被重试逻辑读取——
+        # 温度退火实际使用 temperature/temperature_step 算术递减），忽略并提示
+        if 'temperature_sequence' in api_data:
+            api_data.pop('temperature_sequence', None)
+            logger.warning("config.json 中 api.temperature_sequence 已废弃并被忽略，"
+                           "请从配置中删除该字段（温度退火由 temperature/temperature_step 控制）。")
+
         # 兼容旧配置：移除已废弃的字段
         analysis_data.pop('compress_every', None)
         analysis_data.pop('rolling_summary_target_chars', None)
@@ -141,6 +178,10 @@ class AppConfig:
         tm = api_data.get('thinking_mode')
         if tm is not None and not isinstance(tm, dict):
             api_data.pop('thinking_mode', None)
+
+        # 兼容旧配置/非法值：provider 仅接受 auto/openai/anthropic
+        if str(api_data.get('provider', 'auto')).lower() not in ('auto', 'openai', 'anthropic'):
+            api_data['provider'] = 'auto'
 
         # 兼容旧配置：model 为空字符串/缺省时回落到默认模型（DEFAULT_MODEL，当前为空
         # = 未配置）。空模型名会在 API 预检查阶段被拦出，要求用户在设置页填写。
@@ -172,11 +213,16 @@ class ConfigManager:
             return self.config
 
         try:
-            with open(self.config_path, 'r', encoding='utf-8') as f:
+            # utf-8-sig：兼容手改/工具保存带入的 UTF-8 BOM（utf-8 会直接抛 JSONDecodeError）
+            with open(self.config_path, 'r', encoding='utf-8-sig') as f:
                 data = json.load(f)
             self.config = AppConfig.from_dict(data)
         except Exception as e:
-            print(f"加载配置失败: {e}，使用默认配置")
+            # 配置损坏必须显式告警：静默回退默认配置会导致 API Key/模型全部丢失，
+            # 用户只会看到"认证失败"等误导性错误（曾踩：PowerShell 写文件引入 BOM）
+            logger.error(f"配置加载失败（{self.config_path}）: {e}，已回退默认配置。"
+                         f"请检查 config.json 是否为合法 JSON（注意 UTF-8 BOM/尾逗号），"
+                         f"修复后重启即可恢复。")
             return self.config
 
         # 安全：API Key 优先从环境变量读取，避免明文硬编码落在 config.json（曾明文提交密钥）。
@@ -185,13 +231,20 @@ class ConfigManager:
         if env_key:
             self.config.api.api_key = env_key
         elif not self.config.api.api_key:
-            print("⚠️ 未配置 API Key：请设置环境变量 LLM_API_KEY（推荐），"
-                  "或在 config.json 的 api.api_key 中填入（注意该文件不应提交含密钥的版本）。")
+            logger.warning("未配置 API Key：请设置环境变量 LLM_API_KEY（推荐），"
+                           "或在 config.json 的 api.api_key 中填入（注意该文件不应提交含密钥的版本）。")
 
         # 模型未配置提示（与 API Key 提示并列，避免带着空模型名开始分析）
         if not str(self.config.api.model or '').strip():
-            print("⚠️ 未配置模型（api.model 为空）：请在设置页填写你要使用的模型名，"
-                  "否则 API 预检查与分析都会失败。")
+            logger.warning("未配置模型（api.model 为空）：请在设置页填写你要使用的模型名，"
+                           "否则 API 预检查与分析都会失败。")
+
+        # P1-9：max_tokens 超常见厂商输出上限（64K）时提示——多数 OpenAI 兼容
+        # 端点输出上限 4K-64K，配置 130000 会在切换厂商时让所有调用直接报错。
+        # 65537 以上才提示：65535/65536（64K-1/64K）本就是多数厂商上限，属正常配置。
+        if self.config.api.max_tokens and self.config.api.max_tokens > 65537:
+            logger.warning(f"api.max_tokens={self.config.api.max_tokens} 超过多数厂商输出上限(64K)，"
+                           f"切换到输出上限较小的模型时可能报错，建议调低到 65536 或 32768。")
 
         return self.config
 

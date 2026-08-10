@@ -15,6 +15,7 @@ class CoreEvent:
     event: str = ""
     characters: str = ""
     function: str = ""
+    importance: str = "中"  # 高/中/低（时间线重要度过滤；旧数据缺省按中）
 
 
 @dataclass
@@ -34,6 +35,16 @@ class Foreshadowing:
     type: str = ""
     implication: str = ""
     confidence: str = "中"  # "高"/"中"/"低"
+    importance: str = "中"  # 高/中/低（时间线重要度过滤；旧数据缺省按中）
+
+
+def _norm_importance(value) -> str:
+    """归一化 importance：接受 高/中/低 及英文 high/medium/low，非法值按中"""
+    if not value:
+        return "中"
+    m = {"高": "高", "中": "中", "低": "低", "high": "高", "medium": "中", "low": "低",
+         "High": "高", "Medium": "中", "Low": "低"}
+    return m.get(str(value).strip(), "中")
 
 
 @dataclass
@@ -140,7 +151,7 @@ class AnalysisResult:
             chars = e.get('characters', '')
             if isinstance(chars, list):
                 e['characters'] = ", ".join(str(x) for x in chars)
-            core_events.append(CoreEvent(id=e.get("id", 0), event=str(e.get("event", "")), characters=str(e.get("characters", "")), function=str(e.get("function", ""))))
+            core_events.append(CoreEvent(id=e.get("id", 0), event=str(e.get("event", "")), characters=str(e.get("characters", "")), function=str(e.get("function", "")), importance=_norm_importance(e.get("importance"))))
         character_arcs = []
         for a in data.get('character_arcs', []):
             if isinstance(a, dict):
@@ -164,12 +175,13 @@ class AnalysisResult:
                     # 映射英文confidence到中文
                     _confidence_map = {"high": "高", "medium": "中", "low": "低", "High": "高", "Medium": "中", "Low": "低"}
                     raw_confidence = f.get("confidence", "中")
-                    confidence = _confidence_map.get(raw_confidence, raw_confidence)
+                    confidence = _confidence_map.get(raw_confidence, raw_confidence) or "中"
                     foreshadowing.append(Foreshadowing(
                         clue=clue,
                         type=ftype,
                         implication=implication,
-                        confidence=confidence
+                        confidence=confidence,
+                        importance=_norm_importance(f.get("importance"))
                     ))
                 except Exception as e:
                     import logging; logging.getLogger(__name__).debug(f"跳过异常伏笔: {e}")

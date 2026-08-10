@@ -6,6 +6,9 @@ import Icon from './Icon.vue'
 const route = useRoute()
 const isDark = ref(false)
 const navListRef = ref<HTMLElement | null>(null)
+const mainAreaRef = ref<HTMLElement | null>(null)
+// 内容滚动后开启顶部/底部边缘柔化（内容"溶入"玻璃边缘，iOS 26 scroll-edge 效果）
+const scrolled = ref(false)
 
 const navItems = [
   { path: '/', label: '分析队列', icon: 'queue' },
@@ -96,6 +99,13 @@ onMounted(() => {
   if (container) {
     container.addEventListener('scroll', scheduleUpdate, { passive: true })
   }
+
+  // 主区滚动 → 开启边缘柔化遮罩（回到顶部时恢复完整内容）
+  mainAreaRef.value?.addEventListener(
+    'scroll',
+    () => { scrolled.value = (mainAreaRef.value?.scrollTop ?? 0) > 4 },
+    { passive: true },
+  )
 })
 
 watch(() => route.path, scheduleUpdate, { flush: 'post' })
@@ -144,7 +154,7 @@ watch(() => route.path, scheduleUpdate, { flush: 'post' })
     </aside>
 
     <!-- 主内容区 -->
-    <main class="main-area">
+    <main ref="mainAreaRef" class="main-area" :class="{ 'scroll-edge': scrolled }">
       <RouterView v-slot="{ Component, route }">
         <transition name="page" mode="out-in">
           <component :is="Component" :key="route.path" />
@@ -225,7 +235,7 @@ watch(() => route.path, scheduleUpdate, { flush: 'post' })
   scrollbar-width: thin;
 }
 
-/* ===== 浅玻璃滑动指示器（核心：低透明度蓝色基底 + 内发光） ===== */
+/* ===== 浅玻璃滑动指示器（液态玻璃：低透明蓝基底 + 内发光 + 外辉光） ===== */
 .nav-indicator {
   position: absolute;
   left: 4px;
@@ -233,11 +243,12 @@ watch(() => route.path, scheduleUpdate, { flush: 'post' })
   border-radius: 10px;
   /* 低透明度蓝色基底（规范要求 0.10-0.18） */
   background: rgba(35, 130, 255, 0.13);
-  /* 细微内发光 + 边缘光带 */
+  /* 细微内发光 + 边缘光带 + 外侧柔和辉光 */
   box-shadow:
     inset 0 0 0 0.5px rgba(255, 255, 255, 0.18),
     inset 0 1px 0 rgba(255, 255, 255, 0.25),
-    inset 0 -1px 0 rgba(35, 130, 255, 0.05);
+    inset 0 -1px 0 rgba(35, 130, 255, 0.05),
+    0 2px 14px rgba(35, 130, 255, 0.22);
   /* 边缘细微高光带 */
   border-top: 1px solid rgba(255, 255, 255, 0.18);
   /* 流体阻尼 */
@@ -257,7 +268,8 @@ html.dark .nav-indicator {
   background: rgba(35, 130, 255, 0.18);
   box-shadow:
     inset 0 0 0 0.5px rgba(255, 255, 255, 0.12),
-    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 2px 16px rgba(35, 130, 255, 0.3);
 }
 
 /* ===== 单个导航项 ===== */
@@ -344,11 +356,13 @@ html.dark .nav-item:hover {
   border-color: transparent;
 }
 
-/* ===== 主内容区（无边框、通栏） ===== */
+/* ===== 主内容区（无边框、通栏；滚动时内容溶入玻璃边缘） ===== */
 .main-area {
   flex: 1;
   overflow-y: auto;
   border-radius: 22px;
   position: relative;
+  /* 给顶部标题留出柔化带的缓冲，避免一滚就被吃掉 */
+  padding-top: 2px;
 }
 </style>

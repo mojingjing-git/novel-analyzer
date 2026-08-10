@@ -31,6 +31,7 @@ const busy = ref(false)
 const preview = ref<SplitterPreview | null>(null)
 const previewTitle = ref('')
 const batchResult = ref<BatchResult | null>(null)
+const errorMsg = ref('')
 
 function baseName(p: string): string {
   const s = p.replace(/\\/g, '/').split('/').pop() || p
@@ -45,10 +46,21 @@ function addFileByPath(p: string) {
   files.value.push({ file_path: p, book_name: baseName(p), status: 'pending', chapters: 0, error: '' })
 }
 
-// 文件选择改为前端原生 <input type="file">（pywebview 会弹出系统对话框并返回真实本地路径），
-// 不再走后端 tkinter 路由（B4：tkinter 在打包/无 DISPLAY/Linux 服务端即崩，且阻塞事件循环）。
+// 文件选择：桌面窗口（pywebview）走后端 create_file_dialog 拿真实本地路径
+// （Windows WebView2 的 <input type=file> 不给 File 对象注入 path 属性，原实现选完文件无反应）；
+// 浏览器环境 fallback 到原生 input（FileReader 等场景由后续功能处理）。
 const fileInput = ref<HTMLInputElement | null>(null)
-function triggerAddFiles() {
+async function triggerAddFiles() {
+  const wv = (window as unknown as { pywebview?: { api?: { pick_files?: () => Promise<string[] | null> } } }).pywebview
+  if (wv?.api?.pick_files) {
+    try {
+      const paths = await wv.api.pick_files()
+      if (paths && paths.length) paths.forEach(addFileByPath)
+    } catch (e) {
+      errorMsg.value = (e as Error).message
+    }
+    return
+  }
   fileInput.value?.click()
 }
 function onFilesPicked(e: Event) {
@@ -96,11 +108,12 @@ function previewBody(filePath: string) {
 }
 
 async function previewOne(item: FileItem) {
+  errorMsg.value = ''
   try {
     preview.value = await api.previewSplit(previewBody(item.file_path))
     previewTitle.value = item.book_name
   } catch (e) {
-    alert((e as Error).message)
+    errorMsg.value = (e as Error).message
   }
 }
 
@@ -108,6 +121,7 @@ async function doBatch() {
   if (!files.value.length) return
   busy.value = true
   batchResult.value = null
+  errorMsg.value = ''
   files.value.forEach((f) => {
     f.status = 'processing'
     f.error = ''
@@ -133,7 +147,7 @@ async function doBatch() {
       it.error = r.error
     }
   } catch (e) {
-    alert((e as Error).message)
+    errorMsg.value = (e as Error).message
   } finally {
     busy.value = false
   }
@@ -160,6 +174,8 @@ const groupedChapters = computed(() => {
   <div class="space-y-4 max-w-3xl">
     <h2 class="section-title">小说切分</h2>
     <p class="section-subtitle">自动识别卷/章/回/节、番外、序章等结构，支持广告清理、去重与超大章拆分 · 可一次选择多本批量切分</p>
+
+    <div v-if="errorMsg" class="glass-tinted-red px-4 py-2 rounded-ios-md text-sm">{{ errorMsg }}</div>
 
     <!-- 文件列表 -->
     <div class="glass-card p-4 space-y-3">
@@ -193,10 +209,10 @@ const groupedChapters = computed(() => {
           <span
             class="text-xs px-2 py-0.5 rounded shrink-0"
             :class="{
-              'text-gray-400': f.status === 'pending',
-              'text-blue-500': f.status === 'processing',
-              'text-green-500': f.status === 'done',
-              'text-red-500': f.status === 'error',
+              'st-pending': f.status === 'pending',
+              'st-processing': f.status === 'processing',
+              'st-done': f.status === 'done',
+              'st-error': f.status === 'error',
             }"
             >{{ statusText(f.status) }}<span v-if="f.status === 'done'"> · {{ f.chapters }}章</span></span
           >
@@ -387,4 +403,9 @@ const groupedChapters = computed(() => {
 .switch input:disabled + .slider { opacity: 0.5; cursor: not-allowed; }
 .volume-row td { font-size: 11px; letter-spacing: 0.02em; }
 .text-tertiary { color: var(--text-tertiary); }
+/* 文件状态色（走系统色 token，亮暗主题自适应） */
+.st-pending { color: var(--color-system-gray); }
+.st-processing { color: var(--color-system-blue); }
+.st-done { color: var(--color-system-green); }
+.st-error { color: var(--color-system-red); }
 </style>

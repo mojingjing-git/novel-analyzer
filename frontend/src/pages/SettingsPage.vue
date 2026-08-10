@@ -5,10 +5,41 @@ import LogConsole from '../components/LogConsole.vue'
 import { useLogStore } from '../composables/useLogStore'
 
 const config = ref<AppConfigDto | null>(null)
-const presets = ref<Record<string, { base_url: string; api_key: string; model: string }>>({})
+const presets = ref<Record<string, { base_url: string; model: string; api_key?: string }>>({})
 const models = ref<string[]>([])
 const saving = ref(false)
 const saved = ref(false)
+
+interface CategoryDef { name: string; description: string; examples: string[] }
+const categoryDefs = ref<CategoryDef[]>([])
+
+const keptSet = computed(() => new Set(config.value?.analysis.foreshadow_kept_categories ?? []))
+
+function toggleCategory(name: string) {
+  if (!config.value) return
+  const list = config.value.analysis.foreshadow_kept_categories ?? []
+  const set = new Set(list)
+  if (set.has(name)) set.delete(name); else set.add(name)
+  config.value.analysis.foreshadow_kept_categories = Array.from(set)
+}
+
+function selectAllCategories() {
+  if (!config.value) return
+  config.value.analysis.foreshadow_kept_categories = categoryDefs.value.map(c => c.name)
+}
+
+function clearAllCategories() {
+  if (!config.value) return
+  // 保留"其他"作为兜底
+  config.value.analysis.foreshadow_kept_categories = ['其他']
+}
+
+async function loadCategoryDefs() {
+  try {
+    const res = await api.getForeshadowCategories()
+    categoryDefs.value = res.defs
+  } catch (e) { console.error('加载伏笔分类失败', e) }
+}
 
 async function load() {
   try {
@@ -17,15 +48,18 @@ async function load() {
   } catch (e) { console.error(e) }
 }
 
+const modelError = ref('')
 async function loadModels() {
   // 用表单当前（未保存）的 base_url/api_key 查模型：填完即可获取，无需先保存；
   // 空字段不传，由后端回退到已保存配置
   const a = config.value?.api
-  const body: { base_url?: string; api_key?: string } = {}
+  const body: { base_url?: string; api_key?: string; provider?: string } = {}
   if (a?.base_url?.trim()) body.base_url = a.base_url.trim()
   if (a?.api_key?.trim()) body.api_key = a.api_key.trim()
+  if (a?.provider) body.provider = a.provider
+  modelError.value = ''
   try { const res = await api.previewModels(body); models.value = res.models }
-  catch (e) { alert('获取模型失败: ' + (e as Error).message) }
+  catch (e) { modelError.value = '获取模型失败: ' + (e as Error).message }
 }
 
 // 自定义模型下拉：点击即展开全部，可输入筛选，也允许手填自定义模型
@@ -64,6 +98,7 @@ function onDocClick(e: MouseEvent) {
 }
 onMounted(() => {
   document.addEventListener('click', onDocClick)
+  loadCategoryDefs()
 })
 onUnmounted(() => {
   // AppLayout 按 route.path 强制重挂载，必须移除监听，否则每次访问设置页都泄漏一个全局监听器
@@ -126,8 +161,9 @@ const { logs: storeLogs, clear: clearLogs } = useLogStore()
 
 const thinkingModes = [
   { value: '{}', label: '自动（默认）' },
-  { value: '{"thinking":{"type":"disabled"}}', label: 'mimo/GLM 禁用思考' },
-  { value: '{"enable_thinking":false}', label: 'DeepSeek/Qwen 禁用思考' },
+  { value: '{"thinking":{"type":"disabled"}}', label: 'thinking: disabled' },
+  { value: '{"reasoning_effort":"none"}', label: 'reasoning_effort: none' },
+  { value: '{"enable_thinking":false}', label: 'enable_thinking: false' },
 ]
 
 function getThinkingMode(): string {
@@ -140,6 +176,45 @@ function getThinkingMode(): string {
 function setThinkingMode(val: string) {
   if (!config.value) return
   try { config.value.api.thinking_mode = val === '{}' ? {} : JSON.parse(val) } catch {}
+}
+
+// 自动探测禁用思考参数（发微请求实测当前端点认哪个参数）
+const probeBusy = ref(false)
+const probeResult = ref<{
+  results: { param: string; thinking_mode: Record<string, unknown> | null; reasoning_chars: number; content_chars: number; worked: boolean | null; error: string }[]
+  best: { thinking_mode: Record<string, unknown>; param: string } | null
+  default_thinks: boolean
+  note: string
+} | null>(null)
+const probeError = ref('')
+const dynamicThinkingOptions = ref<{ value: string; label: string }[]>([])
+
+async function runProbeThinking() {
+  if (!config.value) return
+  probeBusy.value = true
+  probeError.value = ''
+  probeResult.value = null
+  const a = config.value.api
+  const body: { base_url?: string; api_key?: string; provider?: string } = {}
+  if (a.base_url?.trim()) body.base_url = a.base_url.trim()
+  if (a.api_key?.trim()) body.api_key = a.api_key.trim()
+  if (a.provider) body.provider = a.provider
+  try {
+    const res = await api.probeThinking(body)
+    probeResult.value = res
+    dynamicThinkingOptions.value = []
+    if (res.best?.thinking_mode) {
+      const s = JSON.stringify(res.best.thinking_mode)
+      if (!thinkingModes.some((o) => o.value === s)) {
+        dynamicThinkingOptions.value = [{ value: s, label: `探测命中: ${res.best.param || s}` }]
+      }
+      setThinkingMode(s)
+    }
+  } catch (e) {
+    probeError.value = '探测失败: ' + (e as Error).message
+  } finally {
+    probeBusy.value = false
+  }
 }
 
 onMounted(load)
@@ -195,7 +270,7 @@ onMounted(load)
               :key="m"
               type="button"
               @mousedown.prevent="pickModel(m)"
-              class="block w-full text-left px-2 py-1.5 rounded-md text-sm hover:bg-white/20"
+              class="model-option block w-full text-left px-2 py-1.5 rounded-md text-sm"
               style="color: var(--text-primary)"
             >{{ m }}</button>
           </div>
@@ -203,12 +278,25 @@ onMounted(load)
         <button @click="loadModels" class="glass-button" style="padding: 8px 12px; white-space: nowrap">获取模型</button>
       </div>
       <div class="flex items-center gap-2">
+        <label class="w-32 text-sm shrink-0" style="color: var(--color-system-gray)" title="请求协议格式：auto=按 base_url/API Key/模型名特征自动检测；openai=OpenAI 兼容 /chat/completions；anthropic=Anthropic /v1/messages">协议格式:</label>
+        <select v-model="config.api.provider" class="glass-input flex-1">
+          <option value="auto">auto（自动检测）</option>
+          <option value="openai">openai（OpenAI 兼容）</option>
+          <option value="anthropic">anthropic（/v1/messages）</option>
+        </select>
+      </div>
+      <p v-if="modelError" class="glass-tinted-red px-3 py-2 rounded text-xs">{{ modelError }}</p>
+      <div class="flex items-center gap-2">
         <label class="w-32 text-sm" style="color: var(--color-system-gray)">Max Tokens:</label>
         <input v-model.number="config.api.max_tokens" :class="errCls('max_tokens')" type="number" class="glass-input" style="width: 130px" />
       </div>
       <div class="flex items-center gap-2">
-        <label class="w-32 text-sm" style="color: var(--color-system-gray)">Timeout (s):</label>
+        <label class="w-32 text-sm" style="color: var(--color-system-gray)">分析 Timeout (s):</label>
         <input v-model.number="config.api.timeout" :class="errCls('timeout')" type="number" class="glass-input" style="width: 100px" />
+      </div>
+      <div class="flex items-center gap-2">
+        <label class="w-32 text-sm" style="color: var(--color-system-gray)" title="最终总结（卷摘要+最终报告+伏笔 reconciliation/复检+风格提取）使用的 API 超时，建议比分析 Timeout 长（默认 600s）">总结 Timeout (s):</label>
+        <input v-model.number="config.api.summary_timeout" :class="errCls('summary_timeout')" type="number" class="glass-input" style="width: 100px" />
       </div>
       <div class="flex items-center gap-2">
         <label class="w-32 text-sm" style="color: var(--color-system-gray)">JSON 模式:</label>
@@ -219,9 +307,26 @@ onMounted(load)
       <div class="flex items-center gap-2">
         <label class="w-32 text-sm" style="color: var(--color-system-gray)">思考模式:</label>
         <select :value="getThinkingMode()" @change="setThinkingMode(($event.target as HTMLSelectElement).value)" class="glass-input flex-1">
-          <option v-for="m in thinkingModes" :key="m.value" :value="m.value">{{ m.label }}</option>
+          <option v-for="m in [...thinkingModes, ...dynamicThinkingOptions]" :key="m.value" :value="m.value">{{ m.label }}</option>
         </select>
+        <button @click="runProbeThinking" :disabled="probeBusy || !config?.api.model" class="glass-button" style="padding: 8px 12px; white-space: nowrap" title="对当前端点发几次微请求，实测哪个禁用思考参数有效，命中后自动填入上方下拉">
+          {{ probeBusy ? '探测中...' : '自动探测' }}
+        </button>
       </div>
+      <div v-if="probeResult" class="ml-32 space-y-1 text-xs">
+        <p v-if="probeResult.note" :class="probeResult.best || !probeResult.default_thinks ? 'glass-tinted-green px-2 py-1 rounded' : 'glass-tinted-red px-2 py-1 rounded'">
+          {{ probeResult.note }}
+        </p>
+        <div v-for="r in probeResult.results" :key="r.param" class="flex gap-2 items-center flex-wrap">
+          <span class="w-40 shrink-0" style="color: var(--color-system-gray)">{{ r.param }}</span>
+          <span v-if="r.worked === true" class="pm-ok" style="color: var(--color-system-green)">✓ 有效</span>
+          <span v-else-if="r.worked === false" style="color: var(--color-system-red)">✗ 无效</span>
+          <span v-else style="color: var(--text-tertiary)">基线</span>
+          <span style="color: var(--text-tertiary)">思考 {{ r.reasoning_chars }}字 / 内容 {{ r.content_chars }}字</span>
+          <span v-if="r.error" style="color: var(--color-system-red)">{{ r.error }}</span>
+        </div>
+      </div>
+      <p v-if="probeError" class="ml-32 glass-tinted-red px-3 py-2 rounded text-xs">{{ probeError }}</p>
     </div>
 
     <div class="glass-card p-4 space-y-3">
@@ -237,7 +342,7 @@ onMounted(load)
     <div class="glass-card p-4 space-y-3">
       <h3 class="font-semibold pb-2" style="border-bottom: 1px solid var(--glass-border-subtle); letter-spacing: -0.01em">分析配置</h3>
       <div class="grid grid-cols-2 gap-3">
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">并发数:</label><input v-model.number="config.analysis.concurrency" type="number" min="1" max="8" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">并发数:</label><input v-model.number="config.analysis.concurrency" type="number" min="1" max="20" class="glass-input" style="width: 90px" /></div>
         <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">块大小 (章/块):</label><input v-model.number="config.analysis.block_size" type="number" min="1" max="10" class="glass-input" style="width: 90px" /></div>
         <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">主线最大字数:</label><input v-model.number="config.analysis.max_arc_length" type="number" class="glass-input" style="width: 110px" /></div>
         <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">Prompt 主线条数:</label><input v-model.number="config.analysis.max_arcs_in_prompt" type="number" class="glass-input" style="width: 90px" /></div>
@@ -246,9 +351,49 @@ onMounted(load)
         <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">角色状态数:</label><input v-model.number="config.analysis.max_character_states" type="number" class="glass-input" style="width: 90px" /></div>
         <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">世界观条数:</label><input v-model.number="config.analysis.max_world_items" type="number" class="glass-input" style="width: 90px" /></div>
         <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">伏笔网络条数:</label><input v-model.number="config.analysis.max_foreshadow_entries" type="number" class="glass-input" style="width: 90px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">伏笔总表上限:</label><input v-model.number="config.analysis.max_foreshadow_catalog" type="number" class="glass-input" style="width: 110px" /></div>
         <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">分卷摘要字数:</label><input v-model.number="config.analysis.batch_summary_min_words" type="number" class="glass-input" style="width: 110px" /></div>
         <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">最终报告字数:</label><input v-model.number="config.analysis.final_report_min_words" type="number" class="glass-input" style="width: 110px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)" title="卷摘要拼接总字符超过此阈值时触发分层压缩（首尾各 1 组保留全文，中间组截断到 1/2）">压缩阈值 (字符):</label><input v-model.number="config.analysis.volume_compress_threshold" type="number" min="10000" class="glass-input" style="width: 110px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)" title="每 N 卷为一组（首尾各 1 组保留全文，中间组截断到 1/2）">压缩组大小 (卷):</label><input v-model.number="config.analysis.volume_compress_group" type="number" min="1" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)" title="伏笔最低保留重要度：低/中/高；过滤阶段会丢弃低于该等级的所有伏笔">伏笔最低重要度:</label>
+          <select v-model="config.analysis.foreshadow_min_importance" class="glass-input" style="width: 100px"><option>低</option><option>中</option><option>高</option></select>
+        </div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)" title="伏笔最低保留置信度：低/中/高；importance 已收一道，confidence 兜底">伏笔最低置信度:</label>
+          <select v-model="config.analysis.foreshadow_min_confidence" class="glass-input" style="width: 100px"><option>低</option><option>中</option><option>高</option></select>
+        </div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)" title="importance=高 的伏笔最多保留多少（-1=无上限）">高 importance 上限:</label><input v-model.number="config.analysis.max_foreshadow_catalog_high" type="number" min="-1" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)" title="importance=中 的伏笔最多保留多少（按综合权重排序截断）">中 importance 上限:</label><input v-model.number="config.analysis.max_foreshadow_catalog_mid" type="number" min="0" class="glass-input" style="width: 90px" /></div>
+      </div>
+    </div>
+
+    <div v-if="categoryDefs.length" class="glass-card p-4 space-y-3">
+      <div class="flex items-center justify-between pb-2" style="border-bottom: 1px solid var(--glass-border-subtle)">
+        <h3 class="font-semibold" style="letter-spacing: -0.01em">伏笔分类（功能类别，治本核心）</h3>
+        <div class="flex gap-2">
+          <button @click="selectAllCategories" class="glass-pill">全选</button>
+          <button @click="clearAllCategories" class="glass-pill" title="清空 = 只保留「其他」兜底">清空</button>
+        </div>
+      </div>
+      <p class="text-xs" style="color: var(--text-secondary)">
+        LLM 抽取伏笔时会自由产出 type 字符串（可能 100+ 种），系统会用 LLM 归一化到下列 50 个功能类别之一。
+        未勾选的类别会被过滤掉。建议至少保留「其他」作为兜底。已选 {{ keptSet.size }} / {{ categoryDefs.length }}。
+      </p>
+      <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
+        <label
+          v-for="cat in categoryDefs"
+          :key="cat.name"
+          class="flex items-start gap-2 text-sm cursor-pointer p-1.5 rounded"
+          :style="{ background: keptSet.has(cat.name) ? 'var(--glass-tinted-blue)' : 'transparent' }"
+          :title="cat.description + (cat.examples.length ? '\\n\\n典型示例: ' + cat.examples.join(', ') : '')"
+        >
+          <input
+            type="checkbox"
+            :checked="keptSet.has(cat.name)"
+            @change="toggleCategory(cat.name)"
+            style="margin-top: 3px"
+          />
+          <span style="color: var(--text-primary)">{{ cat.name }}</span>
+        </label>
       </div>
     </div>
 
@@ -266,6 +411,14 @@ onMounted(load)
         <input v-model="config.analysis.auto_archive" type="checkbox" />
         自动归档
       </label>
+      <label class="flex items-center gap-2 text-sm cursor-pointer">
+        <input v-model="config.analysis.auto_summary" type="checkbox" />
+        队列完成后自动总结
+      </label>
+      <div class="grid grid-cols-2 gap-3">
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">总结并发数:</label><input v-model.number="config.analysis.summary_concurrency" type="number" min="1" max="20" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">总结批次大小:</label><input v-model.number="config.analysis.summary_batch_size" type="number" min="5" class="glass-input" style="width: 90px" /></div>
+      </div>
     </div>
 
     <div class="flex gap-3 items-center">
@@ -299,5 +452,8 @@ onMounted(load)
 .input-invalid {
   border-color: var(--color-system-red) !important;
   box-shadow: 0 0 0 1px var(--color-system-red);
+}
+.model-option:hover {
+  background: var(--glass-fill-subtle);
 }
 </style>

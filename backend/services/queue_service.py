@@ -15,6 +15,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional, Dict, Any
 
 from ..config.settings import AppConfig, ConfigManager
@@ -32,9 +33,32 @@ if getattr(sys, "frozen", False):
     PROJECT_ROOT = Path(os.environ.get("APPDATA", Path.home())) / "NovelAnalyzer"
     PROJECT_ROOT.mkdir(parents=True, exist_ok=True)
 else:
-    PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+    # 与 app.py 保持一致：优先用 NOVEL_ROOT 指向“真实项目根”（共享盘），
+    # 这样队列状态 / 配置 / 工作区数据都落在共享盘，而不是本地副本目录。
+    _novel_root = os.environ.get("NOVEL_ROOT")
+    PROJECT_ROOT = Path(_novel_root).resolve() if _novel_root else Path(__file__).resolve().parent.parent.parent
 QUEUE_STATE_FILE = PROJECT_ROOT / "queue_state.json"
 CONFIG_FILE = PROJECT_ROOT / "config.json"
+
+
+def _store_path(p) -> str:
+    """持久化时尽量存「相对 PROJECT_ROOT」的路径，让整个文件夹搬迁 / 换盘符 /
+    换挂载点后仍能正确恢复（直接写死绝对路径会在移动后全部失效）。
+    仅当路径确实位于 PROJECT_ROOT 之下时才存相对形式，否则退回绝对路径
+    （兼容书库外置到其他盘的场景）。"""
+    try:
+        return Path(p).resolve().relative_to(PROJECT_ROOT).as_posix()
+    except Exception:
+        return Path(p).as_posix()
+
+
+def _load_path(s: str) -> Path:
+    """读取时：相对路径按 PROJECT_ROOT 还原；绝对路径原样保留
+    （兼容旧数据里的 F:/... 等绝对路径）。"""
+    p = Path(s)
+    if p.is_absolute():
+        return p
+    return PROJECT_ROOT / p
 
 
 @dataclass
@@ -55,8 +79,8 @@ class QueueItem:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "name": self.name,
-            "blocks_dir": self.blocks_dir.as_posix(),
-            "workspace_dir": self.workspace_dir.as_posix(),
+            "blocks_dir": _store_path(self.blocks_dir),
+            "workspace_dir": _store_path(self.workspace_dir),
             "status": self.status,
             "total_chapters": self.total_chapters,
             "completed_chapters": self.completed_chapters,
@@ -71,8 +95,8 @@ class QueueItem:
     def from_dict(cls, data: Dict[str, Any]) -> "QueueItem":
         return cls(
             name=data.get("name", ""),
-            blocks_dir=Path(data.get("blocks_dir", "")),
-            workspace_dir=Path(data.get("workspace_dir", "")),
+            blocks_dir=_load_path(data.get("blocks_dir", "")),
+            workspace_dir=_load_path(data.get("workspace_dir", "")),
             status=data.get("status", "pending"),
             total_chapters=data.get("total_chapters", 0),
             completed_chapters=data.get("completed_chapters", 0),
@@ -206,29 +230,45 @@ class QueueManager:
         }
 
     def scan_directory(self, base_dir: Path) -> List[QueueItem]:
-        """扫描 {书名}/blocks/ 结构"""
-        items = []
-        if not base_dir.exists() or not base_dir.is_dir():
-            return items
+        """扫描 {书名}/blocks/ 结构（网络盘优化：scandir + 线程池并行列举）"""
+        base = Path(base_dir)
+        if not base.is_dir():
+            return []
 
-        for subdir in sorted(base_dir.iterdir()):
-            if not subdir.is_dir():
-                continue
+        # 1) 顶层目录枚举：os.scandir 复用 d_type，避免逐目录额外 stat
+        #    （网络盘下每次 stat 都是一次到服务器的往返，能省则省）
+        subdirs = []
+        with os.scandir(base) as it:
+            for entry in it:
+                if entry.is_dir():
+                    subdirs.append(Path(entry.path))
+
+        # 2) 每本书的 blocks/*.txt 列举并行化，把多本书的网络延迟重叠掉
+        def _scan_one(subdir: Path) -> Optional[QueueItem]:
             blocks = subdir / "blocks"
-            if not blocks.exists():
-                continue
+            if not blocks.is_dir():
+                return None
             txt_files = [f for f in blocks.glob("*.txt") if re.match(r"^\d+\.txt$", f.name)]
             if not txt_files:
-                continue
-            item = QueueItem(
+                return None
+            return QueueItem(
                 name=subdir.name,
                 blocks_dir=blocks,
                 workspace_dir=subdir,
                 total_chapters=len(txt_files),
             )
-            items.append(item)
-            logger.info(f"扫描到小说: {subdir.name} ({len(txt_files)}章)")
 
+        items: List[QueueItem] = []
+        if subdirs:
+            max_workers = min(32, (os.cpu_count() or 4) + 4)
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                for it in ex.map(_scan_one, subdirs):
+                    if it is not None:
+                        items.append(it)
+
+        items.sort(key=lambda x: x.name)
+        for it in items:
+            logger.info(f"扫描到小说: {it.name} ({it.total_chapters}章)")
         return items
 
     def validate_item(self, item: QueueItem) -> bool:
@@ -246,7 +286,7 @@ class QueueManager:
             logger.warning("API 预检查失败：未配置模型（api.model 为空），请在设置页填写模型名")
             return False
         try:
-            models = await LLMClient.list_models(config.api.base_url, config.api.api_key)
+            models = await LLMClient.list_models(config.api.base_url, config.api.api_key, config.api.provider)
             if models:
                 return True
         except Exception as e:
@@ -336,6 +376,8 @@ class AnalysisService:
         self._chapter_stats: List[Dict[str, Any]] = []
         self._total_retries = 0
         self._total_failed_tokens = 0
+        # EFF-5：KV cache 命中 token 累计（运行中实时读当前 analyzer；结束后用累计值）
+        self._total_cached_tokens = 0
         self._analysis_start_time: float = 0.0
         # 运行结束时刻（冻结耗时用：结束后 elapsed 不再随 time.time() 增长）
         self._analysis_end_time: Optional[float] = None
@@ -356,7 +398,7 @@ class AnalysisService:
         }
 
     def token_stats(self) -> Dict[str, Any]:
-        """返回分类 token 统计 + 每章记录 + 总耗时"""
+        """返回分类 token 统计 + 每章记录 + 总耗时 + KV 缓存命中数（EFF-5）"""
         # 运行结束后用冻结的结束时刻计算，否则结束后的 elapsed 会无限增长
         if self._analysis_end_time:
             elapsed = self._analysis_end_time - self._analysis_start_time
@@ -364,6 +406,16 @@ class AnalysisService:
             elapsed = time.time() - self._analysis_start_time
         else:
             elapsed = 0.0
+        # KV cache 命中：运行中读当前 analyzer（实时）；结束后用累计值
+        # getattr 兜底：部分单测用 __new__ 构造实例（无 __init__ 属性）
+        cached_tokens = getattr(self, '_total_cached_tokens', 0)
+        if self._pipeline is not None:
+            analyzer = getattr(self._pipeline, '_analyzer', None)
+            if analyzer is not None:
+                try:
+                    cached_tokens = analyzer.get_token_stats().get('cached_tokens', 0)
+                except Exception:
+                    cached_tokens = self._total_cached_tokens
         return {
             "categories": self._token_stats,
             "chapter_stats": self._chapter_stats[-200:],  # 最近200章
@@ -371,6 +423,7 @@ class AnalysisService:
             "running": self.is_running,
             "total_retries": self._total_retries,
             "total_failed_tokens": self._total_failed_tokens,
+            "cached_tokens": cached_tokens or 0,
         }
 
     def _record_chapter_stat(self, payload: dict) -> None:
@@ -451,6 +504,7 @@ class AnalysisService:
         self._chapter_stats = []
         self._total_retries = 0
         self._total_failed_tokens = 0
+        self._total_cached_tokens = 0
         self._analysis_start_time = time.time()
         self._analysis_end_time = None
         self._runner_task = asyncio.create_task(self._run_queue())
@@ -505,12 +559,52 @@ class AnalysisService:
             if self._stop_requested:
                 await hub.state_change("stopped", "分析已停止")
             else:
+                # 2026-08-02 spec：队列全部完成且开启 auto_summary 时，
+                # 对已完成的书逐本串行执行最终总结（单本失败记录日志继续下一本；
+                # 期间用户可通过既有 /api/summary/stop 停止）
+                if config.analysis.auto_summary:
+                    await self._auto_summary_done_books(config)
                 await hub.state_change("done", "队列全部完成")
             self._pipeline = None
         finally:
             # 冻结结束时刻：任务完成/被取消/异常后 is_running 即变 False，
             # 此时 token_stats 的 elapsed 必须停止增长
             self._analysis_end_time = time.time()
+
+    async def _auto_summary_done_books(self, config: AppConfig) -> None:
+        """队列中 status==done 的书逐本自动最终总结（延迟导入避免循环依赖：
+        summary_service 顶层 import 本模块的 get_service）。"""
+        from .summary_service import get_summary_service as get_summary
+
+        hub = get_hub()
+        done_books = [item.name for item in self.queue.items if item.status == "done"]
+        if not done_books:
+            return
+        await hub.log(f"队列完成，自动总结 {len(done_books)} 本书...")
+        summary = get_summary()
+        batch_size = max(5, config.analysis.summary_batch_size)
+        concurrency = max(1, config.analysis.summary_concurrency)
+        for book_id in done_books:
+            if self._stop_requested:
+                await hub.log("自动总结已停止（用户停止）", level="warn")
+                return
+            try:
+                summary.start(book_id, 1, 99999, batch_size, concurrency,
+                              allow_during_analysis=True)
+                await hub.log(f"自动总结开始: {book_id}")
+                # 等待本书总结完成（轮询；不阻塞其它逻辑，逐本串行保证 API 并发可控）
+                while summary.is_running:
+                    if self._stop_requested:
+                        summary.stop()
+                        break
+                    await asyncio.sleep(1.0)
+                if summary.status().get("phase") == "complete":
+                    await hub.log(f"自动总结完成: {book_id}")
+                else:
+                    await hub.log(f"自动总结未完成或失败: {book_id}（{summary.status().get('error', '')}）", level="warn")
+            except Exception as e:
+                await hub.log(f"自动总结失败（{book_id}）: {e}", level="error")
+        self.save_queue()
 
     async def _run_one_item(self, item: QueueItem, base_config: AppConfig) -> None:
         """运行单本书的完整分析"""
@@ -591,6 +685,14 @@ class AnalysisService:
             await hub.log(f"《{item.name}》分析异常: {e}", level="error")
         finally:
             item.end_time = time.time()
+            # EFF-5：pipeline 置 None 前累计本书 KV 缓存命中数（结束后 token_stats 仍可见）
+            if self._pipeline is not None:
+                analyzer = getattr(self._pipeline, '_analyzer', None)
+                if analyzer is not None:
+                    try:
+                        self._total_cached_tokens += analyzer.get_token_stats().get('cached_tokens', 0) or 0
+                    except Exception:
+                        pass
             self._pipeline = None
 
         # 完成后自动归档（可选）

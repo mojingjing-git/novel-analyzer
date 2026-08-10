@@ -31,6 +31,7 @@ class FileProcessor:
         self.directory = directory
         self.encoding_priority = encoding_priority or ENCODING_CANDIDATES
         self._file_list: List[tuple] = []  # [(chapter_num, file_path), ...]
+        self._file_map: Dict[int, Path] = {}  # chapter_num -> path（O(1) 查找索引）
         self._content_cache: Dict[int, str] = {}
         self._cache_lock = threading.Lock()
         self._detected_encoding: Optional[str] = None  # 目录级编码缓存
@@ -43,6 +44,7 @@ class FileProcessor:
             排序后的章节号列表
         """
         self._file_list = []
+        self._file_map = {}
 
         if not self.directory.exists():
             logger.warning(f"目录不存在: {self.directory}")
@@ -52,6 +54,7 @@ class FileProcessor:
             chapter_num = self._extract_chapter_number(file_path)
             if chapter_num is not None:
                 self._file_list.append((chapter_num, file_path))
+                self._file_map[chapter_num] = file_path
 
         # 按章节号排序
         self._file_list.sort(key=lambda x: x[0])
@@ -115,27 +118,33 @@ class FileProcessor:
             self.scan_chapters()
         return len(self._file_list)
 
-    def read_block(self, start_chapter: int, block_size: int) -> Optional[str]:
+    def read_block(self, chapters: List[int]) -> Optional[str]:
         """
-        合并多章为一个文本块（用于块化分析）
+        合并多章为一个文本块（用于块化分析）。
+
+        2026-08-07 优化（P0-4）：签名由 (start_chapter, block_size) 改为接收
+        **实际存在的章号列表**。原实现按 range(start, start+block_size) 连号读取，
+        与 pipeline 按"实际章号"切块不一致——目录断号时（如只有 1/3/5.txt）
+        中间的章会被静默跳过、永远不分析。
 
         Args:
-            start_chapter: 块起始章号
-            block_size: 每块章数
+            chapters: 本块的实际章号列表（有序）
 
         Returns:
             合并后的文本，失败返回None
         """
-        chapters = list(range(start_chapter, start_chapter + block_size))
+        if not chapters:
+            return None
         parts = []
-        for ch in chapters:
+        multi = len(chapters) > 1
+        for i, ch in enumerate(chapters):
             content = self.read_chapter(ch)
             if content is None:
-                if ch == start_chapter:
+                if i == 0:
                     return None
-                logger.warning(f"read_block: 第{ch}章不存在，ch{start_chapter}块不完整")
+                logger.warning(f"read_block: 第{ch}章不存在，块内后续章跳过")
                 break
-            if block_size > 1:
+            if multi:
                 parts.append(f"--- 第{ch}章 ---\n{content}")
             else:
                 parts.append(content)
@@ -166,7 +175,10 @@ class FileProcessor:
         return None
 
     def _find_chapter_file(self, chapter_num: int) -> Optional[Path]:
-        """查找指定章节的文件"""
+        """查找指定章节的文件（O(1) 字典索引；scan_chapters 后可用）"""
+        if self._file_map:
+            return self._file_map.get(chapter_num)
+        # 降级：未扫描时线性查找（兼容旧行为）
         for chap_num, file_path in self._file_list:
             if chap_num == chapter_num:
                 return file_path

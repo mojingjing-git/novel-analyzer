@@ -67,6 +67,10 @@ const svgEdges = computed(() => {
     }))
 })
 
+function isRelated(edge: { source: string; target: string }): boolean {
+  return !!selected.value && (edge.source === selected.value || edge.target === selected.value)
+}
+
 const selectedRelated = computed(() => {
   if (!selected.value) return []
   const positions = nodePositions.value
@@ -86,34 +90,96 @@ const selectedRelated = computed(() => {
   <div class="space-y-4 p-4">
     <h2 class="section-title">角色关系图</h2>
     <BookSelector v-model="bookId" />
-    <div v-if="!bookId" class="text-gray-400">请选择书目</div>
-    <div v-else-if="nodes.length === 0" class="text-gray-400">暂无数据</div>
+    <div v-if="!bookId" class="glass-card p-8 text-center text-sm" style="color: var(--text-tertiary)">请选择书目</div>
+    <div v-else-if="nodes.length === 0" class="glass-card p-8 text-center text-sm" style="color: var(--text-tertiary)">暂无数据</div>
     <div v-else class="flex gap-4">
-      <div class="flex-1 bg-white border border-gray-200 rounded-lg p-4">
-        <div class="text-sm text-gray-500 mb-2">共 {{ nodes.length }} 个角色, {{ edges.length }} 条关系</div>
-        <svg :width="svgSize" :height="svgSize" class="border border-gray-100 rounded">
-          <line v-for="(edge, idx) in svgEdges" :key="'edge' + idx" :x1="edge.x1" :y1="edge.y1" :x2="edge.x2" :y2="edge.y2" :stroke="selected && (edge.source === selected || edge.target === selected) ? '#66dae9' : '#ccc'" :stroke-width="Math.min(3, 0.5 + edge.weight)" :opacity="edge.opacity" />
-          <g v-for="(pos, id) in nodePositions" :key="id" @click="selected = selected === id ? null : id" class="cursor-pointer">
-            <circle :cx="pos.x" :cy="pos.y" :r="pos.r" :fill="selected === id ? '#66dae9' : '#3b82f6'" :fill-opacity="0.3" :stroke="selected === id ? '#66dae9' : '#3b82f6'" stroke-width="2" />
-            <text :x="pos.x" :y="pos.y - pos.r - 4" text-anchor="middle" class="text-xs fill-gray-700" style="font-size: 11px">{{ pos.name }}</text>
-            <text :x="pos.x" :y="pos.y + 3" text-anchor="middle" class="fill-gray-500" style="font-size: 9px">{{ pos.count }}</text>
-          </g>
-        </svg>
+      <div class="flex-1 glass-card p-4">
+        <div class="text-sm mb-2" style="color: var(--text-secondary)">共 {{ nodes.length }} 个角色, {{ edges.length }} 条关系</div>
+        <div class="viz-stage">
+          <svg :width="svgSize" :height="svgSize">
+            <line
+              v-for="(edge, idx) in svgEdges"
+              :key="'edge' + idx"
+              class="viz-edge"
+              :class="{ 'is-related': isRelated(edge) }"
+              :x1="edge.x1" :y1="edge.y1" :x2="edge.x2" :y2="edge.y2"
+              :stroke-width="Math.min(3, 0.5 + edge.weight)"
+              :opacity="edge.opacity"
+            />
+            <g
+              v-for="(pos, id) in nodePositions"
+              :key="id"
+              class="viz-node"
+              :class="{ 'is-selected': selected === id }"
+              @click="selected = selected === id ? null : id"
+            >
+              <circle :cx="pos.x" :cy="pos.y" :r="pos.r" stroke-width="2" />
+              <text :x="pos.x" :y="pos.y - pos.r - 4" text-anchor="middle" class="viz-label" style="font-size: 11px">{{ pos.name }}</text>
+              <text :x="pos.x" :y="pos.y + 3" text-anchor="middle" class="viz-count" style="font-size: 9px">{{ pos.count }}</text>
+            </g>
+          </svg>
+        </div>
       </div>
       <div v-if="selected" class="w-64 shrink-0">
-        <div class="bg-white border border-gray-200 rounded-lg p-4 space-y-2">
+        <div class="glass-card p-4 space-y-2">
           <h3 class="font-semibold pb-2" style="border-bottom: 1px solid var(--glass-border-subtle); letter-spacing: -0.01em">{{ nodePositions[selected]?.name }}</h3>
-          <div class="text-sm" style="color: var(--color-system-gray)">事件数: {{ nodePositions[selected]?.count }}</div>
-          <div class="text-sm font-medium text-gray-700 pt-2">关联角色:</div>
+          <div class="text-sm" style="color: var(--text-secondary)">事件数: {{ nodePositions[selected]?.count }}</div>
+          <div class="text-sm font-medium pt-2" style="color: var(--text-primary)">关联角色:</div>
           <div class="space-y-1 max-h-60 overflow-y-auto">
-            <div v-for="(rel, idx) in selectedRelated" :key="idx" class="flex justify-between text-xs bg-gray-50 px-2 py-1 rounded">
-              <span class="text-gray-700">{{ rel.name }}</span>
-              <span class="text-gray-500">权重: {{ rel.weight }}</span>
+            <div v-for="(rel, idx) in selectedRelated" :key="idx" class="rel-row">
+              <span style="color: var(--text-primary)">{{ rel.name }}</span>
+              <span style="color: var(--text-tertiary)">权重: {{ rel.weight }}</span>
             </div>
-            <div v-if="!selectedRelated.length" class="text-xs text-gray-400">无关联</div>
+            <div v-if="!selectedRelated.length" class="text-xs" style="color: var(--text-tertiary)">无关联</div>
           </div>
         </div>
       </div>
     </div>
   </div>
 </template>
+
+<style scoped>
+.viz-stage {
+  border-radius: 14px;
+  background: var(--glass-fill-subtle);
+  border: 1px solid var(--glass-border-subtle);
+  display: flex;
+  justify-content: center;
+  overflow: auto;
+}
+.viz-edge {
+  stroke: var(--viz-edge);
+  transition: stroke 200ms var(--ease-fluid);
+}
+.viz-edge.is-related {
+  stroke: var(--color-system-teal);
+}
+.viz-node {
+  cursor: pointer;
+}
+.viz-node circle {
+  fill: var(--color-system-blue);
+  fill-opacity: 0.28;
+  stroke: var(--color-system-blue);
+  transition: fill 200ms var(--ease-fluid), stroke 200ms var(--ease-fluid);
+}
+.viz-node:hover circle {
+  fill-opacity: 0.45;
+}
+.viz-node.is-selected circle {
+  fill: var(--color-system-teal);
+  fill-opacity: 0.4;
+  stroke: var(--color-system-teal);
+}
+.viz-label { fill: var(--text-primary); }
+.viz-count { fill: var(--text-tertiary); }
+.rel-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  background: var(--glass-fill-subtle);
+  border: 1px solid var(--glass-border-subtle);
+  padding: 4px 10px;
+  border-radius: 8px;
+}
+</style>

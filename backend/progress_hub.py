@@ -63,7 +63,9 @@ class ProgressHub:
 
     # ---- 便捷方法 ----
     async def log(self, text: str, level: str = "info") -> None:
-        await self.publish({"type": "log", "payload": {"level": level, "text": text}})
+        # source="business"：业务事件消息（队列/总结/状态提示等），
+        # 与 HubLogHandler 转发的 python 技术日志区分（见 LogConsole 简化模式）
+        await self.publish({"type": "log", "payload": {"level": level, "text": text, "source": "business"}})
 
     async def progress(self, current: int, total: int, eta: str = "") -> None:
         await self.publish({"type": "progress", "payload": {"current": current, "total": total, "eta": eta}})
@@ -109,7 +111,10 @@ class HubLogHandler(logging.Handler):
                 else "warn" if record.levelno >= logging.WARNING
                 else "info"
             )
-            self._q.put_nowait({"type": "log", "payload": {"level": level, "text": msg}})
+            # source="python"：标识这是 Python logging 转发的"真日志"（技术细节，
+            # 含每章 LLM 调用/token 统计），供前端"简化日志"面板过滤掉，
+            # 避免与业务消息（hub.log，source="business"）混排重复。
+            self._q.put_nowait({"type": "log", "payload": {"level": level, "text": msg, "source": "python"}})
         except thread_queue.Full:
             pass  # 队列满时丢弃，不阻塞业务线程
         except Exception:
@@ -133,11 +138,21 @@ async def _forward_logs(handler: HubLogHandler, hub: ProgressHub) -> None:
 
 
 def install_log_forwarder() -> None:
-    """安装日志转发器：在 root logger 上加 HubLogHandler，并启动后台转发任务"""
+    """安装日志转发器：在 root logger 上加 HubLogHandler，并启动后台转发任务。
+
+    P1-8：先检查 root logger 是否已挂载同类型 handler——uvicorn --reload 每次
+    热重载都会重新执行 app startup，重复挂载会让每条日志向 WS 推 N 份，
+    且旧 handler 的线程安全队列常驻内存。
+    """
+    root = logging.getLogger()
+    if any(isinstance(h, HubLogHandler) for h in root.handlers):
+        logger.debug("HubLogHandler 已存在，跳过重复挂载")
+        return
+
     handler = HubLogHandler()
     handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S"))
     handler.setLevel(logging.INFO)
-    logging.getLogger().addHandler(handler)
+    root.addHandler(handler)
 
     hub = get_hub()
     asyncio.create_task(_forward_logs(handler, hub))

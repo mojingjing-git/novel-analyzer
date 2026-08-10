@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 class ModelPreviewRequest(BaseModel):
     base_url: Optional[str] = None
     api_key: Optional[str] = None
+    provider: Optional[str] = None
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -37,7 +38,7 @@ async def get_models() -> dict:
     service = get_service()
     config = service.config_manager.load()
     try:
-        models = await LLMClient.list_models(config.api.base_url, config.api.api_key)
+        models = await LLMClient.list_models(config.api.base_url, config.api.api_key, config.api.provider)
         return {"models": models}
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
@@ -54,9 +55,31 @@ async def preview_models(req: ModelPreviewRequest) -> dict:
         config.api.base_url = req.base_url
     if req.api_key:
         config.api.api_key = req.api_key
+    if req.provider:
+        config.api.provider = req.provider
     try:
-        models = await LLMClient.list_models(config.api.base_url, config.api.api_key)
+        models = await LLMClient.list_models(config.api.base_url, config.api.api_key, config.api.provider)
         return {"models": models}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@router.post("/probe-thinking")
+async def probe_thinking(req: ModelPreviewRequest) -> dict:
+    """探测当前端点认哪个禁用思考参数（微请求，不写配置）。
+    空字段回退到已保存配置。"""
+    from backend.core.llm_client import LLMClient
+    service = get_service()
+    config = service.config_manager.load()
+    if req.base_url:
+        config.api.base_url = req.base_url
+    if req.api_key:
+        config.api.api_key = req.api_key
+    if req.provider:
+        config.api.provider = req.provider
+    try:
+        return await LLMClient.probe_thinking_params(
+            config.api.base_url, config.api.api_key, config.api.model, config.api.provider)
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 

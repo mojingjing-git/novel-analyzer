@@ -4,6 +4,7 @@ POST /api/analysis/start|stop、GET /api/analysis/status
 GET/PUT /api/queue、POST /api/queue/scan、队列项操作
 """
 
+import asyncio
 import logging
 from pathlib import Path
 
@@ -101,7 +102,7 @@ async def scan_queue(req: ScanRequest) -> dict:
     base = Path(req.base_dir)
     if not base.exists() or not base.is_dir():
         raise HTTPException(status_code=422, detail=f"目录不存在: {req.base_dir}")
-    found = service.queue.scan_directory(base)
+    found = await asyncio.to_thread(service.queue.scan_directory, base)
     if not found:
         raise HTTPException(status_code=404, detail="未扫描到任何 {书名}/blocks/*.txt 结构")
     for item in found:
@@ -118,7 +119,7 @@ async def scan_queue(req: ScanRequest) -> dict:
 async def scan_workspace() -> dict:
     """刷新工作区目录扫描，自动发现新小说"""
     service = _ensure_idle()
-    added = service.scan_workspace()
+    added = await asyncio.to_thread(service.scan_workspace)
     return {"added": added, **service.status()}
 
 

@@ -94,6 +94,80 @@ async def test_stop_requested():
     print("✅ test_stop_requested passed")
 
 
+async def test_chat_cancelled_by_stop():
+    """停止后立即取消进行中的 API 请求（不等超时）"""
+    config = make_config(timeout=10)
+    client = LLMClient(config)
+    # mock 底层 SDK：永不返回的挂起请求
+    async def hang(*args, **kwargs):
+        await asyncio.Event().wait()
+    client.client = MagicMock()
+    client.client.chat.completions.create = hang
+
+    started = asyncio.Event()
+    async def wrapped(*args, **kwargs):
+        started.set()
+        return await hang(*args, **kwargs)
+    client.client.chat.completions.create = wrapped
+
+    chat_task = asyncio.create_task(client.chat([{"role": "user", "content": "hi"}]))
+    await asyncio.wait_for(started.wait(), timeout=2)
+    client.request_stop()
+    success, content, error, tokens = await asyncio.wait_for(chat_task, timeout=2)
+    assert not success
+    assert "停止" in error
+    assert tokens == (0, 0)
+    print("✅ test_chat_cancelled_by_stop passed")
+
+
+async def test_chat_cancelled_externally():
+    """外部 Task.cancel（如 style_service 停止风格分析）也要取消底层 API 请求"""
+    config = make_config(timeout=10)
+    client = LLMClient(config)
+    api_cancelled = False
+
+    async def hang(*args, **kwargs):
+        nonlocal api_cancelled
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            api_cancelled = True
+            raise
+    client.client = MagicMock()
+    client.client.chat.completions.create = hang
+
+    chat_task = asyncio.create_task(client.chat([{"role": "user", "content": "hi"}]))
+    await asyncio.sleep(0.1)
+    chat_task.cancel()
+    try:
+        await chat_task
+        assert False, "chat 应随外部取消而取消"
+    except asyncio.CancelledError:
+        pass
+    assert api_cancelled, "底层 API 请求应被取消，不能泄漏为孤儿请求"
+    print("✅ test_chat_cancelled_externally passed")
+
+
+async def test_chat_hard_timeout_preserved():
+    """硬超时语义保留：请求无响应且未停止时返回硬超时"""
+    config = make_config(timeout=0.1)
+    client = LLMClient(config)
+
+    async def hang(*args, **kwargs):
+        await asyncio.Event().wait()
+    client.client = MagicMock()
+    client.client.chat.completions.create = hang
+
+    # 硬超时 = config.timeout + 30s，mock 掉 sleep 立即触发该分支
+    with patch("asyncio.sleep", new=AsyncMock()):
+        success, content, error, tokens = await asyncio.wait_for(
+            client.chat([{"role": "user", "content": "hi"}]), timeout=5)
+    assert not success
+    assert "硬超时" in error
+    assert tokens == (0, 0)
+    print("✅ test_chat_hard_timeout_preserved passed")
+
+
 async def test_validation_failure_triggers_retry():
     """验证失败触发重试"""
     config = make_config(temperature_max_retries=3, backoff_max_retries=0)
@@ -205,6 +279,9 @@ async def main():
     await test_validation_failure_triggers_retry()
     await test_attempts_counter()
     await test_attempts_counter_backoff_path()
+    await test_chat_cancelled_by_stop()
+    await test_chat_cancelled_externally()
+    await test_chat_hard_timeout_preserved()
     print("\n🎉 All LLM mock tests passed!")
 
 

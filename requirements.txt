@@ -1,8 +1,16 @@
 fastapi>=0.115.0
 uvicorn>=0.30.0
+# 必需：uvicorn 处理 WebSocket 升级需要 websockets（否则桌面端实时日志/进度/状态全部失效）
+websockets>=12.0
 openai>=1.0.0
+# Anthropic 格式端点支持（api.provider=anthropic 时使用，官方 /v1/messages 协议）
+anthropic>=0.28.0
 openpyxl>=3.0.0
 pywebview>=5.0.0
+# P1-6：LLM 输出畸形 JSON 修复链的依赖（parse_json_robust 策略4/7），
+# 缺失时解析链静默降级，畸形 JSON 只能靠降温重试兜底（每次重试真实扣费）
+json5>=0.9.0
+json-repair>=0.30.0
 
 # 可选依赖（不装也能跑）
 # chardet>=5.0.0      # 文件编码自动检测（fallback 到逐编码尝试）

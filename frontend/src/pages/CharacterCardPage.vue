@@ -25,10 +25,13 @@ const loadingCard = ref(false)
 const selectedName = ref('')
 const cardError = ref('')
 
+const listError = ref('')
+
 async function loadCharacters() {
   characters.value = []
   card.value = null
   selectedName.value = ''
+  listError.value = ''
   if (!bookId.value) return
   loadingChars.value = true
   try {
@@ -36,7 +39,7 @@ async function loadCharacters() {
     characters.value = (res.characters as CharSummary[]) || []
   } catch (e) {
     console.error(e)
-    alert('加载角色列表失败: ' + (e as Error).message)
+    listError.value = '加载角色列表失败: ' + (e as Error).message
   } finally {
     loadingChars.value = false
   }
@@ -102,6 +105,8 @@ watch(bookId, loadCharacters)
     <p class="section-subtitle">从聚合数据中查看每个角色的出场、弧光、事件与关系网。</p>
 
     <BookSelector v-model="bookId" />
+
+    <div v-if="listError" class="glass-tinted-red px-4 py-2 rounded-ios-md text-sm">{{ listError }}</div>
 
     <!-- 角色列表 -->
     <div v-if="loadingChars" class="text-sm" style="color: var(--text-tertiary)">加载角色列表中…</div>

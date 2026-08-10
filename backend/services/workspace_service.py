@@ -51,9 +51,9 @@ def _get_workspace_path() -> Path:
 
 
 def _get_archive_root() -> Path:
-    """获取 分析结果/ 归档根目录（与 workspace 同级）"""
+    """获取 分析结果/ 归档根目录（在 workspace 内，与 queue_service 归档位置一致）"""
     ws = _get_workspace_path()
-    return ws.parent / "分析结果"
+    return ws / "分析结果"
 
 
 def list_workspace_novels() -> List[Dict]:

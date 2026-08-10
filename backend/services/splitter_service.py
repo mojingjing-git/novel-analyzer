@@ -24,8 +24,10 @@
 
 import json
 import logging
+import os
 import re
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -269,7 +271,21 @@ def _chapter_regex_for_mode(options: SplitOptions, lines: List[str]) -> tuple:
     best_name = max(scores, key=lambda k: scores[k]) if scores else ""
     pattern_name = best_name if best_name and scores[best_name] > 0 else "兜底第X章"
 
-    # 合并所有候选正则作为实际切分正则（OR 关系）
+    # 特章正则（序章/楔子/番外/尾声…）：无论主导格式如何都保留识别能力
+    special_patterns = [pat for name, pat in CHAPTER_PATTERNS if name.startswith("特章")]
+    special_alt = "|".join(special_patterns)
+
+    # P2-11：主导格式得分足够（>=5 次命中）时，用"主导正则 + 特章正则"作为实际
+    # 切分正则——原实现把所有候选正则 OR 合并成"大网"，含"1. 2. 3."式列表或
+    # 数字编号行文的小说会被误切成碎片章；打分选出的主导格式才是该书真实的章节形态。
+    if best_name and scores[best_name] >= 5 and not best_name.startswith("特章"):
+        _pat_by_name = {name: pat for name, pat in CHAPTER_PATTERNS}
+        combined = f"(?:{_pat_by_name[best_name]})"
+        if special_alt:
+            combined += f"|(?:{special_alt})"
+        return re.compile(combined, re.MULTILINE | re.IGNORECASE), pattern_name
+
+    # 兜底：主导格式得分不足（前 N 行样本太少/无主导格式）时回退全量合并大网
     combined = "(" + ")|(".join(p for _, p in CHAPTER_PATTERNS) + ")"
     master = re.compile(combined, re.MULTILINE | re.IGNORECASE)
     return master, pattern_name
@@ -583,8 +599,20 @@ def save_split(
             except OSError:
                 pass
 
-    for block in result.chapters:
-        (output_dir / f"{block.index:04d}.txt").write_text(block.content, encoding="utf-8")
+    # 网络盘（UNC）下逐章同步写会被每次 open/close 的网络往返延迟拖垮，
+    # 用线程池并行写把延迟重叠掉（文件写入会释放 GIL，多线程真正并发）。
+    chapters = result.chapters
+    if chapters:
+        max_workers = min(32, (os.cpu_count() or 4) + 4)
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            list(
+                ex.map(
+                    lambda b: (output_dir / f"{b.index:04d}.txt").write_text(
+                        b.content, encoding="utf-8"
+                    ),
+                    chapters,
+                )
+            )
 
     # 结构化章节清单
     chapters_json = [
