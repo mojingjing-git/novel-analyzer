@@ -45,6 +45,9 @@ class MemoryState:
         self._snapshot_cache_limit: Optional[int] = None
         self._snapshot_cache_kb: Optional[KnowledgeBase] = None
         self._snapshot_lock = threading.Lock()  # 快照缓存并发保护（事件循环内短临界区）
+        # 增量 KB 已合并的最大章号：并发完成乱序时，仅章号 >= 此值的合并更新
+        # timeline/story_timeline/recent_summaries（防低章号结果倒灌覆盖"当前进度"）
+        self._kb_last_chapter: int = 0
         # 知识库限制（来自配置，默认回退到常量）
         self._kb_limits = kb_limits or {}
 
@@ -152,8 +155,9 @@ class MemoryState:
             rolling_path = output_dir / ROLLING_FILE_NAME
             await asyncio.to_thread(safe_save_json, rolling_snapshot, rolling_path)
 
-        # 写入失败章节标记
-        for ch, error in self._failed_chapters.items():
+        # 写入失败章节标记（快照迭代：循环体内 await 让出，流式 worker 可能并发 add_failed
+        # 插入新键导致 "dictionary changed size during iteration" 中断整个任务）
+        for ch, error in list(self._failed_chapters.items()):
             failed_path = output_dir / f"chapter_{ch}_failed.json"
             try:
                 await asyncio.to_thread(
@@ -171,10 +175,11 @@ class MemoryState:
             json.dump(data, f, ensure_ascii=False, indent=2, default=str)
 
     async def restore_from_disk(self, output_dir: Path, block_size: Optional[int] = None) -> int:
-        """
-        从 output_dir 恢复结果到内存。
-        返回恢复的章节数。
-        """
+        """从 output_dir 恢复结果到内存（阻塞 IO 走线程池，避免事件循环卡顿）"""
+        return await asyncio.to_thread(self._restore_from_disk_sync, output_dir, block_size)
+
+    def _restore_from_disk_sync(self, output_dir: Path, block_size: Optional[int]) -> int:
+        """同步恢复实现（原 restore_from_disk 主体：纯文件 IO，无 await）"""
         import glob as glob_mod
         pattern = str(output_dir / "chapter_*_result.json")
         files = sorted(glob_mod.glob(pattern))
@@ -201,16 +206,18 @@ class MemoryState:
                 logger.warning(f"恢复 {filepath.name} 失败: {e}")
 
         # 恢复后重建 KB
+        # 注意：本函数在 pipeline 启动期经 to_thread 调用，此时尚无并发 worker，
+        # 不存在与 add_result/merge 的竞争，故不取 asyncio 锁（asyncio.Lock 不支持
+        # 线程内同步使用；若未来并发调用需改为线程安全方案）
         if restored > 0:
             sorted_results = [self.results[ch] for ch in sorted(self.results.keys())]
-            async with self._kb_lock:
-                self.kb = KnowledgeBase()
-                self._seen_facts.clear()
-                self._seen_world.clear()
-                self._seen_themes.clear()
-                self._seen_arcs.clear()
-                for r in sorted_results:
-                    self._merge_one(r)
+            self.kb = KnowledgeBase()
+            self._seen_facts.clear()
+            self._seen_world.clear()
+            self._seen_themes.clear()
+            self._seen_arcs.clear()
+            for r in sorted_results:
+                self._merge_one(r)
 
         # 恢复滚动摘要
         rolling_path = output_dir / ROLLING_FILE_NAME
@@ -218,8 +225,7 @@ class MemoryState:
             try:
                 rd = safe_load_json(rolling_path)
                 if isinstance(rd, dict):
-                    async with self._rolling_lock:
-                        self.rolling = rd
+                    self.rolling = rd
             except Exception as e:
                 logger.warning(f"恢复 rolling_summary 失败: {e}")
 
@@ -248,7 +254,17 @@ class MemoryState:
 
     def _merge_one(self, result: AnalysisResult) -> None:
         """增量合并一个结果到 self.kb（须在 _kb_lock 内调用）"""
-        self._merge_result_into(result, self.kb, self._seen_facts, self._seen_world, self._seen_themes, self._seen_arcs)
+        # 乱序保护：只有按章号推进（>= 当前最大）的合并才更新"进度类"字段，
+        # 低章号迟到结果只合并非进度内容（事实/角色/世界等），
+        # 避免并发完成顺序不定时 timeline/摘要被旧章倒灌（MINOR-6）
+        in_order = result.chapter_number >= self._kb_last_chapter
+        self._merge_result_into(
+            result, self.kb,
+            self._seen_facts, self._seen_world, self._seen_themes, self._seen_arcs,
+            update_timeline=in_order,
+        )
+        if in_order:
+            self._kb_last_chapter = result.chapter_number
         self._trim_kb(self.kb)
 
     @staticmethod
@@ -259,13 +275,18 @@ class MemoryState:
         seen_world: Set[str],
         seen_themes: Set[str],
         seen_arcs: Set[str],
+        update_timeline: bool = True,
     ) -> None:
-        """将单个 result 合并到指定 kb（纯函数，无副作用）"""
-        if result.cross_block.summary:
+        """将单个 result 合并到指定 kb（纯函数，无副作用）。
+
+        update_timeline=False：乱序迟到的低章号结果，跳过 timeline/story_timeline/
+        recent_summaries 等"进度类"字段（合并方已保证传入列表有序时保持 True）。
+        """
+        if update_timeline and result.cross_block.summary:
             kb.recent_summaries.append(result.cross_block.summary)
 
         timeline = result.updated_knowledge.timeline
-        if timeline:
+        if timeline and update_timeline:
             if isinstance(timeline, list):
                 timeline = ", ".join(str(t) for t in timeline)
             else:
@@ -309,7 +330,7 @@ class MemoryState:
                 f"第{result.chapter_number}章: {result.long_context_insights.foreshadowing_network}"
             )
 
-        if timeline:
+        if timeline and update_timeline:
             kb.story_timeline = timeline
 
     def _trim_kb(self, kb: KnowledgeBase) -> None:

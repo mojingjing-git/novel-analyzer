@@ -54,13 +54,19 @@ async def prompt_preview(req: PromptPreviewRequest):
     chapter_total_chars = 0  # 必须在 if 块外初始化，否则无章节文件时下方引用会 UnboundLocalError
     # 必须在 if 块外初始化，否则 blocks 为空时下方 build_temp_knowledge 引用 target_ch 会 UnboundLocalError
     target_ch = req.chapter
+    ch_idx = 0  # 无章节文件时 KB 用空上限（=不加载任何章）
     if chapters:
         bs = config.analysis.block_size
+        if target_ch < 1:
+            raise HTTPException(status_code=422, detail=f"章节号必须为正整数（收到 {target_ch}）")
         if target_ch > len(chapters):
             raise HTTPException(status_code=422, detail=f"章节号超出范围 (共 {len(chapters)} 块)")
-        ch_idx = chapters[target_ch - 1] if target_ch > 0 else chapters[0]
+        ch_idx = chapters[target_ch - 1]
         real_name = f"块 #{ch_idx}"
-        content = fp.read_block(ch_idx, bs)
+        # 取本块真实章号列表（与 pipeline 块映射一致：断号目录不能连号 range，
+        # 否则中间缺失章节被静默截断，预览内容残缺）
+        block_chs = chapters[target_ch - 1: target_ch - 1 + bs]
+        content = fp.read_block(block_chs)
         if content:
             # 默认返回全文，让用户看到 LLM 实际收到的内容；
             # 若 max_chars > 0 则仅返回前 N 字符（调试大文本时可选）
@@ -70,10 +76,10 @@ async def prompt_preview(req: PromptPreviewRequest):
             chapter_content = "[正文内容] (文件读取为空)"
             chapter_total_chars = 0
 
-    # 构建 KB
+    # 构建 KB：chapter_limit 用"本块之前的真实章号"（旧实现误用块序号，断号/块化>1 时 KB 范围错位）
     kb = KnowledgeBase()
     try:
-        kb = KnowledgeBaseManager.build_temp_knowledge(output_dir, chapter_limit=max(1, target_ch - 1))
+        kb = KnowledgeBaseManager.build_temp_knowledge(output_dir, chapter_limit=max(0, ch_idx - 1))
     except Exception as e:
         logger.warning("KB 构建失败（使用空KB继续）: %s", e)
 

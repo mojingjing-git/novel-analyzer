@@ -57,9 +57,9 @@ def cn_to_int(chars: str) -> Optional[int]:
     # 过滤掉非数字汉字
     if not any(c in _CN_NUM for c in chars):
         return None
-    total = 0      # 已结算部分
-    section = 0    # 当前万/亿节内累计
-    number = 0     # 当前正在拼接的小于 万 的数
+    total = 0      # 已结算部分（跨越 万/亿 边界后累计）
+    section = 0    # 当前节内（万以下）累计
+    number = 0     # 当前正在拼接的小于 十 的数
     for ch in chars:
         if ch in ("零", "〇"):
             continue
@@ -78,12 +78,16 @@ def cn_to_int(chars: str) -> Optional[int]:
             section += number * 1000
             number = 0
         elif ch == "万":
-            section = (section + number) * 10000
+            # 结算进 total，重置 section——旧实现直接改写 section 导致
+            # "一亿零二万三千" 被算成 1000000023000（亿级联乘重复累计）
+            total += (section + number) * 10000
+            section = 0
             number = 0
         elif ch == "亿":
-            section = (section + number) * 100000000
+            total += (section + number) * 100000000
+            section = 0
             number = 0
-    return section + number
+    return total + section + number
 
 
 # ---------------------------------------------------------------------------
@@ -124,15 +128,19 @@ DEFAULT_CHAPTER_PATTERN = (
 )
 
 # 常见广告 / 水印行（清理开关开启时剔除）
-AD_KEYWORDS = [
-    "求月票", "求收藏", "求推荐", "求订阅", "求票", "月票", "推荐票",
-    "打赏", "赏金", "上架感言", "作者感言", "感言", "书友群", "读者群",
-    "qq群", "q群", "微信", "公众号", "新书", "新书上传", "作者新书",
-    "笔趣阁", "八一中文", "本章说", "防盗章", "防复制", "无弹窗",
-    "最新章节", "章节错误", "请报告", "手机阅读", "本书首发", "更新最快",
-    "请收藏", "天才一秒记住", "一秒记住", "下载", "txt下载", "全文阅读",
-    "顶点小说", "思路客", " enjoyment ", "ps：", "ps:", "p.s", "求鲜花",
-    "求评价票", "求月票推荐票", "投喂", "催更",
+# 分强弱两级：强标记几乎不可能出现在正文，命中即删；
+# 弱标记（微信/下载/月票等）在正文中高频出现，需配合"短行无标点"才删（见 _is_ad_line）
+_AD_STRONG = [
+    "求月票", "求收藏", "求推荐", "求订阅", "求票", "月票推荐票", "求评价票",
+    "求鲜花", "投喂", "催更", "上架感言", "作者感言", "完本感言", "书友群",
+    "读者群", "qq群", "q群", "公众号", "作者新书", "笔趣阁", "八一中文",
+    "本章说", "防盗章", "防复制", "无弹窗", "最新章节", "章节错误", "请报告",
+    "手机阅读", "本书首发", "更新最快", "请收藏", "天才一秒记住", "一秒记住",
+    "txt下载", "全文阅读", "顶点小说", "思路客",
+]
+_AD_WEAK = [
+    "月票", "推荐票", "打赏", "赏金", "感言", "微信", "下载", "新书",
+    "ps：", "ps:", "p.s", "enjoyment",
 ]
 
 
@@ -233,6 +241,10 @@ def _normalize_volume_label(line: str) -> Optional[str]:
 
 
 def _is_volume_start(line: str) -> Optional[str]:
+    # 保守排除："中篇小说连载中/上篇简介" 等下载站前奏行不是卷标记，
+    # 但会命中 "^[上下中]+[卷部篇]"（"中篇"），导致卷归属写错
+    if "小说" in line or "连载" in line:
+        return None
     for _, p in VOLUME_PATTERNS:
         if re.match(p, line, re.IGNORECASE):
             return _normalize_volume_label(line) or line.strip()
@@ -461,7 +473,14 @@ def _is_ad_line(line: str) -> bool:
         return False
     if len(s) > 200:
         return False
-    return any(kw in s for kw in AD_KEYWORDS)
+    # 强广告标记：命中即删（公众号/书友群/笔趣阁 等几乎不可能出现在正文）
+    if any(k in s for k in _AD_STRONG):
+        return True
+    # 弱标记（微信/下载/月票/推荐票 等会出现在正文里）：
+    # 仅当"短行 + 无句子标点"才视为广告，避免误删"他打开微信看到消息"这类正文行
+    if any(k in s for k in _AD_WEAK):
+        return len(s) <= 40 and not any(p in s for p in "，。！？；：,;!?")
+    return False
 
 
 def _merge_tiny(blocks: List[ChapterBlock], min_words: int) -> List[ChapterBlock]:

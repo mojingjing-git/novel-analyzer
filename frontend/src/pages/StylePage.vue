@@ -27,7 +27,7 @@ async function start() {
   error.value = ''
   styleContent.value = ''
   try {
-    await api.startStyle(bookId.value, useLlm.value, limit.value)
+    await api.startStyle(bookId.value, useLlm.value, Number(limit.value) || 0)
     running.value = true
     add('风格分析已启动', 'info', 'style')
     startPolling()
@@ -37,7 +37,12 @@ async function start() {
   }
 }
 
+const stopRequested = ref(false)
+
 async function stop() {
+  // 停止请求后保持 running=false（用户意图优先）：轮询里若后端仍短暂报 running，
+  // 不再把它置回 true，避免"停止/运行中"回跳（F-3）
+  stopRequested.value = true
   try {
     await api.stopStyle()
     running.value = false
@@ -46,11 +51,13 @@ async function stop() {
 }
 
 function startPolling() {
+  stopRequested.value = false
   if (pollTimer) clearInterval(pollTimer)
   pollTimer = setInterval(async () => {
     try {
       const status = await api.styleStatus()
       phase.value = status.phase || ''
+      if (stopRequested.value) return // 用户已停止：不再回跳/读取结果
       if (!status.running) {
         running.value = false
         if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
@@ -59,7 +66,9 @@ function startPolling() {
           styleContent.value = res.content
           add('风格分析完成', 'info', 'style')
         } catch {
-          add('风格分析已完成，但结果文件不存在', 'warn', 'style')
+          // 分析已结束但结果文件不存在 = 分析失败（style_service 失败时不写 style.md），
+          // 不能再说成"已完成"（F-3）
+          add('风格分析失败（未生成结果文件）', 'error', 'style')
         }
       }
     } catch (e) { console.error(e) }

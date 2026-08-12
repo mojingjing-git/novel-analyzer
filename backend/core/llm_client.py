@@ -592,7 +592,16 @@ class LLMClient:
             error_msg = f"API错误 (HTTP {status_code}): {str(e)}"
 
             if status_code == 429:
-                logger.warning(f"触发速率限制(429)，建议增加重试等待时间")
+                # 提取 Retry-After（秒），供 chat_with_retry 做长退避（429 专属）
+                retry_after = ""
+                resp = getattr(e, 'response', None)
+                if resp is not None and getattr(resp, 'headers', None):
+                    ra = resp.headers.get('retry-after')
+                    if ra:
+                        retry_after = str(ra).strip()
+                if retry_after:
+                    error_msg += f" [Retry-After:{retry_after}]"
+                logger.warning(f"触发速率限制(429)，尊重 Retry-After={retry_after or '无'} 长退避重试")
 
             logger.error(error_msg)
             _get_failure_logger().record_failure(
@@ -635,7 +644,12 @@ class LLMClient:
             status_code = getattr(e, 'status_code', None)
             error_msg = f"API错误 (HTTP {status_code}): {str(e)}"
             if status_code == 429:
-                logger.warning(f"触发速率限制(429)，建议增加重试等待时间")
+                resp = getattr(e, 'response', None)
+                if resp is not None and getattr(resp, 'headers', None):
+                    ra = resp.headers.get('retry-after')
+                    if ra:
+                        error_msg += f" [Retry-After:{str(ra).strip()}]"
+                logger.warning(f"触发速率限制(429)，尊重 Retry-After 长退避重试")
             logger.error(error_msg)
             _get_failure_logger().record_failure(
                 attempt_num=0,
@@ -673,6 +687,22 @@ class LLMClient:
                 messages_length=len(str(messages))
             )
             return False, "", error_msg, (0, 0)
+
+    @staticmethod
+    def _is_429(error: str) -> bool:
+        """错误消息是否为 429 限流"""
+        return "429" in (error or "")
+
+    @staticmethod
+    def _retry_after_seconds(error: str) -> Optional[float]:
+        """从错误消息提取 Retry-After 秒数（chat() 已在 429 分支注入 [Retry-After:N]）"""
+        m = re.search(r'Retry-After:(\d+)', error or "")
+        if m:
+            try:
+                return max(1.0, float(m.group(1)))
+            except ValueError:
+                return None
+        return None
 
     async def chat_with_retry(
         self,
@@ -785,13 +815,18 @@ class LLMClient:
                 return False, "", error, last_consumed_tokens, {"attempts": total_attempts, "failed_tokens": call_failed_tokens}
 
             if attempt < self.config.temperature_max_retries - 1:
-                wait_time = 3 * (attempt + 1)
+                if self._is_429(error):
+                    # 429：尊重 Retry-After，退避拉长（限流是暂时的，值得等）
+                    wait_time = min(self._retry_after_seconds(error) or 30 * (attempt + 1), 120)
+                else:
+                    wait_time = 3 * (attempt + 1)
                 logger.info(f"⏳ 等待{wait_time}秒后进行下一次温度尝试...")
                 await asyncio.sleep(wait_time)
 
-        # 指数退避重试
+        # 指数退避重试（429 限流时额外多试几轮：限流通常是暂时的，快速放弃会丢块）
         final_temp = max(0.0, self.config.temperature - (self.config.temperature_max_retries - 1) * self.config.temperature_step)
-        for retry_num in range(self.config.backoff_max_retries):
+        backoff_rounds = max(self.config.backoff_max_retries, 3) if self._is_429(last_error) else self.config.backoff_max_retries
+        for retry_num in range(backoff_rounds):
             if self._stop_requested:
                 logger.info("⛔ 检测到停止请求，终止重试链")
                 return False, "", "用户请求停止", last_consumed_tokens, {"attempts": total_attempts, "failed_tokens": call_failed_tokens}
@@ -799,11 +834,14 @@ class LLMClient:
             with self._stats_lock:
                 self._attempts += 1
 
-            wait_time = min(2 ** (retry_num + 1), 60)
+            if self._is_429(last_error):
+                wait_time = min(self._retry_after_seconds(last_error) or 30 * (retry_num + 1), 120)
+            else:
+                wait_time = min(2 ** (retry_num + 1), 60)
 
             logger.info(f"\n[指数退避] 尝试 {total_attempts}，"
                        f"等待{wait_time}秒，temperature={final_temp} "
-                       f"(第{retry_num + 1}/{self.config.backoff_max_retries}次)")
+                       f"(第{retry_num + 1}/{backoff_rounds}次)")
             await asyncio.sleep(wait_time)
 
             success, content, error, tokens = await self.chat(

@@ -198,8 +198,12 @@ def aggregate_stats(results: List[Dict]) -> Dict:
 def sample_chapters(blocks_dir: Path, n: int = 6) -> List[Tuple[int, str]]:
     """取 n 个代表性章节（前半随机3 + 后半随机3），每章随机位置取 1500 字"""
     rng = random.Random(42)  # 独立 RNG，不干扰全局种子
-    files = sorted(blocks_dir.glob('*.txt'),
-                   key=lambda f: int(re.match(r'(\d+)', f.stem).group(1)) if re.match(r'(\d+)', f.stem) else 0)
+    # 只取数字命名的正文章节：split_report.txt 等报告文件不得作为"第0章"采样
+    # （与 compute_book_stats 的 ^\d+ 守卫对齐，否则切分报告会进 LLM 语义分析输入）
+    files = sorted(
+        (f for f in blocks_dir.glob('*.txt') if re.match(r'^\d+\.txt$', f.name)),
+        key=lambda f: int(f.stem),
+    )
     if not files:
         return []
 

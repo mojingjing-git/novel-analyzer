@@ -94,7 +94,10 @@ class CharacterCardGenerator:
         if not self.character_data:
             if not self.load_aggregated_data():
                 return []
-        
+        # load_aggregated_data 在 tracking 文件缺失时仍可能返回 True，二次兜底（同 get_character_summaries）
+        if not self.character_data:
+            return []
+
         # 按事件总数排序
         characters = [
             (name, data.get('total_events', 0))

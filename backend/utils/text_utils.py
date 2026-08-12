@@ -57,6 +57,34 @@ def detect_encoding(file_path: Path, encoding_priority: List[str]) -> str:
     """
     last_error = None
 
+    # I-7 修复：BOM 与无 BOM 的 UTF-16/32 预判。
+    # 原实现 utf-16 排在 gbk 之后，无 BOM 的 UTF-16LE 文件会被 GBK"成功"解码成
+    # \x00 乱码（\x00 是合法 GBK 单字节），整书静默损坏且零报错。
+    try:
+        with open(file_path, 'rb') as f:
+            head = f.read(4096)
+    except Exception:
+        head = b""
+
+    if head.startswith(b'\xff\xfe\x00\x00') or head.startswith(b'\x00\x00\xfe\xff'):
+        return 'utf-32'
+    if head.startswith(b'\xff\xfe'):
+        return 'utf-16'
+    if head.startswith(b'\xfe\xff'):
+        return 'utf-16-be'
+    if head.startswith(b'\xef\xbb\xbf'):
+        return 'utf-8-sig'
+
+    if head and head.count(b'\x00') / len(head) > 0.05:
+        # 无 BOM 但 NUL 密度高：几乎必然是 UTF-16（BE/LE 各试一次整文件解码）
+        for enc in ('utf-16', 'utf-16-be'):
+            try:
+                with open(file_path, 'r', encoding=enc) as f:
+                    f.read()
+                return enc
+            except UnicodeDecodeError as e:
+                last_error = e
+
     for encoding in encoding_priority:
         try:
             with open(file_path, 'r', encoding=encoding) as f:

@@ -45,19 +45,25 @@ async function loadCharacters() {
   }
 }
 
+// 请求序号：跨书/快速切卡时丢弃过期响应，防止 A 书的慢请求覆盖 B 书卡片（F-6）
+let cardSeq = 0
+
 async function viewCard(name: string) {
   if (!bookId.value) return
+  const seq = ++cardSeq
   selectedName.value = name
   card.value = null
   cardError.value = ''
   loadingCard.value = true
   try {
     const res = await api.getCharacterCard(bookId.value, name)
+    if (seq !== cardSeq) return
     card.value = res.character as any
   } catch (e) {
+    if (seq !== cardSeq) return
     cardError.value = '加载角色卡失败: ' + (e as Error).message
   } finally {
-    loadingCard.value = false
+    if (seq === cardSeq) loadingCard.value = false
   }
 }
 

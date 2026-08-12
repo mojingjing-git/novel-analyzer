@@ -383,7 +383,7 @@ onMounted(load)
           v-for="cat in categoryDefs"
           :key="cat.name"
           class="flex items-start gap-2 text-sm cursor-pointer p-1.5 rounded"
-          :style="{ background: keptSet.has(cat.name) ? 'var(--glass-tinted-blue)' : 'transparent' }"
+          :class="{ 'glass-tinted-blue': keptSet.has(cat.name) }"
           :title="cat.description + (cat.examples.length ? '\\n\\n典型示例: ' + cat.examples.join(', ') : '')"
         >
           <input

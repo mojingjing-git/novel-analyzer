@@ -148,6 +148,12 @@ async function doBatch() {
     }
   } catch (e) {
     errorMsg.value = (e as Error).message
+    // 整体失败（网络断/后端崩溃）：所有行恢复"待处理"，否则永久显示"处理中"卡死 UI（F-2）
+    files.value.forEach((f) => {
+      if (f.status === 'processing') {
+        f.status = 'pending'
+      }
+    })
   } finally {
     busy.value = false
   }

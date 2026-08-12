@@ -36,6 +36,14 @@ function showSummaryHint(text: string) {
   summaryHideTimer = setTimeout(() => { summaryHint.value = '' }, 10000)
 }
 
+// F-4：WS 高频事件（block_done/token_stats 每块 1 次）合并为防抖刷新，
+// 否则大书分析期间每块触发 2 次全量 REST 请求（2000 块 = 4000 请求）
+let refreshTimer: ReturnType<typeof setTimeout> | null = null
+function scheduleRefresh(fn: () => Promise<void>) {
+  if (refreshTimer) clearTimeout(refreshTimer)
+  refreshTimer = setTimeout(() => { refreshTimer = null; void fn() }, 500)
+}
+
 function onMessage(msg: ProgressMessage) {
   switch (msg.type) {
     case 'progress':
@@ -45,9 +53,9 @@ function onMessage(msg: ProgressMessage) {
         eta: (msg.payload.eta as string) || '',
       }
       break
-    case 'block_done': refresh(); break
-    case 'state_change': refresh(); break
-    case 'token_stats': refreshTokens(); break
+    case 'block_done': scheduleRefresh(refresh); break
+    case 'state_change': scheduleRefresh(refresh); break
+    case 'token_stats': scheduleRefresh(refreshTokens); break
     case 'summary_progress': {
       const p = (msg as unknown as { payload?: Record<string, unknown> }).payload || {}
       const phaseLabel: Record<string, string> = {
@@ -86,7 +94,14 @@ async function withBusy(fn: () => Promise<void>, label: string) {
   finally { busy.value = false }
 }
 
-function handleStart() { withBusy(async () => { await api.startAnalysis(); add('分析已启动', 'info', 'analysis') }, '启动分析') }
+function handleStart() {
+  withBusy(async () => {
+    // 新分析开始即清零进度：否则上一轮 100% 残留到首条 WS 消息到达（M-3）
+    progress.value = { current: 0, total: 0, eta: '' }
+    await api.startAnalysis()
+    add('分析已启动', 'info', 'analysis')
+  }, '启动分析')
+}
 function handleStop() { withBusy(async () => { await api.stopAnalysis(); add('分析已停止', 'warn', 'analysis') }, '停止分析') }
 function handleScanWorkspace() { withBusy(async () => { const res = await api.scanWorkspace(); add(`扫描完成，新增 ${res.added} 本小说`, 'info', 'analysis') }, '扫描工作区') }
 function handleRemove(index: number) { withBusy(async () => { await api.removeQueueItem(index); add(`已移出队列项 #${index}`, 'info', 'analysis') }, '移出队列') }

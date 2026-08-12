@@ -50,6 +50,10 @@ function saveToStorage(logs: LogEntry[]) {
 
 // 模块级单例：跨组件、跨页面、跨会话
 const logs: Ref<LogEntry[]> = ref<LogEntry[]>(loadFromStorage())
+// 加载即裁剪：localStorage 可能存有超过上限的旧日志（add 才裁剪会漏掉加载路径）
+if (logs.value.length > MAX_LOGS) {
+  logs.value.splice(0, logs.value.length - MAX_LOGS)
+}
 
 // 下一个 log id 必须大于已加载的最大 id，避免重复
 let nextId = (logs.value.reduce((m, x) => Math.max(m, x.id), 0)) + 1

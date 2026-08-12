@@ -1,4 +1,4 @@
-"""
+﻿"""
 测试 LLMClient 温度退火 + 指数退避重试链（使用 mock）
 """
 import asyncio
@@ -287,3 +287,33 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
+async def test_429_extended_backoff():
+    """429 限流：退避轮数从 backoff_max_retries(1) 扩到 3，且尊重 Retry-After"""
+    from backend.core.llm_client import LLMClient
+    config = make_config(temperature=0.5, temperature_step=0.25,
+                         temperature_max_retries=2, backoff_max_retries=1)
+    client = LLMClient(config)
+    # 温度退火2次全 429 → 退避阶段 429 扩到 3 轮（每轮带 Retry-After）→ 第 6 次成功
+    seq = [
+        (False, "", "API错误 (HTTP 429): rate limited [Retry-After:5]", (0, 0)),
+        (False, "", "API错误 (HTTP 429): rate limited [Retry-After:5]", (0, 0)),
+        (False, "", "API错误 (HTTP 429): rate limited [Retry-After:5]", (0, 0)),
+        (False, "", "API错误 (HTTP 429): rate limited [Retry-After:5]", (0, 0)),
+        (True, "ok", "", (1, 1)),
+    ]
+    client.chat = AsyncMock(side_effect=seq)
+    sleeps = []
+    async def fake_sleep(sec):
+        sleeps.append(sec)
+    with patch("asyncio.sleep", new=fake_sleep):
+        success, content, error, tokens, call_stats = await client.chat_with_retry(
+            [{"role": "user", "content": "hi"}])
+
+    assert success
+    assert call_stats["attempts"] == 5          # 2 温度 + 3 退避(429扩展)，第 5 次成功
+    # 429 等待应尊重 Retry-After=5（而非 2s/短退避）
+    assert 5 in sleeps
+    assert all(s <= 120 for s in sleeps)
+    print("✅ test_429_extended_backoff passed")

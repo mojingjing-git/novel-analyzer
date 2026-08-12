@@ -492,10 +492,19 @@ class AnalysisService:
 
     # ---- 控制 ----
     def start(self) -> bool:
-        """启动队列分析（已在运行/队列空则返回 False）"""
+        """启动队列分析（已在运行/队列空/总结运行中则返回 False）"""
         if self.is_running:
             logger.warning("分析已在运行中")
             return False
+        # 双向互斥：总结运行期间启动分析会并发读写 output/，总结读到半成品数据
+        # （summary_service.start 已拦分析中启动总结，此处补反向护栏）
+        try:
+            from .summary_service import get_summary_service as get_summary
+            if get_summary().is_running:
+                logger.warning("总结任务运行中，不能启动分析")
+                return False
+        except Exception:
+            pass
         if self.queue.is_empty or self.queue.is_finished:
             logger.warning("队列为空或已全部完成")
             return False

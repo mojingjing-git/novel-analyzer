@@ -4,6 +4,7 @@ import { api, type TokenStatsResponse } from '../api/client'
 
 const stats = ref<TokenStatsResponse | null>(null)
 const running = ref(false)
+const error = ref('')
 let timer: ReturnType<typeof setInterval> | null = null
 
 async function refresh() {
@@ -12,7 +13,11 @@ async function refresh() {
     const status = await api.analysisStatus()
     running.value = status?.running ?? false
     stats.value = await api.getTokenStats()
-  } catch (e) { console.error(e) }
+    error.value = ''
+  } catch (e) {
+    // 失败显式提示，不再静默保留旧数据（M-2）
+    error.value = '刷新统计失败: ' + (e as Error).message
+  }
 }
 onMounted(() => { refresh(); timer = setInterval(refresh, 5000) })
 onUnmounted(() => { if (timer) clearInterval(timer) })
@@ -56,6 +61,8 @@ const avgTps = computed(() => {
         style="font-size: 11px"
       >{{ running ? '运行中' : '已结束' }}</span>
     </h2>
+
+    <p v-if="error" class="glass-tinted-red px-3 py-2 rounded text-sm">{{ error }}</p>
 
     <div v-if="stats" class="glass-card overflow-hidden">
       <div class="px-4 py-2.5 text-sm font-semibold" style="border-bottom: 1px solid var(--glass-border-subtle); letter-spacing: -0.01em">分类 Token 汇总</div>

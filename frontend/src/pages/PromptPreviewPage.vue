@@ -16,7 +16,8 @@ const error = ref('')
 async function preview() {
   error.value = ''
   try {
-    const res = await api.promptPreview(bookId.value, maxChars.value)
+    // 空输入（v-model.number 清空得 ''）会 422：发送时归一化为 0（M-1）
+    const res = await api.promptPreview(bookId.value, Number(maxChars.value) || 0)
     system.value = res.system_prompt
     user.value = res.user_prompt
     sysLen.value = res.system_len

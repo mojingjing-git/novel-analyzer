@@ -28,13 +28,18 @@ const relationships = ref<SpatialRel[]>([])
 const selected = ref<string | null>(null)
 
 watch(bookId, async () => {
-  if (!bookId.value) return
+  if (!bookId.value) { locations.value = []; relationships.value = []; return }
   selected.value = null
   try {
     const res = await api.getMap(bookId.value)
     locations.value = res.locations as Location[]
     relationships.value = res.relationships as SpatialRel[]
-  } catch (e) { console.error(e) }
+  } catch (e) {
+    // 切书失败清空：防止残留上一本书的地图数据（F-1）
+    locations.value = []
+    relationships.value = []
+    console.error('加载地图失败，已清空:', e)
+  }
 })
 
 const tree = computed(() => {

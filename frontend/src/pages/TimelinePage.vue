@@ -49,12 +49,17 @@ onMounted(async () => {
 })
 
 watch(bookId, async () => {
-  if (!bookId.value) return
+  if (!bookId.value) { events.value = []; foreshadows.value = []; return }
   try {
     const res = await api.getTimeline(bookId.value)
     events.value = res.events as TimelineEvent[]
     foreshadows.value = res.foreshadows as Foreshadow[]
-  } catch (e) { console.error(e) }
+  } catch (e) {
+    // 切书失败必须清空：否则残留上一本书的数据被误当成当前书（F-1）
+    events.value = []
+    foreshadows.value = []
+    console.error('加载时间线失败，已清空:', e)
+  }
 })
 
 const filteredEvents = computed(() =>

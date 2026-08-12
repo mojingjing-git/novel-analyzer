@@ -206,6 +206,8 @@ class ConfigManager:
             config_path = Path(CONFIG_FILE_NAME)
         self.config_path = config_path
         self.config = AppConfig()
+        # 标记当前 api_key 是否来自环境变量：True 时 save() 不回写磁盘（防明文落盘）
+        self._api_key_from_env = False
 
     def load(self) -> AppConfig:
         """从文件加载配置"""
@@ -228,6 +230,7 @@ class ConfigManager:
         # 安全：API Key 优先从环境变量读取，避免明文硬编码落在 config.json（曾明文提交密钥）。
         # 设置 LLM_API_KEY 或 MINIMAX_API_KEY 即可覆盖；未设置且 config 中也为空时给出明确警告。
         env_key = os.environ.get("LLM_API_KEY") or os.environ.get("MINIMAX_API_KEY")
+        self._api_key_from_env = bool(env_key)
         if env_key:
             self.config.api.api_key = env_key
         elif not self.config.api.api_key:
@@ -254,8 +257,13 @@ class ConfigManager:
             self.config = config
 
         try:
+            data = self.config.to_dict()
+            if self._api_key_from_env:
+                # env 来源的 key 不回写磁盘：load() 时 env 仍会覆盖，行为一致，
+                # 但避免明文 key 因一次 PUT /api/settings 落盘（MINOR-8）
+                data["api"]["api_key"] = ""
             with open(self.config_path, 'w', encoding='utf-8') as f:
-                json.dump(self.config.to_dict(), f, ensure_ascii=False, indent=2)
+                json.dump(data, f, ensure_ascii=False, indent=2)
             return True
         except Exception as e:
             print(f"保存配置失败: {e}")

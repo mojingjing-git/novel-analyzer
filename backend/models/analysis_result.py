@@ -149,8 +149,11 @@ class AnalysisResult:
                 continue
             # normalize characters 字段，确保为字符串
             chars = e.get('characters', '')
-            if isinstance(chars, list):
-                e['characters'] = ", ".join(str(x) for x in chars)
+            if chars is None:
+                # LLM 输出 null → 空串，绝不能变成字面量 "None"（否则聚合/导出/图谱出现虚构角色）
+                e['characters'] = ''
+            elif isinstance(chars, list):
+                e['characters'] = ", ".join(str(x or '') for x in chars)
             core_events.append(CoreEvent(id=e.get("id", 0), event=str(e.get("event", "")), characters=str(e.get("characters", "")), function=str(e.get("function", "")), importance=_norm_importance(e.get("importance"))))
         character_arcs = []
         for a in data.get('character_arcs', []):

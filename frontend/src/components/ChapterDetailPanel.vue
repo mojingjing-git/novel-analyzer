@@ -58,21 +58,28 @@ async function loadLatest() {
   }
 }
 
+// 请求序号：丢弃过期响应（快速改章号时先发的请求后返回会覆盖成错误章）
+let requestSeq = 0
+
 async function loadChapter() {
   if (!props.bookId || effectiveChapter.value <= 0) {
     result.value = null
     return
   }
+  const seq = ++requestSeq
+  const ch = effectiveChapter.value
   loading.value = true
   error.value = ''
   try {
-    const res = await api.getChapterResult(props.bookId, effectiveChapter.value)
+    const res = await api.getChapterResult(props.bookId, ch)
+    if (seq !== requestSeq) return // 已有更新的请求，丢弃本次响应
     result.value = res.data
   } catch (e) {
+    if (seq !== requestSeq) return
     error.value = (e as Error).message || '加载失败'
     result.value = null
   } finally {
-    loading.value = false
+    if (seq === requestSeq) loading.value = false
   }
 }
 

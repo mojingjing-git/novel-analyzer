@@ -83,7 +83,8 @@ async def preview_split(req: SplitterPreviewRequest) -> dict:
             remove_ads=req.remove_ads,
             strip_whitespace=req.strip_whitespace,
         )
-        return splitter_service.preview_split(
+        return await asyncio.to_thread(
+            splitter_service.preview_split,
             path,
             options=options,
             preview_count=req.preview_count,
@@ -182,7 +183,10 @@ async def batch_split(req: SplitterBatchRequest) -> dict:
         if not book_name:
             book_name = splitter_service.infer_book_name(path)
         try:
-            r = splitter_service.save_to_workspace(path, workspace, book_name, options=options)
+            # 批量切分是 CPU/IO 重活：走线程池，避免阻塞事件循环
+            # （WS 进度/健康检查/其它 API 全程冻结，N 本书 = N 倍阻塞）
+            r = await asyncio.to_thread(
+                splitter_service.save_to_workspace, path, workspace, book_name, options=options)
             results.append({
                 "file": fp,
                 "book": r.get("book_name", book_name),

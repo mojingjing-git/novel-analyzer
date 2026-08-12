@@ -202,7 +202,6 @@ class AnalysisPipeline:
         self.start_chapter = start_chapter
         self.end_chapter = end_chapter
         self._stop_requested = False
-        self.all_results: list = []  # 累积分析结果，末尾不再重读磁盘
         self._on_progress = on_progress
         self._on_token_stats = on_token_stats
         self._block_map: dict = {}  # block_id -> 实际章号列表（补跑时按原块恢复）
@@ -242,7 +241,6 @@ class AnalysisPipeline:
         异常向上抛出，由调用方（service）捕获并转为 error 消息。
         """
         total_analyzed = 0
-        self.all_results = []
 
         logger.info(f"开始分析任务（并发数={self.config.analysis.concurrency}）: {self.directory}")
 
@@ -308,6 +306,7 @@ class AnalysisPipeline:
             kb_limits=kb_limits,
         )
         state = self.state
+        # 恢复内部走线程池（MINOR-7）：千章级续跑不再阻塞事件循环
         restored = await state.restore_from_disk(output_dir, block_size=block_size)
         if restored > 0:
             logger.info(f"从磁盘恢复 {restored} 个已有 result")
@@ -336,6 +335,15 @@ class AnalysisPipeline:
             final_kb = await asyncio.to_thread(KnowledgeBaseManager.merge_results, output_dir)
             await asyncio.to_thread(KnowledgeBaseManager(self.knowledge_file).save, final_kb)
             logger.info(f"最终知识库已保存: {self.knowledge_file}")
+            # 全量已完成：同样重生成汇总报告（保持与正常路径一致）
+            all_done_results = sorted(state.results.values(), key=lambda r: r.chapter_number)
+            if all_done_results:
+                try:
+                    summary_path = await asyncio.to_thread(
+                        export_summary_report, all_done_results, output_dir)
+                    logger.info(f"汇总报告已生成: {summary_path}")
+                except Exception as e:
+                    logger.warning(f"生成汇总报告失败: {e}")
             result_count = len([ch for ch in state.results if ch in valid_block_ids])
             failed_chapters = list(state._failed_chapters.keys())
             return {
@@ -549,12 +557,13 @@ class AnalysisPipeline:
         await asyncio.to_thread(KnowledgeBaseManager(self.knowledge_file).save, final_kb)
         logger.info(f"最终知识库已保存: {self.knowledge_file}")
 
-        # 10. 使用累积的结果生成汇总报告（不再重读磁盘）
-        self.all_results.sort(key=lambda r: r.chapter_number)
-        if self.all_results:
+        # 10. 使用全量结果生成汇总报告（含断点恢复的旧块：续跑必须重生成完整报告，
+        # 不能只用本轮新块覆盖磁盘上已存在的完整版）
+        all_results = sorted(state.results.values(), key=lambda r: r.chapter_number)
+        if all_results:
             try:
                 summary_path = await asyncio.to_thread(
-                    export_summary_report, self.all_results, output_dir)
+                    export_summary_report, all_results, output_dir)
                 logger.info(f"汇总报告已生成: {summary_path}")
             except Exception as e:
                 logger.warning(f"生成汇总报告失败: {e}")
@@ -663,9 +672,8 @@ class AnalysisPipeline:
 
         if success:
             completed_count += 1
-            self.all_results.append(result)
             # 剔除 raw_response 再广播：否则每个 block_done 携带整段原文（可达 13 万 token），
-            # WS 带宽与前端内存都会被拖垮；raw_response 仅保存在内存 result 中，
+            # WS 带宽与前端内存都会被拖垮；raw_response 仅用于本次广播，
             # 落盘与广播均剔除（详见 memory_state.flush_to_disk，前端经 /api/books 读取结构化结果）。
             result_dict = result.to_dict() if result else None
             if isinstance(result_dict, dict):
@@ -680,6 +688,10 @@ class AnalysisPipeline:
                 "failed_tokens": retry_info.get("failed_tokens", 0),
                 "message": f"{prefix}{ch_range}分析完成"
             })
+            # 广播后立即释放 raw_response：整段 LLM 原文在内存里只服务于这次广播，
+            # 继续持有会让长书内存随章节线性增长（万章级 = 数百 MB 死重）
+            if result is not None:
+                result.raw_response = ""
         else:
             await self._emit({
                 "chapter": block_id, "status": "failed",

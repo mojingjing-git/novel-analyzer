@@ -22,13 +22,18 @@ const edges = ref<GraphEdge[]>([])
 const selected = ref<string | null>(null)
 
 watch(bookId, async () => {
-  if (!bookId.value) return
+  if (!bookId.value) { nodes.value = []; edges.value = []; return }
   selected.value = null
   try {
     const res = await api.getGraph(bookId.value)
     nodes.value = res.nodes as GraphNode[]
     edges.value = res.edges as GraphEdge[]
-  } catch (e) { console.error(e) }
+  } catch (e) {
+    // 切书失败清空：防止残留上一本书的图被误当成当前书（F-1）
+    nodes.value = []
+    edges.value = []
+    console.error('加载关系图失败，已清空:', e)
+  }
 })
 
 const svgSize = 600

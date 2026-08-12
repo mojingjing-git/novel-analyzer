@@ -9,8 +9,18 @@ API_PRESETS = {
         "api_key": "",
         "model": ""
     },
-    "Ollama": {
-        "base_url": "http://localhost:11434/v1",
+    "OpenCodeGo": {
+        "base_url": "https://opencode.ai/zen/go/v1",
+        "api_key": "",
+        "model": ""
+    },
+    "OpenRouter": {
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key": "",
+        "model": ""
+    },
+    "MiniMax": {
+        "base_url": "https://api.minimaxi.com/v1",
         "api_key": "",
         "model": ""
     },
