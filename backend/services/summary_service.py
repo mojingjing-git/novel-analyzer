@@ -103,7 +103,7 @@ class SummaryService:
             message = payload.get("message", "")
             if message:
                 level = "error" if ptype == "batch_failed" else "info"
-                asyncio.create_task(hub.log(message, level=level))
+                asyncio.create_task(hub.log(message, level=level, category="summary"))
             asyncio.create_task(hub.publish({
                 "type": "summary_progress",
                 "payload": {**payload, "book_id": book_id,

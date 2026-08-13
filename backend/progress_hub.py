@@ -62,10 +62,14 @@ class ProgressHub:
         asyncio.run_coroutine_threadsafe(self.publish(message), loop)
 
     # ---- 便捷方法 ----
-    async def log(self, text: str, level: str = "info") -> None:
+    async def log(self, text: str, level: str = "info", category: str = "") -> None:
         # source="business"：业务事件消息（队列/总结/状态提示等），
         # 与 HubLogHandler 转发的 python 技术日志区分（见 LogConsole 简化模式）
-        await self.publish({"type": "log", "payload": {"level": level, "text": text, "source": "business"}})
+        # category：来源分类（如 summary），前端可据此按页面过滤显示
+        await self.publish({
+            "type": "log",
+            "payload": {"level": level, "text": text, "source": "business", "category": category},
+        })
 
     async def progress(self, current: int, total: int, eta: str = "") -> None:
         await self.publish({"type": "progress", "payload": {"current": current, "total": total, "eta": eta}})
@@ -114,7 +118,15 @@ class HubLogHandler(logging.Handler):
             # source="python"：标识这是 Python logging 转发的"真日志"（技术细节，
             # 含每章 LLM 调用/token 统计），供前端"简化日志"面板过滤掉，
             # 避免与业务消息（hub.log，source="business"）混排重复。
-            self._q.put_nowait({"type": "log", "payload": {"level": level, "text": msg, "source": "python"}})
+            # category：按 logger 归属打标（最终总结阶段 → "summary"），
+            # 供总结页抽屉按分类过滤显示（前端见 SummaryPage summaryLogs）
+            category = ""
+            if record.name.startswith(("backend.services.final_summary", "backend.services.summary_service")):
+                category = "summary"
+            self._q.put_nowait({
+                "type": "log",
+                "payload": {"level": level, "text": msg, "source": "python", "category": category},
+            })
         except thread_queue.Full:
             pass  # 队列满时丢弃，不阻塞业务线程
         except Exception:

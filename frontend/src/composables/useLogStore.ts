@@ -102,5 +102,11 @@ export function useLogStore() {
     return logs.value.filter(x => (x as LogEntry & { category?: string }).category === category)
   }
 
-  return { logs, add, addBatch, clear, filter }
+  /** 按分类移除（如清空总结页日志，不影响全局其它分类） */
+  function removeByCategory(category: string) {
+    if (!category) return
+    logs.value = logs.value.filter(x => (x as LogEntry & { category?: string }).category !== category)
+  }
+
+  return { logs, add, addBatch, clear, filter, removeByCategory }
 }

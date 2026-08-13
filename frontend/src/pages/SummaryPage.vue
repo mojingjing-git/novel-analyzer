@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import BookSelector from '../components/BookSelector.vue'
+import LogConsole, { type LogEntry } from '../components/LogConsole.vue'
 import { api, type SummaryStatus } from '../api/client'
 import { renderMarkdown } from '../utils/markdown'
+import { useLogStore } from '../composables/useLogStore'
 
 // 总结进度的 4 个阶段（对齐旧版日志「最终总结」部分的粒度）
 const SUMMARY_PHASES = [
@@ -149,6 +151,19 @@ const summaryStatus = ref<SummaryStatus | null>(null)
 const report = ref('')
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
+// ===== 总结日志抽屉（业务+技术日志，按后端 category="summary" 过滤）=====
+const { logs: allLogs, removeByCategory } = useLogStore()
+const summaryLogs = computed(() =>
+  (allLogs.value as (LogEntry & { category?: string })[]).filter(
+    (l) => l.category === 'summary' && l.kind !== 'debug' && l.source !== 'block',
+  ),
+)
+const drawerOpen = ref(false)
+// 点击开始总结后自动展开；阶段完成（报告输出）后自动收起；可手动切换
+watch(summaryStatus, (s) => {
+  if (s?.phase === 'complete') drawerOpen.value = false
+})
+
 const reportHtml = computed(() => renderMarkdown(report.value))
 
 // ===== 进度条（细化：4 阶段步骤 + 批次子进度 + 整体百分比 + 耗时）=====
@@ -214,8 +229,10 @@ const showProgress = computed(() => {
 const summaryError = ref('')
 async function startSummary() {
   summaryError.value = ''
-  try { await api.startSummary(bookId.value, startCh.value, endCh.value, batchSize.value, concurrency.value) }
-  catch (e) { summaryError.value = (e as Error).message }
+  try {
+    await api.startSummary(bookId.value, startCh.value, endCh.value, batchSize.value, concurrency.value)
+    drawerOpen.value = true // 开始总结 → 自动展开日志抽屉
+  } catch (e) { summaryError.value = (e as Error).message }
 }
 async function stopSummary() { try { await api.stopSummary() } catch (e) { summaryError.value = (e as Error).message } }
 async function refreshSummaryStatus() { try { summaryStatus.value = await api.summaryStatus() } catch (e) { console.error(e) } }
@@ -319,6 +336,25 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
         <p v-else-if="summaryStatus?.phase === 'complete'" class="pm-done-note">
           共 {{ summaryStatus.total_batches }} 批 · 总耗时 {{ elapsedText }}
         </p>
+      </div>
+
+      <!-- 总结日志抽屉：阶段提示 + 技术明细（category=summary），报告区上方 -->
+      <div class="glass-card">
+        <div class="flex items-center gap-2 px-3 py-2 cursor-pointer select-none" @click="drawerOpen = !drawerOpen">
+          <Icon name="arrow_down" :size="13" :style="{ transform: drawerOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }" />
+          <span class="text-sm font-medium" style="color: var(--text-primary)">总结日志</span>
+          <span class="text-xs" style="color: var(--text-tertiary)">{{ summaryLogs.length }} 条</span>
+          <span class="flex-1"></span>
+          <button
+            v-if="summaryLogs.length"
+            @click.stop="removeByCategory('summary')"
+            class="glass-button"
+            style="padding: 2px 10px; font-size: 11px"
+          >清空</button>
+        </div>
+        <div v-if="drawerOpen" class="p-2">
+          <LogConsole :logs="summaryLogs" />
+        </div>
       </div>
 
       <div v-if="report" class="glass-card p-5 md-content" v-html="reportHtml"></div>
