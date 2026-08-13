@@ -20,8 +20,9 @@ logger = logging.getLogger(__name__)
 SCHEMA_VERSION = 2
 
 # 休眠阈值
-DORMANT_BATCH_THRESHOLD = 15      # 批次不活跃阈值
-DORMANT_CHAPTER_THRESHOLD = 200   # 章节跨度阈值
+# DORMANT_BATCH_THRESHOLD 已废弃（2026-08-13）：批次阈值相对批次数（10-20 批）不可达，
+# 且 last_seen_batch 在 reconciliation 中的语义不可靠，无数据支撑——休眠改以章距为主判据。
+DORMANT_CHAPTER_THRESHOLD = 200   # 章节跨度阈值（最后出现后 N 章未见即休眠）
 
 # 置信度字符串→数值映射（LLM输出"高"/"中"/"低"时使用）
 _CONFIDENCE_MAP = {"高": 0.9, "中": 0.6, "低": 0.3}
@@ -105,26 +106,29 @@ class ForeshadowLedger:
         1. 检查休眠伏笔（章节跨度按"当前处理进度"计算，见 current_chapter 参数）
         2. 更新状态
 
+        休眠判定（2026-08-13 重构，BUG-B）：
+        - 主判据 = 章距：last_seen_chapter（最后出现的真实章节，由 catalog 证据章维护）
+          距当前进度 ≥ DORMANT_CHAPTER_THRESHOLD(200) 即休眠
+        - 删除批次条件：旧实现 DORMANT_BATCH_THRESHOLD=15 相对实际批次数
+          （总块数/batch_size，通常 10-20 批）永远不可达；且 last_seen_batch 语义
+          已被 BUG-A/BUG-C 证实不可靠（未回收即推进批号、跨运行批次号混用），无数据支撑。
+
         2026-08-07 修复（P0-2）：原实现用 self.total_chapters（全书最终章数）
         计算"多少章未见"，长书会提前把后埋的伏笔判为休眠；应传当前批的 ch_end。
         current_chapter 为 None 时回退旧行为（total_chapters），兼容历史调用方。
-        注意：休眠判定依赖 last_seen_batch 的单调性，调用方应保证按批次升序调用
-        （最终总结 run() 中在全部批次完成后统一按序执行一遍）。
         """
         for item in self.items:
             if item.status != 'active':
                 continue
 
-            # 检查休眠条件：批次不活跃 AND 章节跨度
-            batch_inactive = (batch_idx - item.last_seen_batch) >= DORMANT_BATCH_THRESHOLD
             if current_chapter is not None:
                 chapter_span = (current_chapter - item.last_seen_chapter) >= DORMANT_CHAPTER_THRESHOLD
             else:
                 chapter_span = (self.total_chapters - item.last_seen_chapter) >= DORMANT_CHAPTER_THRESHOLD
 
-            if batch_inactive and chapter_span:
+            if chapter_span:
                 item.status = 'dormant'
-                item.notes.append(f"批次{batch_idx}时自动标记为休眠（{DORMANT_BATCH_THRESHOLD}批未见，{DORMANT_CHAPTER_THRESHOLD}章未见）")
+                item.notes.append(f"批次{batch_idx}时自动标记为休眠（{DORMANT_CHAPTER_THRESHOLD}章未见）")
 
     def audit_text_for_report(self) -> str:
         """

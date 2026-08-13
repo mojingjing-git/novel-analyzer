@@ -115,12 +115,14 @@ RECONCILIATION_SYSTEM_PROMPT = """你是伏笔状态审计员。你的任务：�
 不要输出 new_foreshadows 字段，伏笔总表已由程序管理，你只需判断回收。
 
 **省 token 规则**：未回收的伏笔省略 reason 字段，只保留 foreshadow_id 和 is_resolved_in_this_batch。
-只有被回收的伏笔才需要 resolved_chapter 和 resolution_summary。
+只有被回收的伏笔才需要 resolved_chapter、resolution_summary 和 confidence。
+
+**confidence 规则**：判定回收时自评置信度——"高"=卷摘要中有明确直接的回收证据；"中"=推断性回收（证据间接但合理）；"低"=存疑回收（证据牵强或可能误判）。中/低置信度会被标记为需要人工复核。
 
 JSON schema：
 {{
   "foreshadow_reconciliation": [
-    {{"foreshadow_id": "fs_xxx", "is_resolved_in_this_batch": true, "resolved_chapter": 18, "resolution_summary": "如何被回收"}},
+    {{"foreshadow_id": "fs_xxx", "is_resolved_in_this_batch": true, "resolved_chapter": 18, "resolution_summary": "如何被回收", "confidence": "高"}},
     {{"foreshadow_id": "fs_yyy", "is_resolved_in_this_batch": false}}
   ]
 }}
@@ -128,7 +130,7 @@ JSON schema：
 【示例】
 活跃伏笔 fs_狸猫换太子真相，描述"刘妃、郭槐密谋以狸猫换走太子，陷害李妃"。
 若本批次卷摘要中第18章"狄后讲述真相，仁宗认母，刘后惊死"，则：
-{{"foreshadow_id": "fs_狸猫换太子真相", "is_resolved_in_this_batch": true, "resolved_chapter": 18, "resolution_summary": "狄后讲述真相，仁宗认母，刘后惊死，阴谋完全揭露"}}"""
+{{"foreshadow_id": "fs_狸猫换太子真相", "is_resolved_in_this_batch": true, "resolved_chapter": 18, "resolution_summary": "狄后讲述真相，仁宗认母，刘后惊死，阴谋完全揭露", "confidence": "高"}}"""
 
 # user 部分（每批次变化）
 RECONCILIATION_USER_TEMPLATE = """【本批次卷摘要】（第{start}章-第{end}章）
@@ -221,12 +223,14 @@ GLOBAL_RECHECK_SYSTEM_PROMPT = """你是伏笔审计专家。你的任务：逐�
 所有活跃伏笔都必须出现在结果中，不允许遗漏。
 
 **省 token 规则**：未回收的伏笔省略 reason 字段，只保留 foreshadow_id 和 is_resolved_in_this_batch。
-只有被回收的伏笔才需要 resolved_chapter 和 resolution_summary。
+只有被回收的伏笔才需要 resolved_chapter、resolution_summary 和 confidence。
+
+**confidence 规则**：判定回收时自评置信度——"高"=摘要中有明确直接的回收证据；"中"=推断性回收（证据间接但合理）；"低"=存疑回收（证据牵强或可能误判）。中/低置信度会被标记为需要人工复核。
 
 JSON schema：
 {{
   "foreshadow_reconciliation": [
-    {{"foreshadow_id": "fs_xxx", "is_resolved_in_this_batch": true, "resolved_chapter": 实际回收的章节号, "resolution_summary": "如何被回收（引用具体章节）"}},
+    {{"foreshadow_id": "fs_xxx", "is_resolved_in_this_batch": true, "resolved_chapter": 实际回收的章节号, "resolution_summary": "如何被回收（引用具体章节）", "confidence": "高"}},
     {{"foreshadow_id": "fs_yyy", "is_resolved_in_this_batch": false}}
   ]
 }}"""
@@ -1189,11 +1193,17 @@ class FinalSummaryRunner:
                     existing.source_type = 'llm_judged'
                     existing.last_seen_chapter = ch_end
                     existing.last_seen_batch = batch_idx
+                    # 低置信回收（confidence 非"高"）→ 标人工复核（防 fs_001 式错位直接入库）
+                    confidence = item.get('confidence', '高')
+                    if confidence != '高' or not existing.resolution:
+                        existing.needs_review = True
+                        existing.notes.append(f"回收置信度={confidence}，建议人工复核（批次{batch_idx}）")
                     logger.info(f"LLM标记伏笔回收: {foreshadow_id} (第{existing.resolved_chapter}章)")
-            else:
-                if existing:
-                    existing.last_seen_chapter = ch_end
-                    existing.last_seen_batch = batch_idx
+            # BUG-A 修复（2026-08-13）：未回收分支不再推进 last_seen_chapter/batch。
+            # 旧实现把"本批未标记回收"当成"本批出现过"，无条件把 last_seen 推到批末 ch_end，
+            # 导致休眠判定的章距条件永远 ≈0，休眠机制形同虚设（《奥术神座》0 休眠实锤）。
+            # last_seen 语义 = 伏笔最后出现的真实章节，只由 catalog 证据章维护；
+            # "本批未回收"只说明伏笔存活，不说明它出现了。
 
     async def _run_global_foreshadow_recheck(self, volume_summaries: List[str],
                                              foreshadow_catalog: list = None) -> None:
@@ -1271,6 +1281,11 @@ class FinalSummaryRunner:
                         existing.resolution = item.get('resolution_summary') or item.get('reason') or ''
                         existing.resolved_chapter = item.get('resolved_chapter') or 0
                         existing.source_type = 'llm_judged'
+                        # 低置信回收 → 标人工复核
+                        confidence = item.get('confidence', '高')
+                        if confidence != '高' or not existing.resolution:
+                            existing.needs_review = True
+                            existing.notes.append(f"复检回收置信度={confidence}，建议人工复核")
                         logger.info(f"全书复检回收: {foreshadow_id} (第{existing.resolved_chapter}章)")
                         local_count += 1
             return local_count
@@ -1303,10 +1318,11 @@ class FinalSummaryRunner:
             raise RuntimeError("未找到有效的章节分析结果")
         total_chapters = len(results)
         total_batches = (total_chapters + self.batch_size - 1) // self.batch_size
-        # 账本总章数用真实加载到的章节数（而非 end_chapter，未传时=999999 会让
-        # 伏笔「N章未见即休眠」等判据分母失真，休眠判定失效）
-        self.ledger.total_chapters = total_chapters
-        logger.info(f"加载{total_chapters}章，分为{total_batches}批，每批{self.batch_size}章")
+        # 账本总章数用真实末章号（BUG-C：旧实现存的是块数 len(results)，
+        # 块大小>1 时 total_chapters 与"章"的语义错位，休眠/审计分母失真）
+        self.ledger.total_chapters = results[-1]['ch'] if results else 0
+        self.ledger.batch_size_snapshot = self.batch_size
+        logger.info(f"加载{total_chapters}块，分为{total_batches}批，每批{self.batch_size}章")
 
         # 构建伏笔总表（async：含 type→category LLM 归一化调用）
         foreshadow_catalog = await self._build_foreshadow_catalog(results)
@@ -1433,13 +1449,6 @@ class FinalSummaryRunner:
             except Exception as e:
                 logger.error(f"卷异常: {e}")
 
-        # 休眠判定统一收尾（P0-2）：批次并发完成使 last_seen_batch 非单调，
-        # 批次内即时判定不可复现；此处按批次升序、以各批真实 ch_end 为"当前进度"
-        # 执行一遍 reconcile，保证休眠名单确定且不误判后埋伏笔。
-        if not self._stop_requested:
-            for idx, _ch_start, ch_end, _prompt in sorted(batch_tasks, key=lambda t: t[0]):
-                self.ledger.reconcile_and_update(idx, ch_end)
-
         if self._stop_requested:
             self._emit_progress({"type": "status", "message": "已停止"})
             return None
@@ -1460,6 +1469,15 @@ class FinalSummaryRunner:
             self.ledger.save(self.ledger_path)
             self._emit_progress({"type": "status", "message": "已停止"})
             return None
+
+        # 休眠判定统一收尾（BUG-D 修复：必须在复检之后执行——复检只审 active 伏笔，
+        # 若先休眠，本可被复检回收的伏笔会被冻结成 dormant 绕过复检，造成
+        # "已回收但标签未更新"（《奥术神座》报告第一类 ~60 条）。）
+        # 按批次升序、以各批真实 ch_end 为"当前进度"执行 reconcile，保证休眠名单确定。
+        if not self._stop_requested:
+            for idx, _ch_start, ch_end, _prompt in sorted(batch_tasks, key=lambda t: t[0]):
+                self.ledger.reconcile_and_update(idx, ch_end)
+
         self.ledger.save(self.ledger_path)
         self._emit_progress({"type": "ledger_updated", "counts": self.ledger.get_item_count()})
 
