@@ -116,6 +116,8 @@ class AnalysisConfig:
     auto_summary: bool = False        # 队列全部书分析完成后，逐本自动执行最终总结
     summary_concurrency: int = 2      # 最终总结并发数（默认 2，避免高并发触发 API 超时）
     summary_batch_size: int = 30      # 最终总结每批章节数
+    # 内容审核拦截处理：识别为审核拦截的章节重试1次后跳过并标记（不进失败集、不补跑）
+    skip_moderation_blocked: bool = True
     # 知识库限制
     max_compressed_arcs: int = MAX_COMPRESSED_ARCS
     max_recent_summaries: int = MAX_RECENT_SUMMARIES

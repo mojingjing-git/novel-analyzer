@@ -142,6 +142,7 @@ class NovelAnalyzer:
                 logger.error(f"第{chapter_number}章分析失败: {error}")
                 # 保留实际消耗的 tokens（API 已扣费，不能归零）
                 actual_tokens = token_counts if isinstance(token_counts, tuple) else (0, 0)
+                retry_info["error"] = error  # 传播原始错误（含 [MODERATION] 标记，供 pipeline 判 skipped）
                 return None, actual_tokens, retry_info
 
             in_tok, out_tok = token_counts if isinstance(token_counts, tuple) else (0, token_counts)
@@ -152,6 +153,7 @@ class NovelAnalyzer:
             result = self._parse_response(response, chapter_number, parsed_cache[0])
             if result is None:
                 logger.error(f"第{chapter_number}章JSON解析失败，LLM响应前800字符:\n{response[:800]}")
+                retry_info["error"] = "JSON解析失败"
                 return None, (in_tok, out_tok), retry_info
 
             result.raw_response = response

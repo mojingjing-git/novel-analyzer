@@ -33,6 +33,7 @@ class MemoryState:
         self.kb: KnowledgeBase = KnowledgeBase()
         self.rolling: dict = {}
         self._failed_chapters: Dict[int, str] = {}
+        self._skipped_chapters: Dict[int, str] = {}  # 内容审核拦截跳过的块（不进失败集、不补跑）
         self._flushed_chapters: Set[int] = set()
         self._checkpoint_interval: int = checkpoint_interval
         self._kb_lock = asyncio.Lock()
@@ -68,6 +69,10 @@ class MemoryState:
     def add_failed(self, chapter_number: int, error: str) -> None:
         """记录失败章节"""
         self._failed_chapters[chapter_number] = error
+
+    def add_skipped(self, chapter_number: int, reason: str) -> None:
+        """记录被内容审核拦截跳过的章节（不进失败集，补跑不重试）"""
+        self._skipped_chapters[chapter_number] = reason
 
     def get_kb_snapshot(self, chapter_limit: Optional[int] = None) -> KnowledgeBase:
         """

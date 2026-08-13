@@ -415,6 +415,10 @@ onMounted(load)
         <input v-model="config.analysis.auto_summary" type="checkbox" />
         队列完成后自动总结
       </label>
+      <label class="flex items-center gap-2 text-sm cursor-pointer" title="识别为内容审核拦截的章节：重试1次后跳过并标记，不再反复重试白烧成本">
+        <input v-model="config.analysis.skip_moderation_blocked" type="checkbox" />
+        跳过内容审核拦截章节
+      </label>
       <div class="grid grid-cols-2 gap-3">
         <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">总结并发数:</label><input v-model.number="config.analysis.summary_concurrency" type="number" min="1" max="20" class="glass-input" style="width: 90px" /></div>
         <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">总结批次大小:</label><input v-model.number="config.analysis.summary_batch_size" type="number" min="5" class="glass-input" style="width: 90px" /></div>

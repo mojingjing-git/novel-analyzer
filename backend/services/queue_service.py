@@ -684,6 +684,13 @@ class AnalysisService:
                 await hub.log(
                     f"《{item.name}》完成，但有失败块: {result['failed_chapters']}",
                     level="warn")
+            elif result.get("skipped_chapters"):
+                item.status = "done"  # 有拦截跳过但整体完成
+                item.error_message = f"内容审核拦截{len(result['skipped_chapters'])}块"
+                await hub.log(
+                    f"《{item.name}》完成，{len(result['skipped_chapters'])}块被内容审核拦截跳过: "
+                    f"{result['skipped_chapters']}",
+                    level="warn")
             else:
                 item.status = "done"
                 await hub.log(f"《{item.name}》分析完成（{result.get('total_analyzed', 0)}块）")

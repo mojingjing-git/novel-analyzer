@@ -20,6 +20,9 @@ import anthropic
 from anthropic import AsyncAnthropic
 
 from ..config.settings import APIConfig
+from ..core.moderation import (
+    mark_moderation, is_moderation_code, is_moderation_message, is_moderation_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -485,6 +488,11 @@ class LLMClient:
                 total_tokens = prompt_tokens + completion_tokens + cached_tokens
                 if not content:
                     error_msg = "API返回空内容（可能触发内容过滤）"
+                    # stop_reason=refusal（Anthropic 安全拒绝）或含审核关键词 → 按拦截处理
+                    stop_reason = getattr(response, "stop_reason", None) or ""
+                    if stop_reason == "refusal" or is_moderation_message(str(stop_reason)):
+                        error_msg = mark_moderation(error_msg)
+                        logger.warning("检测到内容审核拦截（空内容/refusal），将重试1次后跳过该章节")
                     logger.warning(error_msg)
                     return False, "", error_msg, (0, 0)
                 with self._stats_lock:
@@ -521,7 +529,9 @@ class LLMClient:
 
             if not response.choices:
                 error_msg = "API返回空choices列表（可能触发内容过滤）"
-                logger.warning(error_msg)
+                # 空 choices 通常是审核过滤（content_filter），按拦截处理
+                error_msg = mark_moderation(error_msg)
+                logger.warning("检测到内容审核拦截（空choices），将重试1次后跳过该章节")
                 return False, "", error_msg, (0, 0)
 
             message = response.choices[0].message
@@ -591,6 +601,18 @@ class LLMClient:
             status_code = getattr(e, 'status_code', None)
             error_msg = f"API错误 (HTTP {status_code}): {str(e)}"
 
+            # 内容审核拦截识别：结构化错误码 / 响应体 message / 异常文本
+            e_code = getattr(e, 'code', None)
+            body = getattr(e, 'body', None) or {}
+            body_msg = ""
+            if isinstance(body, dict):
+                err_inner = body.get("error") or {}
+                body_msg = str(err_inner.get("message", "")) if isinstance(err_inner, dict) else str(body)
+            if (is_moderation_code(e_code) or is_moderation_code(body.get("code"))
+                    or is_moderation_message(body_msg) or is_moderation_message(str(e))):
+                error_msg = mark_moderation(error_msg)
+                logger.warning("检测到内容审核拦截，将重试1次后跳过该章节")
+
             if status_code == 429:
                 # 提取 Retry-After（秒），供 chat_with_retry 做长退避（429 专属）
                 retry_after = ""
@@ -643,6 +665,14 @@ class LLMClient:
         except anthropic.APIStatusError as e:
             status_code = getattr(e, 'status_code', None)
             error_msg = f"API错误 (HTTP {status_code}): {str(e)}"
+            # 内容审核拦截识别（Anthropic usage policy 类消息）
+            body = getattr(e, 'response', None)
+            body_text = ""
+            if body is not None and hasattr(body, 'text'):
+                body_text = body.text
+            if is_moderation_message(body_text) or is_moderation_message(str(e)):
+                error_msg = mark_moderation(error_msg)
+                logger.warning("检测到内容审核拦截，将重试1次后跳过该章节")
             if status_code == 429:
                 resp = getattr(e, 'response', None)
                 if resp is not None and getattr(resp, 'headers', None):
@@ -677,6 +707,11 @@ class LLMClient:
         except Exception as e:
             error_msg = f"未知错误: {type(e).__name__}: {str(e)}"
             logger.error(error_msg, exc_info=True)
+
+            # 内容审核拦截识别（智谱/小米等自由文本消息走这里）
+            if is_moderation_message(error_msg):
+                error_msg = mark_moderation(error_msg)
+                logger.warning("检测到内容审核拦截，将重试1次后跳过该章节")
 
             _get_failure_logger().record_failure(
                 attempt_num=0,
@@ -713,6 +748,7 @@ class LLMClient:
     ) -> Tuple[bool, str, str, Tuple[int, int], dict]:
         last_error = ""
         total_attempts = 0
+        moderation_hits = 0  # 内容审核拦截连续命中次数（重试1次后短路）
         # 本次调用的失败 token 累计（并发安全：不再依赖客户端全局计数做差分归因）
         call_failed_tokens = 0
         messages_length = len(str(messages))
@@ -796,6 +832,22 @@ class LLMClient:
             last_error = error
             logger.warning(f"❌ 尝试失败: {error}")
 
+            # 内容审核拦截：重试1次后短路（第1次失败→下一轮温度尝试；第2次仍拦截→立即放弃，
+            # 不进入指数退避，避免对"永久拒绝"白等 30 分钟）
+            if is_moderation_error(error):
+                if moderation_hits >= 1:
+                    _get_failure_logger().record_failure(
+                        attempt_num=total_attempts,
+                        max_retries=self.config.temperature_max_retries + self.config.backoff_max_retries,
+                        temperature=temp,
+                        error_type="ModerationBlocked",
+                        error_message=error,
+                        messages_length=messages_length,
+                    )
+                    logger.warning("⛔ 内容审核拦截（连续2次），跳过该章节，不再重试")
+                    return False, "", error, last_consumed_tokens, {"attempts": total_attempts, "failed_tokens": call_failed_tokens}
+                moderation_hits += 1
+
             # 即使 API 调用失败，如果有成功的 tokens（如超时但部分计费），保留
             if isinstance(tokens, tuple) and len(tokens) == 2 and (tokens[0] > 0 or tokens[1] > 0):
                 last_consumed_tokens = tokens
@@ -830,6 +882,18 @@ class LLMClient:
             if self._stop_requested:
                 logger.info("⛔ 检测到停止请求，终止重试链")
                 return False, "", "用户请求停止", last_consumed_tokens, {"attempts": total_attempts, "failed_tokens": call_failed_tokens}
+            # 温度循环已重试过仍拦截（含 temperature_max_retries=1 的配置）→ 直接放弃
+            if is_moderation_error(last_error):
+                _get_failure_logger().record_failure(
+                    attempt_num=total_attempts,
+                    max_retries=self.config.temperature_max_retries + self.config.backoff_max_retries,
+                    temperature=final_temp,
+                    error_type="ModerationBlocked",
+                    error_message=last_error,
+                    messages_length=messages_length,
+                )
+                logger.warning("⛔ 内容审核拦截（重试1次后仍拦截），跳过该章节，不再重试")
+                return False, "", last_error, last_consumed_tokens, {"attempts": total_attempts, "failed_tokens": call_failed_tokens}
             total_attempts += 1
             with self._stats_lock:
                 self._attempts += 1

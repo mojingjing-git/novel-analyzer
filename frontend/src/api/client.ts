@@ -116,6 +116,7 @@ export interface AppConfigDto {
     auto_summary: boolean
     summary_concurrency: number
     summary_batch_size: number
+    skip_moderation_blocked: boolean
     max_compressed_arcs: number
     max_recent_summaries: number
     max_pacing_tracker: number

@@ -30,6 +30,7 @@ from .analyzer import NovelAnalyzer
 from .knowledge_base import KnowledgeBaseManager
 from .llm_client import LLMClient
 from .memory_state import MemoryState
+from ..core.moderation import is_moderation_error
 from ..utils.export_utils import export_summary_report
 from ..utils.json_utils import extract_json_from_text, safe_parse_json
 
@@ -346,10 +347,12 @@ class AnalysisPipeline:
                     logger.warning(f"生成汇总报告失败: {e}")
             result_count = len([ch for ch in state.results if ch in valid_block_ids])
             failed_chapters = list(state._failed_chapters.keys())
+            skipped_chapters = [f"{c}({r})" for c, r in state._skipped_chapters.items()]
             return {
                 "stopped": False, "total_analyzed": result_count,
                 "errors": [f"失败{len(failed_chapters)}块"] if failed_chapters else [],
                 "failed_chapters": failed_chapters,
+                "skipped_chapters": skipped_chapters,
             }
 
         # 5. 初始化分析引擎
@@ -540,6 +543,7 @@ class AnalysisPipeline:
 
         result_count = len([ch for ch in state.results if ch in valid_block_ids])
         failed_chapters = list(state._failed_chapters.keys())
+        skipped_chapters = [f"{c}({r})" for c, r in state._skipped_chapters.items()]
         total_analyzed = result_count
 
         if failed_chapters:
@@ -575,12 +579,14 @@ class AnalysisPipeline:
             pass
 
         # 12. 完成
-        logger.info(f"分析任务完成，成功{total_analyzed}块，失败{len(failed_chapters)}块")
+        logger.info(f"分析任务完成，成功{total_analyzed}块，失败{len(failed_chapters)}块"
+                    f"{f'，内容审核拦截跳过{len(skipped_chapters)}块' if skipped_chapters else ''}")
         return {
             "stopped": self._stop_requested,
             "total_analyzed": total_analyzed,
             "errors": [f"失败{len(failed_chapters)}块"] if failed_chapters else [],
-            "failed_chapters": failed_chapters
+            "failed_chapters": failed_chapters,
+            "skipped_chapters": skipped_chapters
         }
 
     async def _analyze_one_block(self, analyzer, file_processor, state,
@@ -610,6 +616,14 @@ class AnalysisPipeline:
         elapsed = time.time() - t_start
 
         if result is None:
+            err_text = (retry_info or {}).get("error", "")
+            if (self.config.analysis.skip_moderation_blocked
+                    and is_moderation_error(err_text)):
+                # 内容审核拦截：标记 skipped（不进失败集、补跑不重试）
+                retry_info["moderation_skip"] = True
+                state.add_skipped(block_id, "内容审核拦截")
+                logger.warning(f"块{block_id}内容审核拦截，跳过（重试1次后仍拦截）")
+                return False, elapsed, ch_tokens, None, retry_info
             reason = "分析失败（LLM响应解析失败或重试耗尽）"
             state.add_failed(block_id, reason)
             logger.warning(f"块{block_id}分析失败: {reason}，耗时{elapsed:.1f}s，tokens={ch_tokens}")
@@ -693,6 +707,14 @@ class AnalysisPipeline:
             if result is not None:
                 result.raw_response = ""
         else:
+            if retry_info.get("moderation_skip"):
+                # 内容审核拦截跳过：单独状态（非失败），进度不计、不触发 block_done 失败
+                await self._emit({
+                    "chapter": block_id, "status": "skipped",
+                    "progress": completed_count, "total": total,
+                    "message": f"{prefix}{ch_range} 内容审核拦截，已跳过"
+                })
+                return False, completed_count
             await self._emit({
                 "chapter": block_id, "status": "failed",
                 "progress": completed_count, "total": total,
