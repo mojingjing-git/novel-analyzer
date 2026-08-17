@@ -694,6 +694,25 @@ npm run build
 
 **验证**：vue-tsc 0 错；变更面 8 文件 +73/-45；属于纯前端视觉/CSS 调整，零业务逻辑变动。
 
+### 10.5.1 2026-08-18 GUI Win11 审查整改（A 档）
+
+用户提供了 11 项 Win11 规范审查清单，经全文 grep 静态核对，**5 真 6 假**：
+
+- ✅ 采纳（5）：背景 mica 偏蓝 / 未遵循 4px 网格 / 表格内边距不规范 / 状态标签用 pill 不规范 / 统计条突兀
+- ❌ 不采纳（6）：文本层级混乱（token 已 100/60/36，符合规范）/ 分割线过度（已是 #E5E5E5 极淡）/ 行高不足（已 40px）/ 表格边框过重（保留行分割线利于多列对齐）/ 下拉框样式（已 32px/4px/8px 标准）/ 文本透明度硬编码（grep 后 **0 处**硬编码）
+
+**commit `f6607a0` style(GUI): A 档 Win11 审查整改（12 文件 +81/-35）**
+
+| 类别 | 改动 |
+|---|---|
+| 背景去蓝 | `main.css --win-mica` 4 处 `rgba(0,103,192,.06~.10)` → `rgba(0,0,0,.03~.06)`（暗色主题同步改白色透明） |
+| 4px 网格归一 | 11 处非合规 padding/margin：`.glass-stat` 14→16、`.glass-table th/td` 10→12、`.cd-report` 18→16、`.cv-card` 10→12、`.arc-item/.rel-item` 10→12、`.summary-progress` 14→16、`.seg` 2→4、`.seg button` 6→8、`.cv-list/.cv-item` 2~3→4、`.ws-row` 6→8、`.confirm-message` 10→12、`.cd-mode` 2→4、`.total-badge` 3→4、`.log-row` 3→4 等 |
+| 表格交互 | 补 `.glass-table tbody tr.is-selected`（`--win-accent-soft` + 500 字重） |
+| 状态标签 | 补 `.status-tag`（4px 圆角矩形 + `--win-control-alt` 背景），`TimelinePage.vue` 伏笔分类 tag 从 `glass-badge` 切到该类 |
+| 统计条软化 | `QueuePage.vue .total-card` 去掉 `.glass-card` 强对比（白底+边框+阴影），改 `--win-control-alt` 背景 + 4px 圆角 + 无边框无阴影（融入主背景） |
+
+**验证**：vue-tsc 0 错；剩余 6 处非 4 倍数（`.log-icon` 18px、滚动条 10px、行内 badge 2px、inline-code 1px、md-table 6px 等）属于控件内嵌细节级合理例外，不影响主结构；mica 偏冷蓝调已彻底清除（`grep rgba(0, 103, 192)` 仅剩 `--win-accent-soft` / `--win-info-bg` 两个 accent 语义色 token，与 mica 背景无关）。
+
 ### 10.6 相关文档
 - Win11 重做计划：`docs/superpowers/plans/2026-08-16-win11-frontend-redesign.md`
 - 项目 README：`README.md`
