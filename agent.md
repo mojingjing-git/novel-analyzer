@@ -713,6 +713,27 @@ npm run build
 
 **验证**：vue-tsc 0 错；剩余 6 处非 4 倍数（`.log-icon` 18px、滚动条 10px、行内 badge 2px、inline-code 1px、md-table 6px 等）属于控件内嵌细节级合理例外，不影响主结构；mica 偏冷蓝调已彻底清除（`grep rgba(0, 103, 192)` 仅剩 `--win-accent-soft` / `--win-info-bg` 两个 accent 语义色 token，与 mica 背景无关）。
 
+### 10.5.2 2026-08-18 动效补全（C 档）
+
+按"先审核哪些是真的"模式，先盘点 main.css 现状（3 档时长 + Fluent 样条 + 弹窗/页面过渡已就绪）再落地。
+
+**commit `dcb3b30` feat(motion): 给所有可交互部件加 Win11 动效（8 文件 +183/-10）**
+
+| 类别 | 改动 |
+|---|---|
+| Ripple 涟漪 | 新增 `composables/useRipple.ts` 全局事件代理（mousedown 注入 `.ripple` span，600ms 扩散到 scale 2.6 + 透明）；`main.css` 加 `.ripple` keyframes；所有 `.glass-button` / `.glass-pill` / `.glass-button-primary` / `.glass-button-danger` / `.op-btn` / `.nav-item` 自动获得 ripple |
+| 卡片 hover 微上浮 | `.glass-card.is-hoverable:hover` translateY(-1px) + shadow-card → shadow-tooltip；`.cv-card`、`.arc-item`、`.rel-item` hover 背景+translateX(2px) |
+| 按钮按下反击 | glass-button / -primary / -danger / -pill 加 `transform: scale(0.97)` 80ms ease |
+| 列表 stagger | 补 `.list-enter > *` nth-child(1~10) 错开 30ms（translateY 4px→0 + opacity 0→1）；AppLayout nav-list + WorkspacePage 归档列表启用 |
+| IconButton hover | `.glass-button:hover svg` / `.glass-pill:hover svg` scale(1.08) 150ms |
+| 错误 pulse | `.input-invalid` 加 `input-error-pulse` 600ms（红色 ring 外扩 4px → 收回） |
+| 数字 tabular-nums | QueuePage 5 个 session stats 加 `.count-up` class（font-variant-numeric: tabular-nums），数字不抖动 |
+| Toggle 入场柔化 | `.switch input:checked + .slider::before` 加 `switch-knob-enter` 180ms 弹簧样条 cubic-bezier(0.3, 1.4, 0.7, 1) |
+| 进度条缓动 | `.glass-progress-fill` 改 cubic-bezier(0.22, 0.61, 0.36, 1) 600ms；新增 `.is-indeterminate` 摆动动画备用 |
+| 状态标签 hover | `.glass-badge` / `.status-tag` 加 `background: --win-control-hover` hover 反馈 |
+
+**验证**：vue-tsc 0 错；7 改文件 + 1 新增 `useRipple.ts`；纯 CSS/事件代理层，不动业务逻辑。
+
 ### 10.6 相关文档
 - Win11 重做计划：`docs/superpowers/plans/2026-08-16-win11-frontend-redesign.md`
 - 项目 README：`README.md`
