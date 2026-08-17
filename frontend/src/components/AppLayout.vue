@@ -216,7 +216,7 @@ onMounted(() => {
 
 /* ===== 侧边栏（Win11 NavigationView，Mica 背景层） ===== */
 .sidebar {
-  width: 280px;
+  width: 186.67px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;

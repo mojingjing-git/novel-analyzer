@@ -421,11 +421,11 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 
 ### 5.4 API 层（backend/api/）
 
-**总计约 56 个 HTTP 端点 + 1 个 WebSocket 端点**
+**总计约 57 个 HTTP 端点 + 1 个 WebSocket 端点**
 
 | 路由模块 | 端点数 | 前缀 | 说明 |
 |---|---|---|---|
-| `routes_analysis.py` | 17 | `/api` | 分析 start/stop/status + 队列 CRUD + 风格 + 日志 |
+| `routes_analysis.py` | 18 | `/api` | 分析 start/stop/status + token_stats（会话/累计）+ 队列 CRUD + 风格 + 日志 |
 | `routes_books.py` | 10 | `/api/books` | 书籍列表/结果/报告/账本/角色/章节/token_stats |
 | `routes_settings.py` | 6 | `/api/settings` | 配置读写/模型列表/思维探测/预设 |
 | `routes_workspace.py` | 5 | `/api/workspace` | 工作区小说/归档管理 |
@@ -663,6 +663,11 @@ npm run build
 - **桌面端安全**：`desktop.py` 单实例锁（app.lock）+ 关闭确认（events.closing veto + Api.close 确认）
 - **Prompt 预览增强**：支持指定章节号输入
 - **工程卫生**：`.gitignore` 补 `app.lock`/`1/`/`.bak_*`；`run_desktop.bat` 去硬编码路径改用 py 启动器；`build_frontend.bat` 排除备份目录；回收站清理 13 项备份残留
+
+### 10.4 2026-08-18 变更摘要
+- **本次窗口会话 token 累计**：分析侧 `AnalysisService.token_stats()`（单例跨书累计，天然会话级）+ 总结侧 `SummaryService.session_token_stats()`（`_session_token_stats` 内存累计器，每次总结任务 finally 累加分类小计与耗时），新增 `GET /api/analysis/token_stats/session`（分析+总结两段）；前端 QueuePage 顶部卡片展示 5 项：输入 / 输出 / 命中缓存 / 命中率（仅分析侧口径：cached ÷ (input+cached)）/ 总消耗（input+cached+output），内存态重启清零
+- **侧边栏宽度**：`AppLayout.vue` `.sidebar` 展开宽度 280px → 186.67px（2/3）
+- 新增测试 `test_session_token_stats.py`（3 用例：跨任务累计/空结构/端点结构）
 
 ### 10.3 相关文档
 - Win11 重做计划：`docs/superpowers/plans/2026-08-16-win11-frontend-redesign.md`

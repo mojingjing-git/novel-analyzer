@@ -51,6 +51,17 @@ async def analysis_token_stats() -> dict:
     return get_service().token_stats()
 
 
+@router.get("/analysis/token_stats/session")
+async def analysis_token_stats_session() -> dict:
+    """本次窗口会话的 token 累计（内存态，重启清零）：
+    分析侧 = AnalysisService 单例跨书累计；总结侧 = SummaryService 会话累计。"""
+    from backend.services.summary_service import get_summary_service
+    return {
+        "analysis": get_service().token_stats(),
+        "summary": get_summary_service().session_token_stats(),
+    }
+
+
 # ==================== 队列管理 ====================
 
 class ScanRequest(BaseModel):

@@ -34,6 +34,9 @@ class SummaryService:
         self._total_batches: int = 0
         self._started_at: float = 0.0
         self._finished_at: float = 0.0
+        # 本次窗口会话的总结 token 累计（内存态，重启清零；跨书累计）
+        self._session_token_stats: Dict[str, Dict[str, int]] = {}
+        self._session_elapsed: float = 0.0
 
     @property
     def is_running(self) -> bool:
@@ -128,6 +131,19 @@ class SummaryService:
         )
         self._task = asyncio.create_task(self._run(output_dir))
 
+    def session_token_stats(self) -> Dict[str, Any]:
+        """本次窗口会话的总结 token 累计（内存态，重启清零）"""
+        total = {"input_tokens": 0, "output_tokens": 0}
+        for v in self._session_token_stats.values():
+            total["input_tokens"] += v.get("input_tokens", 0)
+            total["output_tokens"] += v.get("output_tokens", 0)
+        return {
+            "categories": dict(self._session_token_stats),
+            "input_tokens": total["input_tokens"],
+            "output_tokens": total["output_tokens"],
+            "elapsed": self._session_elapsed,
+        }
+
     def stop(self) -> bool:
         if not self.is_running:
             return False
@@ -157,11 +173,19 @@ class SummaryService:
             await hub.state_change("summary_failed", str(e))
         finally:
             self._finished_at = time.time()
-            # 总结 token 落盘（2026-08-17）：历史成本可查，重启不丢
+            # 会话累计 + 总结 token 落盘（2026-08-17）：历史成本可查，重启不丢
             if self._runner is not None:
                 try:
                     stats = self._runner.get_token_stats()
                     if stats:
+                        # 会话累计（内存态，本次窗口跨书汇总；重启清零）
+                        for cat, pair in stats.items():
+                            entry = self._session_token_stats.setdefault(
+                                cat, {"input_tokens": 0, "output_tokens": 0})
+                            entry["input_tokens"] += int(pair.get("input_tokens") or 0)
+                            entry["output_tokens"] += int(pair.get("output_tokens") or 0)
+                        if self._started_at:
+                            self._session_elapsed += self._finished_at - self._started_at
                         from ..utils.json_utils import safe_save_json
                         payload = {
                             "type": "summary",

@@ -53,6 +53,16 @@ export interface TokenStatsResponse {
   cached_tokens?: number
 }
 
+export interface SessionTokenStatsResponse {
+  analysis: TokenStatsResponse
+  summary: {
+    categories: Record<string, TokenCategory>
+    input_tokens: number
+    output_tokens: number
+    elapsed: number
+  }
+}
+
 export interface ProbeThinkingItem {
   param: string
   thinking_mode: Record<string, unknown> | null
@@ -254,6 +264,7 @@ export const api = {
   stopAnalysis: () => request<{ ok: boolean }>('/api/analysis/stop', { method: 'POST' }),
   analysisStatus: () => request<AnalysisStatus>('/api/analysis/status'),
   getTokenStats: () => request<TokenStatsResponse>('/api/analysis/token_stats'),
+  getSessionTokenStats: () => request<SessionTokenStatsResponse>('/api/analysis/token_stats/session'),
   getBookTokenStats: (book_id: string) => request<{ book_id: string; analysis?: Record<string, unknown>; summary?: Record<string, unknown> }>(`/api/books/${book_id}/token_stats`),
 
   // 队列

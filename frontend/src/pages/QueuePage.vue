@@ -7,13 +7,14 @@ import BookSelector from '../components/BookSelector.vue'
 import ProgressBar from '../components/ProgressBar.vue'
 import TokenBadge from '../components/TokenBadge.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
-import { api, type AnalysisStatus, type TokenStatsResponse } from '../api/client'
+import { api, type AnalysisStatus, type TokenStatsResponse, type SessionTokenStatsResponse } from '../api/client'
 import { useProgressSocket, type ProgressMessage } from '../api/useProgressSocket'
 import { useLogStore } from '../composables/useLogStore'
 
 const status = ref<AnalysisStatus | null>(null)
 const progress = ref({ current: 0, total: 0, eta: '' })
 const tokens = ref<TokenStatsResponse | null>(null)
+const sessionStats = ref<SessionTokenStatsResponse | null>(null)
 const busy = ref(false)
 const error = ref('')
 // 章节详情共享的书目与章节号（从独立的工具栏提升到此处，便于两个分栏内容框对齐）
@@ -83,9 +84,41 @@ async function refresh() {
     if (s?.running && progress.value.total === 0 && s.queue?.current_progress != null && s.queue.current_total) {
       progress.value = { current: s.queue.current_progress, total: s.queue.current_total, eta: '' }
     }
+    await refreshSessionStats()
   } catch (e) { console.error(e) }
 }
 async function refreshTokens() { try { tokens.value = await api.getTokenStats() } catch (e) { console.error(e) } }
+// 本次窗口会话累计（分析+总结，内存态跨书累计；重启清零）
+async function refreshSessionStats() { try { sessionStats.value = await api.getSessionTokenStats() } catch (e) { console.error(e) } }
+function fmt(n: number): string {
+  if (!n) return '0'
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M'
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K'
+  return String(n)
+}
+// 分类小计加总为总量（分析/总结共用）
+function catTotal(cats: Record<string, { input_tokens: number; output_tokens: number }> | undefined, key: 'input_tokens' | 'output_tokens'): number {
+  if (!cats) return 0
+  return Object.values(cats).reduce((s, c) => s + (c[key] || 0), 0)
+}
+// 本次窗口会话的总量（分析 + 总结；input 不含缓存，cached 为命中部分）
+const sessionTotal = computed(() => {
+  const a = sessionStats.value?.analysis
+  const s = sessionStats.value?.summary
+  const input = (catTotal(a?.categories, 'input_tokens') || 0) + (s?.input_tokens || 0)
+  const output = (catTotal(a?.categories, 'output_tokens') || 0) + (s?.output_tokens || 0)
+  const cached = a?.cached_tokens || 0
+  // 命中率只基于分析侧计算（总结侧未记录缓存命中，混入会低估命中率）
+  const aInput = catTotal(a?.categories, 'input_tokens') || 0
+  const hitRate = aInput + cached > 0 ? (cached / (aInput + cached)) * 100 : 0
+  return {
+    input,
+    output,
+    cached,
+    hitRate,
+    total: input + output + cached,
+  }
+})
 
 async function withBusy(fn: () => Promise<void>, label: string) {
   busy.value = true; error.value = ''
@@ -264,7 +297,16 @@ onUnmounted(() => {
     </div>
 
     <div class="flex items-center justify-between flex-wrap gap-3">
-      <TokenBadge v-if="tokens?.categories" :categories="tokens.categories" />
+      <div class="flex items-center gap-3 flex-wrap">
+        <TokenBadge v-if="tokens?.categories" :categories="tokens.categories" />
+        <div v-if="sessionStats" class="glass-card total-card">
+          <span class="total-item">输入 <b>{{ fmt(sessionTotal.input) }}</b></span>
+          <span class="total-item">输出 <b>{{ fmt(sessionTotal.output) }}</b></span>
+          <span class="total-item">命中缓存 <b>{{ fmt(sessionTotal.cached) }}</b></span>
+          <span class="total-item">命中率 <b>{{ sessionTotal.hitRate.toFixed(1) }}%</b></span>
+          <span class="total-item">总消耗 <b>{{ fmt(sessionTotal.total) }}</b></span>
+        </div>
+      </div>
       <a href="/api/analysis/logs" target="_blank" class="glass-button" style="font-size: 12px">下载日志</a>
     </div>
 
@@ -351,6 +393,24 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/* 会话 token 累计卡片（分析+总结，内存态）：紧凑单行，与 TokenBadge 同行 */
+.total-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 6px 14px;
+  font-size: 12px;
+  color: var(--win-text-secondary);
+  flex-wrap: wrap;
+}
+.total-item {
+  white-space: nowrap;
+}
+.total-item b {
+  color: var(--win-text-primary);
+  font-weight: 500;
+}
+
 /* 章节选择控件：位于左栏标题条内，与详情框同宽 */
 .cd-controls {
   display: flex;
