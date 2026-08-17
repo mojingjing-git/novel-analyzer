@@ -649,12 +649,13 @@ npm run build
 
 ### 10.2 已知待修复项
 
-`ConfirmDialog.vue` 仍有 Win11 规范偏差：
-```css
-.confirm-card { border-radius: 20px; }   /* 应改为 8px */
-.confirm-title { font-size: 17px; }       /* Win11 建议 20px Semibold */
-.confirm-mask { background: rgba(0,0,0,0.3); }  /* 建议 0.4 */
-```
+> 2026-08-18 已修复（详见 10.5）：
+> ~~`ConfirmDialog.vue` 仍有 Win11 规范偏差：~~
+> ~~```css~~
+> ~~.confirm-card { border-radius: 20px; }   /* 应改为 8px */~~
+> ~~.confirm-title { font-size: 17px; }       /* Win11 建议 20px Semibold */~~
+> ~~.confirm-mask { background: rgba(0,0,0,0.3); }  /* 建议 0.4 */~~
+> ~~```~~
 
 ### 10.3 2026-08-17 变更摘要
 - **复检上下文超限保护**：`RECHECK_FULLTEXT_BUDGET_CHARS=150000`、`_plan_recheck_batches()` 按伏笔埋设章砍卷
@@ -666,10 +667,34 @@ npm run build
 
 ### 10.4 2026-08-18 变更摘要
 - **本次窗口会话 token 累计**：分析侧 `AnalysisService.token_stats()`（单例跨书累计，天然会话级）+ 总结侧 `SummaryService.session_token_stats()`（`_session_token_stats` 内存累计器，每次总结任务 finally 累加分类小计与耗时），新增 `GET /api/analysis/token_stats/session`（分析+总结两段）；前端 QueuePage 顶部卡片展示 5 项：输入 / 输出 / 命中缓存 / 命中率（仅分析侧口径：cached ÷ (input+cached)）/ 总消耗（input+cached+output），内存态重启清零
-- **侧边栏宽度**：`AppLayout.vue` `.sidebar` 展开宽度 280px → 186.67px（2/3）
+- **侧边栏宽度**：`AppLayout.vue` `.sidebar` 展开宽度 280px → 186.67px（2/3，10.5 续调为 200px）
 - 新增测试 `test_session_token_stats.py`（3 用例：跨任务累计/空结构/端点结构）
 
-### 10.3 相关文档
+### 10.5 2026-08-18 GUI Win11 视觉化变更
+
+拆两次 commit 落地：
+
+**commit `645a5f9` style(GUI): 视觉贴近 Win11 Fluent（6 文件 +44/-23）**
+
+| 文件 | 改动 |
+|---|---|
+| `ConfirmDialog.vue` | macOS→Win11 ContentDialog：圆角 20→8px、黑蒙层 30%→浅色背板 `rgba(243,243,243,0.6)` + 8px backdrop-filter、title 17→20px / message 13→14px |
+| `LogConsole.vue` | 深色 `rgba(20,20,24,0.55)`→`var(--win-control-alt)`、硬编码白字全改 token（`--win-text-primary/disabled`）、SF Mono→Cascadia Code |
+| `QueuePage.vue` `.op-btn` | `padding:4px 10px`→`height:32px; padding:0 12px; font-size:13px`（Win11 标准控件高度 32） |
+| `AppLayout.vue` | 侧边栏 186.67px→**200px**（Win11 NavigationView 折中下限，仍维持折叠 48px） |
+| `Icon.vue` | stroke 1.2→1.5，贴近 Segoe Fluent 实线 |
+| `ChapterDetailPanel.vue` `.cd-chapter` | 17px→18px，对齐 Win11 Subtitle 层级 |
+
+**commit `d32c6ed` refactor(GUI): SettingsPage 收紧 button 修饰 + 去重 CSS（2 文件 +29/-22）**
+
+| 文件 | 改动 |
+|---|---|
+| `BookSelector.vue` | 删冗余 `.btn-compact`（直接用 `.glass-button`） |
+| `SettingsPage.vue` | 抽 3 个按钮修饰类：`.btn-sm`（覆盖基类 padding 0 16→12）/ `.btn-lg`（主按钮 0 20） / `.btn-danger-link`（文字红）；替换 4 处 inline padding/font-size/style；删 b6ed8af 留下的 2 处 `.category-chip` 与 2 处 `.model-option` 重复定义 |
+
+**验证**：vue-tsc 0 错；变更面 8 文件 +73/-45；属于纯前端视觉/CSS 调整，零业务逻辑变动。
+
+### 10.6 相关文档
 - Win11 重做计划：`docs/superpowers/plans/2026-08-16-win11-frontend-redesign.md`
 - 项目 README：`README.md`
 - 更新日志：`CHANGELOG.md`
