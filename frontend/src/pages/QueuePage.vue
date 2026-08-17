@@ -300,11 +300,11 @@ onUnmounted(() => {
       <div class="flex items-center gap-3 flex-wrap">
         <TokenBadge v-if="tokens?.categories" :categories="tokens.categories" />
         <div v-if="sessionStats" class="total-card">
-          <span class="total-item">输入 <b>{{ fmt(sessionTotal.input) }}</b></span>
-          <span class="total-item">输出 <b>{{ fmt(sessionTotal.output) }}</b></span>
-          <span class="total-item">命中缓存 <b>{{ fmt(sessionTotal.cached) }}</b></span>
-          <span class="total-item">命中率 <b>{{ sessionTotal.hitRate.toFixed(1) }}%</b></span>
-          <span class="total-item">总消耗 <b>{{ fmt(sessionTotal.total) }}</b></span>
+          <span class="total-item">输入 <b class="count-up">{{ fmt(sessionTotal.input) }}</b></span>
+          <span class="total-item">输出 <b class="count-up">{{ fmt(sessionTotal.output) }}</b></span>
+          <span class="total-item">命中缓存 <b class="count-up">{{ fmt(sessionTotal.cached) }}</b></span>
+          <span class="total-item">命中率 <b class="count-up">{{ sessionTotal.hitRate.toFixed(1) }}%</b></span>
+          <span class="total-item">总消耗 <b class="count-up">{{ fmt(sessionTotal.total) }}</b></span>
         </div>
       </div>
       <a href="/api/analysis/logs" target="_blank" class="glass-button" style="font-size: 12px">下载日志</a>

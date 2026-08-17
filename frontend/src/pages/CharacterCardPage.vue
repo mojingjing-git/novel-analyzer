@@ -247,6 +247,17 @@ watch(bookId, loadCharacters)
   border-radius: var(--win-radius-container);
   /* 12px 对齐 4 倍数（原 10px 12px 不合规） */
   padding: 12px;
+  /* C 档动效：卡片内嵌 item 微 hover */
+  transition:
+    background var(--win-duration-fast) var(--win-ease),
+    border-color var(--win-duration-fast) var(--win-ease),
+    transform var(--win-duration-fast) var(--win-ease);
+}
+.arc-item:hover, .rel-item:hover {
+  background: var(--win-control-hover);
+  border-color: var(--win-stroke-strong);
+  border-left-color: var(--win-accent-hover);
+  transform: translateX(2px);
 }
 .event-item {
   border-left: 3px solid var(--win-warning);

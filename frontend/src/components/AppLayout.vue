@@ -95,7 +95,7 @@ onMounted(() => {
     <div class="layout-body">
       <!-- Win11 NavigationView 侧边栏：Mica 基底（背景层），内容卡片白色浮于其上 -->
       <aside class="sidebar mica-surface" :class="{ collapsed }">
-        <nav class="nav-list">
+        <nav class="nav-list list-enter">
           <router-link
             v-for="item in navItems"
             :key="item.path"

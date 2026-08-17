@@ -141,7 +141,7 @@ onMounted(load)
       <h3 class="font-semibold pb-2" style="border-bottom: 1px solid var(--win-stroke)">分析结果/ 归档</h3>
       <div v-if="loading" class="text-sm py-4" style="color: var(--win-text-disabled)">加载中…</div>
       <div v-else-if="archives.length === 0" class="text-sm py-4" style="color: var(--win-text-disabled)">暂无归档。</div>
-      <div v-else class="space-y-1">
+      <div v-else class="space-y-1 list-enter">
         <div
           v-for="a in archives"
           :key="a.name"

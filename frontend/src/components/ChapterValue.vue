@@ -108,6 +108,16 @@ function keyLabel(k: string): string {
   /* 12px 12px 对齐 4 倍数（原 10px 12px 不合规） */
   padding: 12px;
   box-shadow: var(--win-shadow-control);
+  /* C 档动效：cv-card 微 hover */
+  transition:
+    background var(--win-duration-fast) var(--win-ease),
+    border-color var(--win-duration-fast) var(--win-ease),
+    transform var(--win-duration-fast) var(--win-ease);
+}
+.cv-card:hover {
+  background: var(--win-control-hover);
+  border-color: var(--win-stroke-strong);
+  transform: translateX(2px);
 }
 .cv-object {
   display: flex;

@@ -255,6 +255,16 @@ body {
   border-radius: var(--win-radius-container);
   box-shadow: var(--win-shadow-card);
   overflow: hidden;
+  /* 卡片可交互态（C 档动效）：hover 时微上浮 + 阴影加强，对齐 Win11 ListView 风格 */
+  transition:
+    box-shadow var(--win-duration-normal) var(--win-ease),
+    transform var(--win-duration-normal) var(--win-ease),
+    border-color var(--win-duration-fast) var(--win-ease);
+}
+.glass-card.is-hoverable:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--win-shadow-tooltip);
+  border-color: var(--win-stroke-strong);
 }
 
 /* 面板 / 图层（Win11 Layer，阴影更弱） */
@@ -320,10 +330,15 @@ html.dark .glass-clear {
   -webkit-tap-highlight-color: transparent;
   white-space: nowrap;
   box-shadow: var(--win-shadow-control);
+  /* Ripple 涟漪需要 relative + overflow:hidden + isolation；transform 留按下反击 */
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
   transition:
     background var(--win-duration-fast) var(--win-ease),
     border-color var(--win-duration-fast) var(--win-ease),
-    box-shadow var(--win-duration-fast) var(--win-ease);
+    box-shadow var(--win-duration-fast) var(--win-ease),
+    transform 80ms var(--win-ease);
 }
 .glass-button:hover:not(:disabled) {
   background: var(--win-control-hover);
@@ -332,6 +347,7 @@ html.dark .glass-clear {
 .glass-button:active:not(:disabled) {
   background: var(--win-control-pressed);
   box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.10);
+  transform: scale(0.97);
 }
 .glass-button:disabled {
   opacity: 0.4;
@@ -351,6 +367,7 @@ html.dark .glass-clear {
 .glass-button-primary:active:not(:disabled) {
   background: var(--win-accent-pressed);
   box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.16);
+  transform: scale(0.97);
 }
 
 /* 危险按钮 */
@@ -365,6 +382,7 @@ html.dark .glass-clear {
 }
 .glass-button-danger:active:not(:disabled) {
   filter: brightness(0.84);
+  transform: scale(0.97);
 }
 
 /* 胶囊 / 筛选 chip（Win11 轻量） */
@@ -382,18 +400,45 @@ html.dark .glass-clear {
   font-family: inherit;
   color: var(--win-text-primary);
   cursor: pointer;
+  position: relative;
+  overflow: hidden;
   transition:
     background var(--win-duration-fast) var(--win-ease),
-    border-color var(--win-duration-fast) var(--win-ease);
+    border-color var(--win-duration-fast) var(--win-ease),
+    transform 80ms var(--win-ease);
   -webkit-tap-highlight-color: transparent;
 }
 .glass-pill:hover {
   background: var(--win-control-hover);
 }
+.glass-pill:active:not([disabled]) {
+  transform: scale(0.97);
+}
 .glass-pill.is-active {
   background: var(--win-accent);
   border-color: transparent;
   color: #FFFFFF;
+}
+
+/* ============================================================
+   Ripple 涟漪（Win11 最标志微交互）
+   由 useRipple.ts 在点击位置注入 .ripple 元素并触发 keyframes
+   ============================================================ */
+.ripple {
+  position: absolute;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.20;
+  pointer-events: none;
+  transform: scale(0);
+  animation: ripple-expand 600ms cubic-bezier(0.2, 0, 0, 1) forwards;
+  z-index: -1;
+}
+@keyframes ripple-expand {
+  to {
+    transform: scale(2.6);
+    opacity: 0;
+  }
 }
 
 /* ============================================================
@@ -412,6 +457,14 @@ html.dark .glass-clear {
   color: var(--win-text-primary);
   border: 1px solid var(--win-stroke);
   white-space: nowrap;
+  transition:
+    background var(--win-duration-fast) var(--win-ease),
+    border-color var(--win-duration-fast) var(--win-ease),
+    color var(--win-duration-fast) var(--win-ease),
+    transform 80ms var(--win-ease);
+}
+.glass-badge:hover {
+  background: var(--win-control-hover);
 }
 
 /* Win11 状态标签：4px 圆角矩形（控件级），用于"等待中/运行中/失败"等状态指示；
@@ -428,6 +481,15 @@ html.dark .glass-clear {
   white-space: nowrap;
   background: var(--win-control-alt);
   border: 1px solid var(--win-stroke);
+  transition:
+    background var(--win-duration-fast) var(--win-ease),
+    border-color var(--win-duration-fast) var(--win-ease),
+    color var(--win-duration-fast) var(--win-ease),
+    transform 80ms var(--win-ease);
+}
+.status-tag:hover {
+  background: var(--win-control-hover);
+  border-color: var(--win-stroke-strong);
 }
 
 /* 连接状态：8px 圆点 + 12px 文字（Win11 克制风格，无胶囊底） */
@@ -540,7 +602,18 @@ html.dark .glass-clear {
   height: 100%;
   background: var(--win-accent);
   border-radius: var(--win-radius-pill);
-  transition: width 400ms var(--win-ease);
+  /* C 档：分段缓动（起始慢、中段快、收尾慢），比 linear ease 更显动感 */
+  transition: width 600ms cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+/* Indeterminate 状态：等待用（项目暂未用，但留作公共） */
+@keyframes progress-indeterminate {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
+.glass-progress-fill.is-indeterminate {
+  width: 30% !important;
+  animation: progress-indeterminate 1.4s cubic-bezier(0.65, 0.05, 0.36, 1) infinite;
 }
 
 /* ============================================================
@@ -703,6 +776,81 @@ html.dark .glass-clear {
 .modal-leave-to {
   opacity: 0;
   transform: scale(0.95);
+}
+
+/* 列表 stagger 入场（C 档 B）：用于 nav-item / queue item / chapter item 等列表元素 */
+@keyframes list-item-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.list-enter > * {
+  animation: list-item-enter 240ms var(--win-ease) backwards;
+}
+.list-enter > *:nth-child(1)  { animation-delay: 0ms; }
+.list-enter > *:nth-child(2)  { animation-delay: 30ms; }
+.list-enter > *:nth-child(3)  { animation-delay: 60ms; }
+.list-enter > *:nth-child(4)  { animation-delay: 90ms; }
+.list-enter > *:nth-child(5)  { animation-delay: 120ms; }
+.list-enter > *:nth-child(6)  { animation-delay: 150ms; }
+.list-enter > *:nth-child(7)  { animation-delay: 180ms; }
+.list-enter > *:nth-child(8)  { animation-delay: 210ms; }
+.list-enter > *:nth-child(9)  { animation-delay: 240ms; }
+.list-enter > *:nth-child(10) { animation-delay: 270ms; }
+.list-enter > *:nth-child(n+11) { animation-delay: 300ms; }
+
+/* IconButton hover 微放大（C 档 B）：按钮里的 svg 图标轻微放大 */
+.btn-icon-host svg,
+.glass-button svg,
+.glass-pill svg {
+  transition: transform var(--win-duration-fast) var(--win-ease);
+}
+.glass-button:hover:not(:disabled) svg,
+.glass-pill:hover svg,
+.btn-icon-host:hover svg {
+  transform: scale(1.08);
+}
+
+/* 输入错误 pulse（C 档锦上添花）：错误出现时红色聚焦圈外扩一次 */
+@keyframes input-error-pulse {
+  0%   { box-shadow: 0 0 0 1px var(--win-danger); }
+  40%  { box-shadow: 0 0 0 4px var(--win-danger); }
+  100% { box-shadow: 0 0 0 1px var(--win-danger); }
+}
+.input-invalid {
+  border-color: var(--win-danger) !important;
+  box-shadow: 0 0 0 1px var(--win-danger);
+  animation: input-error-pulse 600ms ease-out;
+}
+
+/* 数字 count-up（C 档锦上添花）：父级标记 .count-up，数字字体等宽、变化平滑。
+   本身只提供占位样式；实际数值变化动画由 Vue 端 NumberTransition 实现；
+   这里保证数字所在容器不抖动、不破版 */
+.count-up {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+  display: inline-block;
+}
+
+/* Toast/Snackbar（C 档锦上添花）：自底向上滑入 + 淡入 */
+@keyframes toast-enter {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.toast-enter-active { animation: toast-enter 240ms var(--win-ease); }
+
+/* 切换按钮 toggle 入场（C 档 A）：用 overshoot 弹簧感 */
+@keyframes switch-knob-enter {
+  from { transform: translateX(0) scale(0.85); opacity: 0.6; }
+  to   { transform: translateX(20px) scale(1); opacity: 1; }
+}
+.switch input:checked + .slider::before {
+  animation: switch-knob-enter 180ms cubic-bezier(0.3, 1.4, 0.7, 1);
 }
 
 /* 尊重系统减弱动效设置 */
