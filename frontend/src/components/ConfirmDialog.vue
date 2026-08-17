@@ -37,6 +37,7 @@ function onCancel() { emit('cancel') }
 </template>
 
 <style scoped>
+/* Win11 ContentDialog：浅色背板 + 8px 圆角 + 衬底 sm 阴影 */
 .confirm-mask {
   position: fixed;
   inset: 0;
@@ -44,39 +45,51 @@ function onCancel() { emit('cancel') }
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.3);
+  /* Win11 标准 Dialog 浅色背板（场景遮罩，比深色更不抢戏） */
+  background: rgba(243, 243, 243, 0.6);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+html.dark .confirm-mask {
+  background: rgba(32, 32, 32, 0.6);
 }
 
 .confirm-card {
-  max-width: 360px;
+  max-width: 380px;
   width: calc(100% - 32px);
-  border-radius: 20px;
+  /* Win11 ContentDialog 标准圆角 */
+  border-radius: 8px;
   overflow: hidden;
+  /* Win11 Dialog 阴影：flyout 之上，更远更软 */
+  box-shadow: var(--win-shadow-dialog);
 }
 
 .confirm-body {
-  padding: 22px 24px 16px;
+  padding: 24px 24px 20px;
 }
 
+/* Win11 ContentDialog 标题：20px / 600 / 负字距 */
 .confirm-title {
-  font-size: 17px;
+  font-size: 20px;
   font-weight: 600;
   letter-spacing: -0.01em;
+  line-height: 1.3;
   margin: 0;
   color: var(--win-text-primary);
 }
 
+/* Win11 Body：14px / secondary 文字，行高 1.5 */
 .confirm-message {
-  font-size: 13px;
+  font-size: 14px;
   color: var(--win-text-secondary);
   line-height: 1.5;
-  margin: 8px 0 0;
+  margin: 10px 0 0;
 }
 
 .confirm-actions {
   display: flex;
   gap: 8px;
-  padding: 0 16px 16px;
+  padding: 8px 16px 16px;
   justify-content: flex-end;
 }
 </style>

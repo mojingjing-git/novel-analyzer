@@ -214,9 +214,11 @@ onMounted(() => {
   min-height: 0;
 }
 
-/* ===== 侧边栏（Win11 NavigationView，Mica 背景层） ===== */
+/* ===== 侧边栏（Win11 NavigationView，Mica 背景层） =====
+   宽度 200px：Win11 默认 240px 与紧凑 72px 之间的折中下限，
+   满足 12 个导航项不换行 + 折叠/主题按钮完整宽度体验 */
 .sidebar {
-  width: 186.67px;
+  width: 200px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;

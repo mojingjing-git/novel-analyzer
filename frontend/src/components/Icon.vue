@@ -12,7 +12,7 @@ interface Props {
 }
 const props = withDefaults(defineProps<Props>(), {
   size: 18,
-  strokeWidth: 1.2,
+  strokeWidth: 1.5,
 })
 
 // SVG 路径数据（来自 Phosphor Icons 的 line 变体，简化版）

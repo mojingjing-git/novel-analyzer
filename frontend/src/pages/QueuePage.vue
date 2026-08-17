@@ -494,13 +494,16 @@ onUnmounted(() => {
   gap: 6px;
   justify-content: flex-end;
 }
+/* Win11 列表行内操作按钮：统一 32px 高 / 12px padding，与基类 .glass-button 等高 */
 .op-btn {
-  padding: 4px 10px;
-  font-size: 12px;
+  height: 32px;
+  padding: 0 12px;
+  font-size: 13px;
   white-space: nowrap;
 }
 .op-icon {
-  padding: 4px 10px;
+  height: 32px;
+  padding: 0 8px;
   min-width: 32px;
 }
 .op-hidden {

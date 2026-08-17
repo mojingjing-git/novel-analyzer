@@ -205,8 +205,9 @@ onUnmounted(() => {
   margin-bottom: 14px;
   border-bottom: 1px solid var(--win-stroke);
 }
+/* Win11 Subtitle 层级：18px / 600，与下方段落标题 13px 形成层次 */
 .cd-chapter {
-  font-size: 17px;
+  font-size: 18px;
   font-weight: 600;
   color: var(--win-text-primary);
 }

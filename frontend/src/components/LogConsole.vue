@@ -63,21 +63,23 @@ watch(
 </template>
 
 <style scoped>
+/* Win11 浅色控制台：与 .glass-card 同色，配 Cascadia Code 等宽字体；
+   状态色通过 .log-icon 上的 badge-* token 传达，不再用白字+暗底 */
 .log-console {
   padding: 12px;
   overflow-y: auto;
-  font-family: ui-monospace, "SF Mono", "Cascadia Code", monospace;
+  font-family: "Cascadia Code", "Consolas", "Cascadia Mono", ui-monospace, monospace;
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 1.55;
   max-height: 320px;
-  background: rgba(20, 20, 24, 0.55);
+  background: var(--win-control-alt);
 }
 
 .log-empty {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: rgba(255, 255, 255, 0.4);
+  color: var(--win-text-disabled);
   padding: 4px 0;
 }
 
@@ -86,7 +88,7 @@ watch(
   align-items: flex-start;
   gap: 8px;
   padding: 3px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid var(--win-stroke);
 }
 
 .log-row:last-child { border-bottom: none; }
@@ -96,8 +98,8 @@ watch(
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
   border-radius: 4px;
   margin-top: 1px;
 }
@@ -105,6 +107,6 @@ watch(
 .log-text {
   flex: 1;
   word-break: break-all;
-  color: rgba(255, 255, 255, 0.9);
+  color: var(--win-text-primary);
 }
 </style>
