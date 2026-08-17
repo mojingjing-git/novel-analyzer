@@ -116,6 +116,7 @@ export interface AppConfigDto {
     auto_summary: boolean
     summary_concurrency: number
     summary_batch_size: number
+    foreshadow_recheck_batch_size: number
     skip_moderation_blocked: boolean
     max_compressed_arcs: number
     max_recent_summaries: number
@@ -175,7 +176,7 @@ export interface SummaryStatus {
   error: string
   started_at: number
   finished_at: number
-  token_stats: Record<string, unknown>
+  token_stats: Record<string, TokenCategory>
 }
 
 export interface SplitterPreview {
@@ -253,6 +254,7 @@ export const api = {
   stopAnalysis: () => request<{ ok: boolean }>('/api/analysis/stop', { method: 'POST' }),
   analysisStatus: () => request<AnalysisStatus>('/api/analysis/status'),
   getTokenStats: () => request<TokenStatsResponse>('/api/analysis/token_stats'),
+  getBookTokenStats: (book_id: string) => request<{ book_id: string; analysis?: Record<string, unknown>; summary?: Record<string, unknown> }>(`/api/books/${book_id}/token_stats`),
 
   // 队列
   getQueue: () => request<AnalysisStatus>('/api/queue'),
@@ -338,8 +340,8 @@ export const api = {
   deleteArchive: (name: string) => request<{ ok: boolean }>('/api/workspace/delete_archive', { method: 'POST', body: JSON.stringify({ archive_name: name }) }),
 
   // Prompt
-  promptPreview: (book_id: string, max_chars: number = 0) =>
-    request<{ book_id: string; chapter: number; chapter_label: string; chapter_total_chars: number; chapter_truncated: boolean; system_prompt: string; user_prompt: string; system_len: number; user_len: number; total_len: number; params: Record<string, unknown> }>('/api/prompt/preview', { method: 'POST', body: JSON.stringify({ book_id, max_chars }) }),
+  promptPreview: (book_id: string, max_chars: number = 0, chapter: number = 1) =>
+    request<{ book_id: string; chapter: number; chapter_label: string; chapter_total_chars: number; chapter_truncated: boolean; system_prompt: string; user_prompt: string; system_len: number; user_len: number; total_len: number; params: Record<string, unknown> }>('/api/prompt/preview', { method: 'POST', body: JSON.stringify({ book_id, max_chars, chapter }) }),
 
   // 可视化
   getTimeline: (book_id: string) => request<{ events: unknown[]; foreshadows: unknown[]; category_map_loaded?: boolean }>(`/api/viz/timeline/${book_id}`),

@@ -82,7 +82,7 @@ function keyLabel(k: string): string {
 .cv-scalar {
   font-size: 13px;
   line-height: 1.65;
-  color: var(--text-primary);
+  color: var(--win-text-primary);
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -102,13 +102,11 @@ function keyLabel(k: string): string {
   line-height: 1.5;
 }
 .cv-card {
-  background: var(--glass-clear);
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
-  border: 1px solid var(--glass-rim-color);
-  box-shadow: var(--glass-inner);
-  border-radius: 10px;
+  background: var(--win-layer);
+  border: 1px solid var(--win-stroke);
+  border-radius: var(--win-radius-container);
   padding: 10px 12px;
+  box-shadow: var(--win-shadow-control);
 }
 .cv-object {
   display: flex;
@@ -121,8 +119,8 @@ function keyLabel(k: string): string {
 }
 .cv-key {
   display: inline-block;
-  font-weight: 600;
-  color: var(--text-secondary);
+  font-weight: 500;
+  color: var(--win-text-secondary);
   margin-right: 4px;
 }
 .cv-key::after {

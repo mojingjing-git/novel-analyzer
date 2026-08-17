@@ -157,6 +157,25 @@ class SummaryService:
             await hub.state_change("summary_failed", str(e))
         finally:
             self._finished_at = time.time()
+            # 总结 token 落盘（2026-08-17）：历史成本可查，重启不丢
+            if self._runner is not None:
+                try:
+                    stats = self._runner.get_token_stats()
+                    if stats:
+                        from ..utils.json_utils import safe_save_json
+                        payload = {
+                            "type": "summary",
+                            "book_id": self._book_id,
+                            "phase": self._phase,
+                            "started_at": self._started_at,
+                            "finished_at": self._finished_at,
+                            "elapsed": self._finished_at - self._started_at if self._started_at else 0,
+                            "categories": stats,
+                        }
+                        await asyncio.to_thread(safe_save_json, payload,
+                                                output_dir / "summary_token_stats.json")
+                except Exception as e:
+                    logger.warning(f"总结 token 统计落盘失败: {e}")
 
 
 # 模块级单例

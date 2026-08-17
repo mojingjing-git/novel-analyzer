@@ -17,11 +17,11 @@ set "PYTHON="
 for /f "delims=" %%P in ('where python 2^>nul') do ( set "PYTHON=%%P" & goto :have_python )
 :have_python
 if not defined PYTHON (
-  if exist "C:\Users\MoJingJing\AppData\Local\Programs\Python\Python312\python.exe" set "PYTHON=C:\Users\MoJingJing\AppData\Local\Programs\Python\Python312\python.exe"
+  for /f "delims=" %%P in ('py -3 -c "import sys; print(sys.executable)" 2^>nul') do set "PYTHON=%%P"
 )
 if not defined PYTHON (
   echo [%date% %time%] ERROR: 未找到 python >> "%RUN_LOG%"
-  echo [ERROR] 未找到 python，请安装 Python 3.12 并加入 PATH，或检查环境变量。
+  echo [ERROR] 未找到 python，请安装 Python 3.11+ 并加入 PATH（或安装 py 启动器）。
   popd
   pause
   exit /b 1

@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -91,6 +91,21 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # 桌面应用缓存策略：前端是本地实时构建产物，必须禁用浏览器缓存。
+    # 否则 WebView2 会按 Starlette 默认 Cache-Control: max-age=3600 缓存 index.html，
+    # 重建 dist 后用户仍看到旧效果（"改了但没生效"的典型假象）。
+    @app.middleware("http")
+    async def disable_frontend_cache(request: Request, call_next):
+        response = await call_next(request)
+        if not request.url.path.startswith("/api"):
+            response.headers["Cache-Control"] = "no-store, must-revalidate"
+            # Starlette 的 MutableHeaders 没有 .pop() 方法，用 del 守卫式删除
+            if "etag" in response.headers:
+                del response.headers["etag"]
+            if "last-modified" in response.headers:
+                del response.headers["last-modified"]
+        return response
 
     # WebSocket 进度通道
     app.include_router(ws.router)

@@ -89,17 +89,17 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="space-y-4 max-w-4xl p-4">
+  <div class="space-y-6 max-w-4xl">
     <div>
       <h2 class="section-title">工作区管理</h2>
       <p class="section-subtitle">管理 workspace/ 中的小说与 分析结果/ 归档</p>
     </div>
 
-    <div v-if="error" class="glass-tinted-red px-4 py-2 rounded-ios-md text-sm">{{ error }}</div>
+    <div v-if="error" class="glass-tinted-red px-4 py-2 rounded text-sm">{{ error }}</div>
 
     <!-- 小说列表 -->
     <div class="glass-card p-4 space-y-3">
-      <div class="flex items-center justify-between pb-2" style="border-bottom: 1px solid var(--glass-border-subtle)">
+      <div class="flex items-center justify-between pb-2" style="border-bottom: 1px solid var(--win-stroke)">
         <h3 class="font-semibold">workspace/ 小说</h3>
         <button
           @click="archiveAll"
@@ -110,11 +110,11 @@ onMounted(load)
         </button>
       </div>
 
-      <div v-if="loading" class="text-sm py-4" style="color: var(--text-tertiary)">加载中…</div>
+      <div v-if="loading" class="text-sm py-4" style="color: var(--win-text-disabled)">加载中…</div>
       <div
         v-else-if="novels.length === 0"
         class="text-sm py-4"
-        style="color: var(--text-tertiary)"
+        style="color: var(--win-text-disabled)"
       >
         暂无小说。请先在「小说切分」切分，或把小说放入 workspace/ 目录。
       </div>
@@ -122,12 +122,12 @@ onMounted(load)
         <div
           v-for="n in novels"
           :key="n.name"
-          class="flex items-center justify-between py-2 px-2 rounded"
-          style="border-bottom: 1px solid var(--glass-border-subtle)"
+          class="ws-row flex items-center justify-between px-2"
+          style="border-bottom: 1px solid var(--win-stroke)"
         >
           <div class="min-w-0">
             <div class="truncate font-medium">{{ n.name }}</div>
-            <div class="text-xs" style="color: var(--color-system-gray)">
+            <div class="text-xs" style="color: var(--win-text-secondary)">
               {{ n.chapters }} 章 · {{ fmtSize(n.size) }} · 修改于 {{ fmtTime(n.modified) }}
             </div>
           </div>
@@ -138,19 +138,19 @@ onMounted(load)
 
     <!-- 归档列表 -->
     <div class="glass-card p-4 space-y-3">
-      <h3 class="font-semibold pb-2" style="border-bottom: 1px solid var(--glass-border-subtle)">分析结果/ 归档</h3>
-      <div v-if="loading" class="text-sm py-4" style="color: var(--text-tertiary)">加载中…</div>
-      <div v-else-if="archives.length === 0" class="text-sm py-4" style="color: var(--text-tertiary)">暂无归档。</div>
+      <h3 class="font-semibold pb-2" style="border-bottom: 1px solid var(--win-stroke)">分析结果/ 归档</h3>
+      <div v-if="loading" class="text-sm py-4" style="color: var(--win-text-disabled)">加载中…</div>
+      <div v-else-if="archives.length === 0" class="text-sm py-4" style="color: var(--win-text-disabled)">暂无归档。</div>
       <div v-else class="space-y-1">
         <div
           v-for="a in archives"
           :key="a.name"
           class="flex items-center justify-between py-2 px-2 rounded"
-          style="border-bottom: 1px solid var(--glass-border-subtle)"
+          style="border-bottom: 1px solid var(--win-stroke)"
         >
           <div class="min-w-0">
             <div class="truncate font-medium">{{ a.name }}</div>
-            <div class="text-xs" style="color: var(--color-system-gray)">
+            <div class="text-xs" style="color: var(--win-text-secondary)">
               {{ fmtSize(a.size) }} · 修改于 {{ fmtTime(a.modified) }}
             </div>
           </div>
@@ -171,3 +171,15 @@ onMounted(load)
     />
   </div>
 </template>
+
+<style scoped>
+.ws-row {
+  min-height: 40px;
+  border-radius: var(--win-radius-control);
+  padding: 6px 8px;
+  transition: background var(--win-duration-fast) var(--win-ease);
+}
+.ws-row:hover {
+  background: var(--win-control-hover);
+}
+</style>

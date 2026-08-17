@@ -665,6 +665,15 @@ class AnalysisService:
             self._token_stats[cat]["output_tokens"] += payload.get("output_tokens", 0) or 0
             await hub.publish({"type": "token_stats", "payload": payload})
 
+        # token 落盘基线快照（2026-08-17）：本书开始前的累计值，finally 中做差得本书消耗
+        stats_baseline = {
+            "chapter_stats_len": len(self._chapter_stats),
+            "categories": {k: dict(v) for k, v in self._token_stats.items()},
+            "cached": self._total_cached_tokens,
+            "retries": self._total_retries,
+            "failed_tokens": self._total_failed_tokens,
+        }
+
         self._pipeline = AnalysisPipeline(
             config=config,
             directory=item.blocks_dir,
@@ -710,10 +719,41 @@ class AnalysisService:
                     except Exception:
                         pass
             self._pipeline = None
+            self._persist_book_token_stats(item, stats_baseline)
 
         # 完成后自动归档（可选）
         if item.status == "done" and self.config_manager.config.analysis.auto_archive:
             await asyncio.to_thread(self._archive_item, item)
+
+    def _persist_book_token_stats(self, item: QueueItem, baseline: Dict[str, Any]) -> None:
+        """本书分析 token 消耗落盘 output/token_stats.json（重启后可查历史成本）。
+        失败仅记日志，不影响主流程。"""
+        try:
+            from ..utils.json_utils import safe_save_json
+            output_dir = item.workspace_dir / "output"
+            if not output_dir.exists():
+                return
+            categories = {}
+            for cat, v in self._token_stats.items():
+                before = baseline["categories"].get(cat, {"input_tokens": 0, "output_tokens": 0})
+                categories[cat] = {
+                    "input_tokens": v["input_tokens"] - before["input_tokens"],
+                    "output_tokens": v["output_tokens"] - before["output_tokens"],
+                }
+            payload = {
+                "type": "analysis",
+                "book_id": item.name,
+                "finished_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "elapsed": (item.end_time or time.time()) - (item.start_time or time.time()),
+                "categories": categories,
+                "total_retries": self._total_retries - baseline["retries"],
+                "total_failed_tokens": self._total_failed_tokens - baseline["failed_tokens"],
+                "cached_tokens": self._total_cached_tokens - baseline["cached"],
+                "chapter_stats": self._chapter_stats[baseline["chapter_stats_len"]:],
+            }
+            safe_save_json(payload, output_dir / "token_stats.json")
+        except Exception as e:
+            logger.warning(f"《{item.name}》token 统计落盘失败: {e}")
 
     def _archive_item(self, item: QueueItem) -> None:
         """归档整个小说目录到 base_dir/分析结果/（失败仅标记，不影响主流程）"""

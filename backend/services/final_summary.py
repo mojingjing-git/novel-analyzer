@@ -21,6 +21,7 @@ from backend.config.constants import (
     FORESHADOW_CATEGORY_FALLBACK,
     FORESHADOW_CATEGORY_SCHEMA_VERSION,
     FORESHADOW_TYPE_MAP_FILE,
+    RECHECK_FULLTEXT_BUDGET_CHARS,
 )
 from backend.core.llm_client import LLMClient
 from backend.core.style_analyzer import extract_style_profile
@@ -1205,8 +1206,45 @@ class FinalSummaryRunner:
             # last_seen 语义 = 伏笔最后出现的真实章节，只由 catalog 证据章维护；
             # "本批未回收"只说明伏笔存活，不说明它出现了。
 
+    def _plan_recheck_batches(self, recheck_items: list, full_text: str,
+                              volume_summaries: List[str],
+                              volume_ranges: List[Tuple[int, int]] = None) -> List[Tuple[list, str]]:
+        """规划复检上下文：返回 [(伏笔子集, 该子集使用的卷摘要文本)]。
+        未超预算 → [(全部, 全文)]（2026-08-07 决策的原行为，KV cache 友好）；
+        超预算 → 按 first_seen 升序切 ≤3 个连续组，每组砍掉"ch_end < 组内最早埋设章"的卷
+        （召回无损：回收必发生在埋设之后）；砍后仍超预算的组丢弃并记 error，不调用 LLM。"""
+        budget = RECHECK_FULLTEXT_BUDGET_CHARS
+        if len(full_text) <= budget:
+            return [(recheck_items, full_text)]
+        if not volume_ranges:
+            logger.error(f"复检卷摘要超预算（{len(full_text)}>{budget}）且无卷章范围信息，跳过全书复检")
+            return []
+        sorted_items = sorted(recheck_items, key=lambda c: c.get("first_seen", 0))
+        n = len(sorted_items)
+        per = (n + 2) // 3  # ≤3 组，保住组间卷摘要前缀一致（KV cache）
+        plans: List[Tuple[list, str]] = []
+        for gstart in range(0, n, per):
+            group = sorted_items[gstart:gstart + per]
+            min_first = min(c.get("first_seen", 0) for c in group)
+            kept = [i for i, (_cs, ce) in enumerate(volume_ranges) if ce >= min_first]
+            group_text = "\n\n".join(volume_summaries[i] for i in kept)
+            if len(group_text) > budget:
+                logger.error(f"复检组（{len(group)}个伏笔，最早埋设第{min_first}章）砍卷后仍超预算"
+                             f"（{len(group_text)}>{budget}），跳过该组")
+                self._emit_progress({"type": "status",
+                                     "message": f"⚠️ 复检：{len(group)}个伏笔因上下文超限跳过"})
+                continue
+            dropped = len(volume_ranges) - len(kept)
+            if dropped:
+                logger.info(f"复检上下文超限降级：组内最早埋设第{min_first}章，砍掉埋设前 {dropped} 卷（召回无损）")
+                self._emit_progress({"type": "status",
+                                     "message": f"复检卷摘要超限，按埋设章砍掉 {dropped} 卷（不影响召回）"})
+            plans.append((group, group_text))
+        return plans
+
     async def _run_global_foreshadow_recheck(self, volume_summaries: List[str],
-                                             foreshadow_catalog: list = None) -> None:
+                                             foreshadow_catalog: list = None,
+                                             volume_ranges: List[Tuple[int, int]] = None) -> None:
         """全书伏笔复检：对仍 active 的伏笔做一次全书范围的集中复检"""
         active_ids = {i.id for i in self.ledger.items if i.status == 'active'}
         if not active_ids:
@@ -1233,29 +1271,35 @@ class FinalSummaryRunner:
             "message": f"[阶段2/4] 全书伏笔复检（{len(recheck_items)}个活跃伏笔）..."
         })
         full_text = "\n\n".join(volume_summaries)
-        recheck_batch_size = 40
+        recheck_batch_size = max(1, int(self.config.analysis.foreshadow_recheck_batch_size or 40))
         total_rechecked = 0
 
-        # 复检上下文策略（2026-08-07 用户决策）：维持原逻辑——每个子批都携带
-        # 全量卷摘要，不做任何裁剪。理由：① 回收事件可能发生在伏笔任何后续章节，
-        # 裁剪必然伴随召回损失（大跨度伏笔尤甚）；② 跨子批的卷摘要前缀相同，
-        # 支持 KV cache 的厂商（MiniMax）只有第一份全文付全价，后续子批只付增量，
-        # 裁剪省下的输入 token 远不及一次漏判的代价。
+        # 复检上下文策略（2026-08-07 用户决策）：默认维持原逻辑——每个子批携带
+        # 全量卷摘要，不做任何裁剪（KV cache 厂商只有第一份全文付全价）。
+        # 2026-08-17 补充：仅当全量卷摘要超 RECHECK_FULLTEXT_BUDGET_CHARS 时，
+        # 由 _plan_recheck_batches 按埋设章砍"埋设前的卷"（召回无损）或整组跳过，
+        # 防止超模型上下文走完整重试链烧钱。
 
         # 准备所有复检子批次
         recheck_batches = []
-        for batch_start in range(0, len(recheck_items), recheck_batch_size):
-            batch_items = recheck_items[batch_start:batch_start + recheck_batch_size]
-            lines = []
-            for i, item in enumerate(batch_items, 1):
-                chapters_str = ",".join(str(c) for c in item.get("evidence_chapters", [])[:5])
-                lines.append(f'{i}. id="{item["id"]}"  描述: {item["clue"]}')
-                lines.append(f"   首次出现: 第{item.get('first_seen', 0)}章  最近出现: 第{item.get('last_seen', 0)}章  证据: [{chapters_str}]")
-            recheck_prompt = GLOBAL_RECHECK_USER_TEMPLATE.format(
-                book_name=self.book_name, volume_summaries=full_text,
-                active_foreshadows_block='\n'.join(lines)
-            )
-            recheck_batches.append((batch_items, recheck_prompt))
+        for plan_items, plan_text in self._plan_recheck_batches(
+                recheck_items, full_text, volume_summaries, volume_ranges):
+            for batch_start in range(0, len(plan_items), recheck_batch_size):
+                batch_items = plan_items[batch_start:batch_start + recheck_batch_size]
+                lines = []
+                for i, item in enumerate(batch_items, 1):
+                    chapters_str = ",".join(str(c) for c in item.get("evidence_chapters", [])[:5])
+                    lines.append(f'{i}. id="{item["id"]}"  描述: {item["clue"]}')
+                    lines.append(f"   首次出现: 第{item.get('first_seen', 0)}章  最近出现: 第{item.get('last_seen', 0)}章  证据: [{chapters_str}]")
+                recheck_prompt = GLOBAL_RECHECK_USER_TEMPLATE.format(
+                    book_name=self.book_name, volume_summaries=plan_text,
+                    active_foreshadows_block='\n'.join(lines)
+                )
+                recheck_batches.append((batch_items, recheck_prompt))
+
+        if not recheck_batches:
+            logger.warning("复检计划为空（全部超预算跳过），结束全书复检")
+            return
 
         semaphore = asyncio.Semaphore(min(self.concurrency, len(recheck_batches)))
 
@@ -1457,13 +1501,15 @@ class FinalSummaryRunner:
 
         # 按 batch_idx 排序，恢复顺序
         volume_summaries = []
+        volume_ranges: List[Tuple[int, int]] = []
         for idx, ch_start, ch_end, _ in batch_tasks:
             text = volume_results.get(idx, "")
             if text:
                 volume_summaries.append(f"=== 第{ch_start}-{ch_end}章 ===\n{text}")
+                volume_ranges.append((ch_start, ch_end))
 
         # 全书伏笔复检
-        await self._run_global_foreshadow_recheck(volume_summaries, foreshadow_catalog)
+        await self._run_global_foreshadow_recheck(volume_summaries, foreshadow_catalog, volume_ranges)
         if self._stop_requested:
             # 复检可能已回收伏笔，保存账本保留进度后退出
             self.ledger.save(self.ledger_path)

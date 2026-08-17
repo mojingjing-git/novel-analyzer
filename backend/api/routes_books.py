@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 from pathlib import Path
+from typing import Dict, Any
 
 from fastapi import APIRouter, HTTPException
 
@@ -111,6 +112,23 @@ async def get_book_ledger(book_id: str) -> dict:
     except Exception as e:
         logger.error(f"读取账本失败: {e}")
         raise HTTPException(status_code=500, detail="账本读取失败")
+
+
+@router.get("/{book_id}/token_stats")
+async def get_book_token_stats(book_id: str) -> dict:
+    """读取该书落盘的 token 统计（分析 token_stats.json + 总结 summary_token_stats.json）"""
+    output_dir = book_service.get_output_dir(book_id)
+    if output_dir is None:
+        raise HTTPException(status_code=404, detail=f"书目不存在: {book_id}")
+    result: Dict[str, Any] = {"book_id": book_id}
+    for key, name in (("analysis", "token_stats.json"), ("summary", "summary_token_stats.json")):
+        path = output_dir / name
+        if path.exists():
+            try:
+                result[key] = json.loads(path.read_text(encoding="utf-8"))
+            except Exception as e:
+                logger.warning(f"读取 {name} 失败: {e}")
+    return result
 
 
 @router.get("/{book_id}/characters")

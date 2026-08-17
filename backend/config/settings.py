@@ -45,6 +45,7 @@ from .constants import (
     DEFAULT_FORESHADOW_MIN_CONFIDENCE,
     DEFAULT_MAX_FORESHADOW_CATALOG_HIGH,
     DEFAULT_MAX_FORESHADOW_CATALOG_MID,
+    DEFAULT_FORESHADOW_RECHECK_BATCH_SIZE,
 )
 
 
@@ -116,6 +117,7 @@ class AnalysisConfig:
     auto_summary: bool = False        # 队列全部书分析完成后，逐本自动执行最终总结
     summary_concurrency: int = 2      # 最终总结并发数（默认 2，避免高并发触发 API 超时）
     summary_batch_size: int = 30      # 最终总结每批章节数
+    foreshadow_recheck_batch_size: int = DEFAULT_FORESHADOW_RECHECK_BATCH_SIZE  # 全书伏笔复检批大小；调大减少调用次数（省 cache 命中价前缀），单批过大可能稀释注意力
     # 内容审核拦截处理：识别为审核拦截的章节重试1次后跳过并标记（不进失败集、不补跑）
     skip_moderation_blocked: bool = True
     # 知识库限制

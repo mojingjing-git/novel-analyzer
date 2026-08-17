@@ -14,6 +14,7 @@ pywebview 桌面入口
 - 任何路径相关操作都用绝对路径
 """
 
+import json
 import logging
 import os
 import socket
@@ -133,6 +134,49 @@ def _find_free_port() -> int:
     return port
 
 
+LOCK_FILE = PROJECT_ROOT / "app.lock"
+
+
+def _read_lock() -> dict:
+    try:
+        return json.loads(LOCK_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _instance_alive(lock: dict) -> bool:
+    """以锁中端口做健康检查判定活实例（比 PID 存活检测跨平台可靠）"""
+    port = lock.get("port")
+    if not port:
+        return False
+    try:
+        urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health", timeout=2)
+        return True
+    except Exception:
+        return False
+
+
+def _tasks_running(port: int) -> bool:
+    """分析或总结任一在运行即返回 True；查询失败（后端已挂）视为未运行，放行关闭"""
+    for url in (f"http://127.0.0.1:{port}/api/analysis/status",
+                f"http://127.0.0.1:{port}/api/summary/status"):
+        try:
+            with urllib.request.urlopen(url, timeout=2) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            if data.get("running"):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _confirm_exit(window) -> bool:
+    """弹原生确认框；返回 True=允许退出"""
+    return bool(window.create_confirmation_dialog(
+        "确认退出",
+        "分析或总结任务正在进行中。\n已完成的进度已落盘，下次启动可断点续跑。\n确定要退出吗？"))
+
+
 def _start_server(port: int):
     import uvicorn
     # 压低访问日志：仅输出应用本身的 logger（LLM 调用、token、流程等），隐藏高频 GET 请求
@@ -182,6 +226,9 @@ def _wait_for_server(port: int, timeout: int = 30) -> bool:
 class Api:
     """暴露给前端的 pywebview JS API（window.pywebview.api）"""
 
+    def __init__(self, port: int):
+        self._port = port
+
     def pick_files(self):
         """
         打开系统文件对话框选择 txt 小说，返回文件路径列表。
@@ -197,9 +244,69 @@ class Api:
             file_types=("TXT 文件 (*.txt)",),
         )
 
+    def minimize(self):
+        """最小化窗口（标题栏按钮）"""
+        import webview
+        try:
+            webview.windows[0].minimize()
+        except Exception:
+            pass
+
+    def toggle_maximize(self):
+        """最大化 / 还原窗口（标题栏按钮）"""
+        import webview
+        try:
+            win = webview.windows[0]
+            if getattr(win, "maximized", False):
+                win.restore()
+            else:
+                win.maximize()
+        except Exception:
+            pass
+
+    def close(self):
+        """关闭窗口（标题栏按钮）：任务运行中先弹确认"""
+        import webview
+        try:
+            win = webview.windows[0]
+            if _tasks_running(self._port) and not _confirm_exit(win):
+                return
+            win.destroy()
+        except Exception:
+            pass
+
+    def move(self, dx, dy):
+        """按增量移动窗口（标题栏拖拽）"""
+        import webview
+        try:
+            win = webview.windows[0]
+            win.move(int(win.x + dx), int(win.y + dy))
+        except Exception:
+            pass
+
 
 def main():
     _install_crash_diagnostics()
+
+    # 单实例保护（2026-08-17）：活实例健康检查通过则提示并退出；
+    # 锁文件存在但健康检查失败 = 上次崩溃残留，接管之。
+    # 已知竞态：两个实例同时启动且都未写锁时会双双通过（概率极低，可接受）。
+    if LOCK_FILE.exists():
+        old_lock = _read_lock()
+        if _instance_alive(old_lock):
+            logger.warning("检测到已有实例在运行，本实例退出")
+            try:
+                import ctypes
+                ctypes.windll.user32.MessageBoxW(
+                    0, "小说智能分析器已在运行中。\n如确认无实例运行，请删除项目根目录的 app.lock 后重试。",
+                    "已在运行", 0x40)
+            except Exception:
+                print("小说智能分析器已在运行中")
+            sys.exit(0)
+        try:
+            LOCK_FILE.unlink()
+        except OSError:
+            pass
 
     port = _find_free_port()
     logger.info(f"启动后端服务: http://127.0.0.1:{port}")
@@ -215,6 +322,14 @@ def main():
         sys.exit(1)
     logger.info("后端已就绪")
 
+    try:
+        LOCK_FILE.write_text(
+            json.dumps({"pid": os.getpid(), "port": port, "started_at": time.time()},
+                       ensure_ascii=False),
+            encoding="utf-8")
+    except OSError as e:
+        logger.warning(f"写入单实例锁失败（不影响启动）: {e}")
+
     # 打开原生窗口
     try:
         import webview
@@ -224,29 +339,44 @@ def main():
 
     window = webview.create_window(
         "小说智能分析器",
-        f"http://127.0.0.1:{port}",
+        f"http://127.0.0.1:{port}/?v={int(time.time())}",
         width=1600,
         height=900,
         min_size=(960, 700),
         text_select=True,
-        js_api=Api(),
+        js_api=Api(port),
     )
 
     # 记录窗口关闭 / 前端加载异常，便于区分「用户主动关」还是「渲染进程崩溃」
     def _on_closed():
         logger.warning("窗口已关闭（可能是用户主动关闭，也可能是渲染进程崩溃）")
 
+    def _on_closing():
+        """OS 关窗（Alt+F4/任务栏关闭）拦截：任务运行中需确认，返回 False 否决关闭"""
+        try:
+            if _tasks_running(port):
+                if not _confirm_exit(window):
+                    return False
+        except Exception as e:
+            logger.error(f"关闭确认检查异常，放行关闭: {e}")
+        return True
+
     def _on_load_exc(e):
         logger.error(f"前端页面加载异常: {e}")
 
     try:
+        window.events.closing += _on_closing
         window.events.closed += _on_closed
         window.events.load_exception += _on_load_exc
     except Exception as e:
         logger.debug(f"注册窗口事件回调失败（pywebview 版本旧？）: {e}")
 
     webview.start()
-    # 窗口关闭后退出
+    # 窗口关闭后清理锁并退出
+    try:
+        LOCK_FILE.unlink()
+    except OSError:
+        pass
     os._exit(0)
 
 

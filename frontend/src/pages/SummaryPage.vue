@@ -219,6 +219,21 @@ const elapsedText = computed(() => {
   return `${Math.floor(secs / 60)}分${secs % 60}秒`
 })
 
+const SUMMARY_TOKEN_LABELS: Record<string, string> = {
+  summary: '分卷摘要', reconciliation: '伏笔调和', recheck: '全书复检', style: '风格分析', final: '最终报告',
+}
+const summaryTokenText = computed(() => {
+  const stats = summaryStatus.value?.token_stats
+  if (!stats) return ''
+  const parts = Object.entries(SUMMARY_TOKEN_LABELS)
+    .map(([k, label]) => {
+      const v = stats[k]
+      return v && (v.input_tokens || v.output_tokens) ? `${label} 入${v.input_tokens} 出${v.output_tokens}` : ''
+    })
+    .filter(Boolean)
+  return parts.length ? `本次总结 token：${parts.join(' · ')}` : ''
+})
+
 const showProgress = computed(() => {
   const s = summaryStatus.value
   if (!s) return false
@@ -256,7 +271,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 </script>
 
 <template>
-  <div class="space-y-6 p-4">
+  <div class="space-y-6">
     <div>
       <h2 class="section-title">聚合与总结</h2>
       <p class="section-subtitle">最终总结生成全书报告，数据聚合生成结构化结果（可二选一使用）</p>
@@ -266,36 +281,36 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 
     <!-- 区块一：最终总结（更常用，置顶） -->
     <section class="glass-card p-4 space-y-3">
-      <h3 class="font-semibold pb-2" style="border-bottom: 1px solid var(--glass-border-subtle); letter-spacing: -0.01em">最终总结</h3>
+      <h3 class="font-semibold pb-2" style="border-bottom: 1px solid var(--win-stroke); letter-spacing: -0.01em">最终总结</h3>
       <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
         <div class="flex items-center gap-2">
-          <label class="text-sm shrink-0" style="color: var(--color-system-gray)">起始章:</label>
+          <label class="text-sm shrink-0" style="color: var(--win-text-secondary)">起始章:</label>
           <input v-model.number="startCh" type="number" min="1" class="glass-input flex-1" />
         </div>
         <div class="flex items-center gap-2">
-          <label class="text-sm shrink-0" style="color: var(--color-system-gray)">结束章:</label>
+          <label class="text-sm shrink-0" style="color: var(--win-text-secondary)">结束章:</label>
           <input v-model.number="endCh" type="number" min="1" class="glass-input flex-1" />
         </div>
         <div class="flex items-center gap-2">
-          <label class="text-sm shrink-0" style="color: var(--color-system-gray)">批次大小:</label>
+          <label class="text-sm shrink-0" style="color: var(--win-text-secondary)">批次大小:</label>
           <input v-model.number="batchSize" type="number" min="5" class="glass-input flex-1" />
         </div>
         <div class="flex items-center gap-2">
-          <label class="text-sm shrink-0" style="color: var(--color-system-gray)">并发数:</label>
+          <label class="text-sm shrink-0" style="color: var(--win-text-secondary)">并发数:</label>
           <input v-model.number="concurrency" type="number" min="1" max="20" class="glass-input flex-1" />
         </div>
       </div>
 
       <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
         <div class="flex items-center gap-2">
-          <label class="text-sm shrink-0" style="color: var(--color-system-gray)" title="最终总结专用模型，复用同一 base_url/api_key；空=跟随全局模型（重型任务可切 MiniMax-M3 等）">总结模型:</label>
+          <label class="text-sm shrink-0" style="color: var(--win-text-secondary)" title="最终总结专用模型，复用同一 base_url/api_key；空=跟随全局模型（重型任务可切 MiniMax-M3 等）">总结模型:</label>
           <select v-model="summaryModel" class="glass-input flex-1">
             <option value="">跟随全局设置</option>
             <option v-for="m in modelOptions" :key="m" :value="m">{{ m }}</option>
           </select>
         </div>
         <div class="flex items-center gap-2">
-          <label class="text-sm shrink-0" style="color: var(--color-system-gray)" title="总结专用思考控制，空=跟随全局；M3/mimo/GLM 用 thinking 参数，DeepSeek/Qwen 用 enable_thinking（M2.x 关不掉思考）">思考模式:</label>
+          <label class="text-sm shrink-0" style="color: var(--win-text-secondary)" title="总结专用思考控制，空=跟随全局；M3/mimo/GLM 用 thinking 参数，DeepSeek/Qwen 用 enable_thinking（M2.x 关不掉思考）">思考模式:</label>
           <select v-model="summaryThinking" class="glass-input flex-1">
             <option v-for="o in THINKING_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
           </select>
@@ -338,12 +353,14 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
         </p>
       </div>
 
+      <div v-if="summaryTokenText" class="text-xs" style="color: var(--win-text-secondary)">{{ summaryTokenText }}</div>
+
       <!-- 总结日志抽屉：阶段提示 + 技术明细（category=summary），报告区上方 -->
       <div class="glass-card">
         <div class="flex items-center gap-2 px-3 py-2 cursor-pointer select-none" @click="drawerOpen = !drawerOpen">
           <Icon name="arrow_down" :size="13" :style="{ transform: drawerOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }" />
-          <span class="text-sm font-medium" style="color: var(--text-primary)">总结日志</span>
-          <span class="text-xs" style="color: var(--text-tertiary)">{{ summaryLogs.length }} 条</span>
+          <span class="text-sm font-medium" style="color: var(--win-text-primary)">总结日志</span>
+          <span class="text-xs" style="color: var(--win-text-disabled)">{{ summaryLogs.length }} 条</span>
           <span class="flex-1"></span>
           <button
             v-if="summaryLogs.length"
@@ -358,14 +375,14 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
       </div>
 
       <div v-if="report" class="glass-card p-5 md-content" v-html="reportHtml"></div>
-      <div v-if="!report" class="text-center py-8 text-sm" style="color: var(--text-tertiary)">
+      <div v-if="!report" class="text-center py-8 text-sm" style="color: var(--win-text-disabled)">
         尚未加载报告。点击「加载报告」查看 final_summary_report.md
       </div>
     </section>
 
     <!-- 区块二：数据聚合 -->
     <section class="glass-card p-4 space-y-3">
-      <h3 class="font-semibold pb-2" style="border-bottom: 1px solid var(--glass-border-subtle); letter-spacing: -0.01em">数据聚合</h3>
+      <h3 class="font-semibold pb-2" style="border-bottom: 1px solid var(--win-stroke); letter-spacing: -0.01em">数据聚合</h3>
       <div class="flex gap-2 flex-wrap">
         <button @click="runAggregate" :disabled="aggBusy || !bookId" class="glass-button glass-button-primary">开始聚合</button>
         <button @click="loadAggFiles" :disabled="!bookId" class="glass-button">刷新文件</button>
@@ -388,12 +405,9 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   flex-direction: column;
   gap: 12px;
   padding: 14px 16px;
-  border-radius: 14px;
-  background: var(--glass-frost);
-  border: 1px solid var(--glass-rim-color);
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
-  box-shadow: var(--glass-inner);
+  border-radius: var(--win-radius-container);
+  background: var(--win-layer);
+  border: 1px solid var(--win-stroke);
 }
 
 .step-row {
@@ -405,26 +419,28 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  padding: 8px 6px;
-  border-radius: 10px;
+  gap: 8px;
+  height: 40px;
+  padding: 0 8px;
+  border-radius: var(--win-radius-control);
   font-size: 12px;
-  border: 1px solid var(--glass-rim-color);
-  background: var(--glass-fill-subtle);
-  color: var(--text-tertiary);
-  transition: all 0.3s ease;
+  border: 1px solid var(--win-stroke);
+  background: var(--win-control-alt);
+  color: var(--win-text-disabled);
+  transition: background var(--win-duration-fast) var(--win-ease), border-color var(--win-duration-fast) var(--win-ease), color var(--win-duration-fast) var(--win-ease);
 }
 .step-dot {
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   border-radius: 50%;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   font-size: 11px;
+  font-weight: 600;
   flex-shrink: 0;
-  background: var(--glass-fill-subtle);
-  color: var(--text-secondary);
+  background: var(--win-control-hover);
+  color: var(--win-text-secondary);
 }
 .step-label {
   white-space: nowrap;
@@ -432,35 +448,35 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   text-overflow: ellipsis;
 }
 .step.active {
-  background: rgba(10, 132, 255, 0.12);
-  border-color: var(--color-system-blue);
-  color: var(--text-primary);
+  background: var(--win-accent-soft);
+  border-color: var(--win-accent);
+  color: var(--win-text-primary);
 }
 .step.active .step-dot {
-  background: var(--color-system-blue);
+  background: var(--win-accent);
   color: #fff;
 }
 .step.done {
-  color: var(--color-system-green);
-  border-color: rgba(48, 209, 88, 0.5);
+  background: var(--win-success-bg);
+  border-color: var(--win-success);
+  color: var(--win-success);
 }
 .step.done .step-dot {
-  background: var(--color-system-green);
+  background: var(--win-success);
   color: #fff;
 }
 
 .bar {
-  height: 8px;
-  border-radius: 999px;
-  background: var(--glass-fill-subtle);
+  height: 4px;
+  border-radius: var(--win-radius-pill);
+  background: var(--win-control-alt);
   overflow: hidden;
 }
 .bar-fill {
   height: 100%;
-  border-radius: 999px;
-  background: linear-gradient(90deg, var(--color-system-blue), #5ac8fa);
-  box-shadow: 0 0 8px rgba(0, 122, 255, 0.4);
-  transition: width 0.45s ease;
+  border-radius: var(--win-radius-pill);
+  background: var(--win-accent);
+  transition: width 0.45s var(--win-ease);
 }
 
 .progress-meta {
@@ -469,31 +485,31 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   gap: 12px;
   flex-wrap: wrap;
   font-size: 12px;
-  color: var(--text-secondary);
+  color: var(--win-text-secondary);
 }
 .pm-phase {
   font-weight: 600;
-  color: var(--text-primary);
+  color: var(--win-text-primary);
 }
 .pm-sub {
-  color: var(--color-system-gray);
+  color: var(--win-text-secondary);
 }
 .pm-ok {
-  color: var(--color-system-green);
+  color: var(--win-success);
 }
 .pm-warn {
-  color: var(--color-system-red);
+  color: var(--win-danger);
 }
 .pm-time {
   margin-left: auto;
-  color: var(--text-tertiary);
+  color: var(--win-text-disabled);
 }
 .pm-error {
   font-size: 12px;
-  color: var(--color-system-red);
+  color: var(--win-danger);
 }
 .pm-done-note {
   font-size: 12px;
-  color: var(--color-system-gray);
+  color: var(--win-text-secondary);
 }
 </style>

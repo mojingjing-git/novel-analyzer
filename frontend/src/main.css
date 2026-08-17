@@ -1,153 +1,181 @@
 @import "tailwindcss";
 
-/* ============================================
-   iOS 26 液态玻璃设计系统（v3 - Liquid Glass）
-   设计原则：内容优先 / 光学级镜面高光 / 层级叠加 / 活材质
-   v2 → v3 升级要点：
-   - 镜面边缘环（specular edge ring）：模拟玻璃棱的受光反射，
-     取代旧版静态 1px rim —— 液态玻璃最核心的光学特征
-   - Regular / Clear 双材质变体（.glass-* 系 vs .glass-clear）
-   - backdrop 折射感增强（blur + saturate + brightness 组合）
-   - 按钮镜面扫光、主按钮纵向受光渐变
-   - 背景极光层缓慢漂移（prefers-reduced-motion 时关闭）
-   ============================================ */
+/* ============================================================
+   Windows 11 Fluent Design 设计系统
+   原则：中性克制 / 强调色 ≤5% / 真实元素动画（WebView2 禁用背景模糊）
+   ============================================================ */
 
+/* Tailwind 主题 token：系统色 → Win11 功能色（utility 类仍可用） */
 @theme {
-  /* iOS 系统色（克制使用，主要靠底层透射） */
-  --color-system-blue: #007AFF;
-  --color-system-green: #34C759;
-  --color-system-red: #FF3B30;
-  --color-system-orange: #FF9500;
-  --color-system-purple: #AF52DE;
-  --color-system-teal: #30B0C7;
-  --color-system-amber: #D9A23A;
-  --color-system-gray: #8E8E93;
-  --color-text-primary: #1c1c1e;
-  --color-text-secondary: rgba(60, 60, 67, 0.6);
+  --color-system-blue: var(--win-accent);
+  --color-system-green: var(--win-success);
+  --color-system-red: var(--win-danger);
+  --color-system-orange: var(--win-warning);
+  --color-system-purple: var(--win-accent);
+  --color-system-teal: var(--win-info);
+  --color-system-amber: var(--win-warning);
+  --color-system-gray: var(--win-text-secondary);
+  --color-text-primary: var(--win-text-primary);
+  --color-text-secondary: var(--win-text-secondary);
+  --color-text-tertiary: var(--win-text-disabled);
 
-  /* 大圆角统一规格（连续大圆角） */
-  --radius-glass-md: 16px;
-  --radius-glass-lg: 22px;
-  --radius-glass-xl: 28px;
-  --radius-glass-pill: 999px;
-  --radius-ios-md: 14px;
-
-  /* 流体缓动（iOS 风格阻尼） */
-  --ease-fluid: cubic-bezier(0.2, 0, 0.2, 1);
-  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  /* 兼容旧类名：rounded-ios-md → Win11 控件圆角 */
+  --radius-ios-md: var(--win-radius-control);
+  --radius-glass-md: var(--win-radius-control);
+  --radius-glass-lg: var(--win-radius-container);
+  --radius-glass-xl: var(--win-radius-container);
 }
 
-/* ============================================
-   基础布局与背景（基色 + 极光层分离）
-   ============================================ */
+/* ============================================================
+   1. 设计 Token
+   ============================================================ */
 
 :root {
   color-scheme: light;
-  /* 基色：极低饱和度柔和底 */
-  --bg-base: linear-gradient(135deg, #edf0f6 0%, #f5f3fa 50%, #edf2f9 100%);
-  /* 极光层：独立到 body::before，缓慢漂移产生"活"的背景 */
-  --bg-aurora:
-    radial-gradient(at 18% 12%, rgba(168, 194, 246, 0.55), transparent 55%),
-    radial-gradient(at 82% 8%, rgba(226, 204, 246, 0.5), transparent 55%),
-    radial-gradient(at 50% 92%, rgba(184, 214, 246, 0.45), transparent 55%);
-  /* 兼容旧引用 */
-  --bg-page: var(--bg-aurora), var(--bg-base);
 
-  /* 玻璃基底 - 浅色（清澈模式） */
-  --glass-clear: rgba(255, 255, 255, 0.16);
-  --glass-frost: rgba(255, 255, 255, 0.38);
-  --glass-blur: blur(20px) saturate(180%) brightness(1.03);
-  --glass-blur-deep: blur(28px) saturate(190%) brightness(1.04);
+  /* 背景 / 图层 */
+  --win-bg-base: #F3F3F3;            /* 窗口基底，模拟 Mica */
+  --win-layer: #FFFFFF;              /* 内容层/卡片 */
+  --win-control-alt: #F9F9F9;        /* 控件默认背景 */
+  --win-control-hover: #F0F0F0;      /* 控件悬停 */
+  --win-control-pressed: #E9E9E9;    /* 控件按下 */
+  --win-stroke: #E5E5E5;             /* 分割线/边框 */
+  --win-stroke-strong: #D0D0D0;      /* 更强边框 */
 
-  /* 镜面边缘环 —— 顶部偏左最亮（主光源），底部微弱回光 */
-  --glass-edge: linear-gradient(
-    155deg,
-    rgba(255, 255, 255, 0.75) 0%,
-    rgba(255, 255, 255, 0.32) 16%,
-    rgba(255, 255, 255, 0.08) 38%,
-    rgba(255, 255, 255, 0.02) 55%,
-    rgba(255, 255, 255, 0.14) 82%,
-    rgba(255, 255, 255, 0.32) 100%
-  );
-  /* 兼容旧引用 */
-  --glass-rim: linear-gradient(180deg, rgba(255, 255, 255, 0.5) 0%, rgba(255, 255, 255, 0.05) 50%);
-  --glass-rim-color: rgba(255, 255, 255, 0.35);
+  /* 强调色 */
+  --win-accent: #0067C0;
+  --win-accent-hover: #005A9E;
+  --win-accent-pressed: #004E8C;
+  --win-accent-soft: rgba(0, 103, 192, 0.08);
 
-  /* 顶部光泽带（玻璃受光面，大容器用） */
-  --glass-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.26) 0%, rgba(255, 255, 255, 0.04) 45%, transparent 62%);
+  /* 文本 */
+  --win-text-primary: rgba(0, 0, 0, 1);
+  --win-text-secondary: rgba(0, 0, 0, 0.6);
+  --win-text-disabled: rgba(0, 0, 0, 0.36);
 
-  /* 弥散阴影 - 低透明度大范围，制造"浮起"的层级 */
-  --glass-shadow: 0 12px 40px rgba(20, 30, 60, 0.08), 0 2px 8px rgba(20, 30, 60, 0.05);
-  --glass-shadow-hover: 0 18px 56px rgba(20, 30, 60, 0.12), 0 4px 12px rgba(20, 30, 60, 0.06);
-  /* 内发光：顶部受光 + 整体厚度感 */
-  --glass-inner:
-    inset 0 1px 0 rgba(255, 255, 255, 0.5),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.03),
-    inset 0 12px 28px -14px rgba(255, 255, 255, 0.55);
+  /* 功能色 */
+  --win-success: #0F7B0F;
+  --win-success-bg: rgba(15, 123, 15, 0.08);
+  --win-danger: #C42B1C;
+  --win-danger-bg: rgba(196, 43, 28, 0.08);
+  --win-warning: #9D5D00;
+  --win-warning-bg: rgba(157, 93, 0, 0.08);
+  --win-info: #0067C0;
+  --win-info-bg: rgba(0, 103, 192, 0.08);
 
-  --text-primary: #1c1c1e;
-  --text-secondary: rgba(60, 60, 67, 0.6);
-  --text-tertiary: rgba(60, 60, 67, 0.3);
-  --divider: rgba(60, 60, 67, 0.1);
-  /* 区块标题底部分隔线（浅色下用极淡灰） */
-  --glass-border-subtle: rgba(60, 60, 67, 0.12);
-  /* 次级填充 / 强填充 / 强边框（分段控件、开关、卷分组底色） */
-  --glass-fill-subtle: rgba(120, 120, 128, 0.12);
-  --glass-fill-strong: rgba(255, 255, 255, 0.7);
-  --glass-border-strong: rgba(60, 60, 67, 0.3);
+  /* 圆角 */
+  --win-radius-control: 4px;
+  --win-radius-container: 8px;
+  --win-radius-overlay: 8px;
+  --win-radius-pill: 999px;
 
-  /* 可视化连线（关系图 / 地图的中性边） */
-  --viz-edge: rgba(110, 120, 145, 0.45);
+  /* 阴影（Win11：低透明度大范围弥散，安静层次） */
+  --win-shadow-layer: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --win-shadow-control: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --win-shadow-card: 0 4px 16px rgba(0, 0, 0, 0.06);
+  --win-shadow-tooltip: 0 8px 24px rgba(0, 0, 0, 0.10);
+  --win-shadow-flyout: 0 16px 40px rgba(0, 0, 0, 0.12);
+  --win-shadow-dialog: 0 32px 64px rgba(0, 0, 0, 0.16);
+
+  /* 字体 */
+  --win-font-family: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei", sans-serif;
+  --win-font-caption: 12px;
+  --win-font-body: 14px;
+  --win-font-subtitle: 18px;
+  --win-font-title: 20px;
+  --win-font-display: 28px;
+
+  /* 动效 */
+  --win-duration-fast: 150ms;
+  --win-duration-normal: 200ms;
+  --win-duration-slow: 300ms;
+  --win-ease: cubic-bezier(0.2, 0, 0, 1);
+
+  /* Mica 底色：极淡的壁纸色调（克制，无 blur） */
+  --win-mica:
+    radial-gradient(at 12% -12%, rgba(0, 103, 192, 0.10), transparent 48%),
+    radial-gradient(at 92% 6%, rgba(0, 103, 192, 0.06), transparent 44%),
+    radial-gradient(at 55% 112%, rgba(0, 103, 192, 0.08), transparent 52%),
+    radial-gradient(at 70% 40%, rgba(111, 148, 196, 0.05), transparent 55%);
 }
 
 html.dark {
   color-scheme: dark;
-  /* 深色：深邃的夜空蓝 + 极光 */
-  --bg-base: linear-gradient(135deg, #080910 0%, #0b0c18 50%, #090e17 100%);
-  --bg-aurora:
-    radial-gradient(at 15% 20%, rgba(52, 72, 132, 0.5), transparent 50%),
-    radial-gradient(at 85% 10%, rgba(96, 56, 132, 0.42), transparent 50%),
-    radial-gradient(at 50% 95%, rgba(26, 72, 112, 0.5), transparent 50%);
-  --bg-page: var(--bg-aurora), var(--bg-base);
 
-  /* 深色玻璃基底（掺一丝冷蓝，避免发闷） */
-  --glass-clear: rgba(40, 43, 58, 0.32);
-  --glass-frost: rgba(50, 54, 70, 0.44);
-  --glass-blur: blur(22px) saturate(160%) brightness(1.06);
-  --glass-blur-deep: blur(30px) saturate(170%) brightness(1.08);
+  --win-bg-base: #202020;
+  --win-layer: #323232;
+  --win-control-alt: #2B2B2B;
+  --win-control-hover: #3A3A3A;
+  --win-control-pressed: #353535;
+  --win-stroke: #3D3D3D;
+  --win-stroke-strong: #555555;
 
-  /* 深色镜面边缘环（整体压暗，顶部仍保留受光） */
-  --glass-edge: linear-gradient(
-    155deg,
-    rgba(255, 255, 255, 0.22) 0%,
-    rgba(255, 255, 255, 0.1) 16%,
-    rgba(255, 255, 255, 0.03) 38%,
-    rgba(255, 255, 255, 0.01) 55%,
-    rgba(255, 255, 255, 0.07) 82%,
-    rgba(255, 255, 255, 0.14) 100%
-  );
-  --glass-rim: linear-gradient(180deg, rgba(255, 255, 255, 0.14) 0%, rgba(255, 255, 255, 0.02) 50%);
-  --glass-rim-color: rgba(255, 255, 255, 0.12);
-  --glass-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.08) 0%, transparent 55%);
+  --win-accent: #60CDFF;
+  --win-accent-hover: #4CC2FF;
+  --win-accent-pressed: #38B8FF;
+  --win-accent-soft: rgba(96, 205, 255, 0.10);
 
-  --glass-shadow: 0 14px 44px rgba(0, 0, 0, 0.45), 0 3px 10px rgba(0, 0, 0, 0.32);
-  --glass-shadow-hover: 0 20px 60px rgba(0, 0, 0, 0.55), 0 5px 14px rgba(0, 0, 0, 0.38);
-  --glass-inner:
-    inset 0 1px 0 rgba(255, 255, 255, 0.12),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.25),
-    inset 0 12px 28px -14px rgba(255, 255, 255, 0.1);
+  --win-text-primary: rgba(255, 255, 255, 1);
+  --win-text-secondary: rgba(255, 255, 255, 0.7);
+  --win-text-disabled: rgba(255, 255, 255, 0.4);
 
-  --text-primary: rgba(255, 255, 255, 0.92);
-  --text-secondary: rgba(235, 235, 245, 0.6);
-  --text-tertiary: rgba(235, 235, 245, 0.3);
-  --divider: rgba(84, 84, 88, 0.45);
-  --glass-border-subtle: rgba(235, 235, 245, 0.12);
-  --glass-fill-subtle: rgba(120, 120, 128, 0.22);
-  --glass-fill-strong: rgba(255, 255, 255, 0.14);
-  --glass-border-strong: rgba(235, 235, 245, 0.4);
+  --win-success: #6CCB5F;
+  --win-success-bg: rgba(108, 203, 95, 0.12);
+  --win-danger: #FF99A4;
+  --win-danger-bg: rgba(255, 153, 164, 0.12);
+  --win-warning: #FCE100;
+  --win-warning-bg: rgba(252, 225, 0, 0.12);
+  --win-info: #60CDFF;
+  --win-info-bg: rgba(96, 205, 255, 0.12);
 
-  --viz-edge: rgba(190, 200, 225, 0.3);
+  --win-shadow-layer: 0 1px 2px rgba(0, 0, 0, 0.18);
+  --win-shadow-control: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --win-shadow-card: 0 4px 16px rgba(0, 0, 0, 0.18);
+  --win-shadow-tooltip: 0 8px 24px rgba(0, 0, 0, 0.28);
+  --win-shadow-flyout: 0 16px 40px rgba(0, 0, 0, 0.32);
+  --win-shadow-dialog: 0 32px 64px rgba(0, 0, 0, 0.4);
+
+  --win-mica:
+    radial-gradient(at 12% -12%, rgba(96, 205, 255, 0.08), transparent 48%),
+    radial-gradient(at 92% 6%, rgba(96, 205, 255, 0.05), transparent 44%),
+    radial-gradient(at 55% 112%, rgba(96, 205, 255, 0.06), transparent 52%),
+    radial-gradient(at 70% 40%, rgba(150, 180, 210, 0.04), transparent 55%);
 }
+
+/* ============================================================
+   1.3 旧变量 → 新变量兼容映射（过渡层，逐步替换后可删除）
+   ============================================================ */
+
+:root {
+  --bg-base: var(--win-bg-base);
+  --bg-aurora: transparent;
+  --bg-page: var(--win-bg-base);
+  --glass-clear: var(--win-layer);
+  --glass-frost: var(--win-layer);
+  --glass-fill-subtle: var(--win-control-alt);
+  --glass-fill-strong: var(--win-layer);
+  --glass-rim-color: var(--win-stroke);
+  --glass-border-subtle: var(--win-stroke);
+  --glass-border-strong: var(--win-stroke-strong);
+  --glass-shadow: var(--win-shadow-card);
+  --glass-shadow-hover: var(--win-shadow-card);
+  --glass-inner: none;
+  --text-primary: var(--win-text-primary);
+  --text-secondary: var(--win-text-secondary);
+  --text-tertiary: var(--win-text-disabled);
+  --divider: var(--win-stroke);
+  --radius-glass-md: var(--win-radius-control);
+  --radius-glass-lg: var(--win-radius-container);
+  --radius-glass-xl: var(--win-radius-container);
+  --radius-ios-md: var(--win-radius-control);
+  --ease-fluid: var(--win-ease);
+  --ease-spring: var(--win-ease);
+  --viz-edge: var(--win-stroke-strong);
+}
+
+/* ============================================================
+   2. 基础布局与背景
+   ============================================================ */
 
 html, body, #root {
   height: 100%;
@@ -155,640 +183,591 @@ html, body, #root {
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
-  background: var(--bg-base);
+  background-color: var(--win-bg-base);
+  background-image: var(--win-mica);
   background-attachment: fixed;
-  color: var(--text-primary);
-  font-size: 14px;
+  font-family: var(--win-font-family);
+  font-size: var(--win-font-body);
+  color: var(--win-text-primary);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  letter-spacing: -0.01em;
-  transition: background 350ms var(--ease-fluid);
+  transition: background-color 300ms var(--win-ease);
 }
 
-/* 极光层：缓慢漂移的活背景（GPU 合成，只动 transform） */
-body::before {
-  content: "";
-  position: fixed;
-  inset: -12%;
-  background: var(--bg-aurora);
+/* Mica 表面（侧边栏/标题栏/主区背景）：基底灰 + 极淡壁纸色调，内容卡片白色叠加其上 */
+.mica-surface {
+  background-color: var(--win-bg-base);
+  background-image: var(--win-mica);
   background-attachment: fixed;
-  z-index: -1;
-  pointer-events: none;
-  animation: aurora-drift 52s ease-in-out infinite alternate;
 }
 
-@keyframes aurora-drift {
-  from { transform: translate3d(-2%, -1.5%, 0) scale(1.03); }
-  to   { transform: translate3d(2%, 1.5%, 0) scale(1.07); }
-}
-
-::selection { background: rgba(0, 122, 255, 0.22); }
-
-/* ============================================
-   滚动条（极细、半透明）
-   ============================================ */
-
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-thumb {
-  background: var(--text-tertiary);
-  border-radius: 3px;
-}
-::-webkit-scrollbar-thumb:hover { background: var(--text-secondary); }
-::-webkit-scrollbar-track { background: transparent; }
-
-/* ============================================
-   液态玻璃核心材质 - 公共光学层
-   每个玻璃元素 = 基底(backdrop 折射) + 镜面边缘环(::before) [+ 顶部光泽(::after)]
-   ============================================ */
-
-.glass,
-.glass-frost,
-.glass-elevated,
-.glass-card,
-.glass-panel,
-.glass-subtle,
-.glass-clear,
-.glass-button,
-.glass-pill {
+#root {
   position: relative;
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
 }
 
-/* 镜面边缘环：padding-box 遮罩只留下 1px 环带，沿玻璃棱走一圈受光渐变 */
-.glass::before,
-.glass-frost::before,
-.glass-elevated::before,
-.glass-card::before,
-.glass-panel::before,
-.glass-subtle::before,
-.glass-clear::before,
-.glass-button::before,
-.glass-pill::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  padding: 1px;
-  background: var(--glass-edge);
-  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor;
-  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-  mask-composite: exclude;
-  pointer-events: none;
-  z-index: 1;
+::selection {
+  background: var(--win-accent-soft);
 }
 
-/* 顶部光泽带：仅大容器需要（按钮/胶囊体积小，靠边缘环即可） */
-.glass-frost::after,
-.glass-elevated::after,
-.glass-card::after,
-.glass-panel::after {
-  content: "";
-  position: absolute;
-  inset: 1px 1px auto 1px;
-  height: 38%;
-  border-radius: inherit;
-  background: var(--glass-sheen);
-  pointer-events: none;
-  opacity: 0.8;
+/* Win11 焦点样式 */
+:focus-visible {
+  outline: 2px solid var(--win-accent);
+  outline-offset: 1px;
 }
 
-/* ============================================
-   玻璃材质变体
-   ============================================ */
+/* ============================================================
+   滚动条（Win11：细、圆角、低饱和）
+   ============================================================ */
 
-/* 通用玻璃基底层 - 清澈模式 */
-.glass {
-  background: var(--glass-clear);
-  border: 1px solid var(--glass-rim-color);
-  box-shadow: var(--glass-shadow), var(--glass-inner);
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--win-text-disabled);
+  border-radius: 5px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+  min-height: 24px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--win-text-secondary);
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
-/* 磨砂模式（Regular 材质） */
-.glass-frost {
-  background: var(--glass-frost);
-  border: 1px solid var(--glass-rim-color);
-  box-shadow: var(--glass-shadow), var(--glass-inner);
-}
+/* ============================================================
+   2.3 Win11 基类（原 glass-* 系）
+   ============================================================ */
 
-/* 高对比玻璃（用于重要容器 / 弹窗） */
-.glass-elevated {
-  background: var(--glass-frost);
-  backdrop-filter: var(--glass-blur-deep);
-  -webkit-backdrop-filter: var(--glass-blur-deep);
-  border: 1px solid var(--glass-rim-color);
-  box-shadow: var(--glass-shadow-hover), var(--glass-inner);
-}
-
-/* Clear 材质：近乎全透明，用于需要透出背景的悬浮层 */
-.glass-clear {
-  background: rgba(255, 255, 255, 0.06);
-  backdrop-filter: blur(14px) saturate(160%);
-  -webkit-backdrop-filter: blur(14px) saturate(160%);
-  border: 1px solid var(--glass-rim-color);
-  box-shadow: var(--glass-inner);
-}
-html.dark .glass-clear { background: rgba(255, 255, 255, 0.05); }
-
-/* 玻璃卡片 */
+/* 卡片（Win11 Card） */
 .glass-card {
-  background: var(--glass-clear);
-  border: 1px solid var(--glass-rim-color);
-  box-shadow: var(--glass-shadow), var(--glass-inner);
-  border-radius: var(--radius-glass-lg);
+  background: var(--win-layer);
+  border: 1px solid var(--win-stroke);
+  border-radius: var(--win-radius-container);
+  box-shadow: var(--win-shadow-card);
   overflow: hidden;
 }
 
-/* 玻璃面板 - 侧边栏等大容器（深层模糊，22px 圆角） */
+/* 面板 / 图层（Win11 Layer，阴影更弱） */
 .glass-panel {
-  background: var(--glass-frost);
-  backdrop-filter: var(--glass-blur-deep);
-  -webkit-backdrop-filter: var(--glass-blur-deep);
-  border: 1px solid var(--glass-rim-color);
-  box-shadow: var(--glass-shadow), var(--glass-inner);
-  border-radius: 22px;
+  background: var(--win-layer);
+  border: 1px solid var(--win-stroke);
+  border-radius: var(--win-radius-container);
+  box-shadow: var(--win-shadow-layer);
   overflow: hidden;
 }
 
-/* 玻璃子面板 - 嵌套小卡片（更透明） */
+/* 悬浮层（弹窗 / 下拉） */
+.glass-elevated {
+  background: var(--win-layer);
+  border: 1px solid var(--win-stroke);
+  border-radius: var(--win-radius-overlay);
+  box-shadow: var(--win-shadow-flyout);
+}
+
+/* 控件次级背景 */
 .glass-subtle {
-  background: var(--glass-clear);
-  border: 1px solid var(--glass-rim-color);
-  box-shadow: var(--glass-inner);
-  border-radius: 14px;
-  overflow: hidden;
+  background: var(--win-control-alt);
+  border-radius: var(--win-radius-container);
 }
 
-/* ============================================
-   按钮（小型独立玻璃几何体 + 镜面扫光）
-   ============================================ */
+/* 透明层（无模糊） */
+.glass-clear {
+  background: rgba(255, 255, 255, 0.6);
+  border: 1px solid var(--win-stroke);
+}
+html.dark .glass-clear {
+  background: rgba(50, 50, 50, 0.6);
+}
+
+/* 通用玻璃别名（兼容） */
+.glass {
+  background: var(--win-layer);
+  border: 1px solid var(--win-stroke);
+  border-radius: var(--win-radius-container);
+  box-shadow: var(--win-shadow-card);
+}
+
+/* ============================================================
+   按钮（Win11：32px 高、4px 圆角、背景色变化反馈）
+   ============================================================ */
 
 .glass-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  padding: 7px 14px;
-  border-radius: var(--radius-glass-md);
-  background: var(--glass-frost);
-  border: 1px solid var(--glass-rim-color);
-  color: var(--color-system-blue);
-  font-size: 13px;
-  font-weight: 500;
+  gap: 8px;
+  height: 32px;
+  padding: 0 16px;
+  border-radius: var(--win-radius-control);
+  background: var(--win-control-alt);
+  border: 1px solid var(--win-stroke);
+  color: var(--win-text-primary);
+  font-size: var(--win-font-body);
+  font-weight: 400;
   font-family: inherit;
   cursor: pointer;
   user-select: none;
   -webkit-tap-highlight-color: transparent;
   white-space: nowrap;
-  overflow: hidden;
-  box-shadow: var(--glass-inner);
-  transition: all 220ms var(--ease-fluid);
+  box-shadow: var(--win-shadow-control);
+  transition:
+    background var(--win-duration-fast) var(--win-ease),
+    border-color var(--win-duration-fast) var(--win-ease),
+    box-shadow var(--win-duration-fast) var(--win-ease);
 }
-
-/* 镜面扫光：hover 时一道受光带掠过玻璃表面 */
-.glass-button::after {
-  content: "";
-  position: absolute;
-  top: -25%;
-  bottom: -25%;
-  left: -70%;
-  width: 45%;
-  background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.4), transparent);
-  transform: skewX(-20deg);
-  opacity: 0;
-  pointer-events: none;
-}
-.glass-button:hover:not(:disabled)::after {
-  left: 135%;
-  opacity: 1;
-  transition: left 640ms var(--ease-fluid);
-}
-
 .glass-button:hover:not(:disabled) {
-  transform: translateY(-1px);
-  box-shadow: var(--glass-shadow), var(--glass-inner);
+  background: var(--win-control-hover);
+  border-color: var(--win-stroke-strong);
 }
-
 .glass-button:active:not(:disabled) {
-  transform: scale(0.97);
-  transition-duration: 80ms;
+  background: var(--win-control-pressed);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.10);
 }
-
 .glass-button:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
 
-/* 主按钮 - 实心蓝 + 纵向受光渐变（克制使用） */
+/* 主按钮 */
 .glass-button-primary {
-  background: linear-gradient(180deg, #3492ff 0%, #007AFF 55%, #0068e6 100%);
-  color: white;
-  border: none;
-  box-shadow:
-    0 6px 20px rgba(0, 122, 255, 0.3),
-    inset 0 1px 0 rgba(255, 255, 255, 0.35),
-    inset 0 -1px 0 rgba(0, 40, 120, 0.25);
+  background: var(--win-accent);
+  border-color: transparent;
+  color: #FFFFFF;
 }
 .glass-button-primary:hover:not(:disabled) {
-  background: linear-gradient(180deg, #4b9eff 0%, #0a84ff 55%, #0a72f0 100%);
-  box-shadow:
-    0 10px 28px rgba(0, 122, 255, 0.4),
-    inset 0 1px 0 rgba(255, 255, 255, 0.4),
-    inset 0 -1px 0 rgba(0, 40, 120, 0.25);
+  background: var(--win-accent-hover);
+  border-color: transparent;
+}
+.glass-button-primary:active:not(:disabled) {
+  background: var(--win-accent-pressed);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.16);
 }
 
 /* 危险按钮 */
 .glass-button-danger {
-  background: linear-gradient(180deg, #ff5a50 0%, #FF3B30 60%, #ee2f24 100%);
-  color: white;
-  border: none;
-  box-shadow:
-    0 6px 20px rgba(255, 59, 48, 0.28),
-    inset 0 1px 0 rgba(255, 255, 255, 0.32),
-    inset 0 -1px 0 rgba(120, 10, 0, 0.22);
+  background: var(--win-danger);
+  border-color: transparent;
+  color: #FFFFFF;
+  font-weight: 500;
+}
+.glass-button-danger:hover:not(:disabled) {
+  filter: brightness(0.92);
+}
+.glass-button-danger:active:not(:disabled) {
+  filter: brightness(0.84);
 }
 
-/* 玻璃胶囊按钮（标签切换用） */
+/* 胶囊 / 筛选 chip（Win11 轻量） */
 .glass-pill {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 5px 12px;
-  border-radius: var(--radius-glass-pill);
-  background: var(--glass-clear);
-  border: 1px solid var(--glass-rim-color);
-  font-size: 12px;
-  font-weight: 500;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: var(--win-radius-control);
+  background: var(--win-control-alt);
+  border: 1px solid var(--win-stroke);
+  font-size: 13px;
+  font-weight: 400;
   font-family: inherit;
-  color: var(--text-primary);
+  color: var(--win-text-primary);
   cursor: pointer;
-  transition: all 220ms var(--ease-fluid);
+  transition:
+    background var(--win-duration-fast) var(--win-ease),
+    border-color var(--win-duration-fast) var(--win-ease);
   -webkit-tap-highlight-color: transparent;
 }
-.glass-pill:hover { background: var(--glass-frost); transform: translateY(-1px); }
+.glass-pill:hover {
+  background: var(--win-control-hover);
+}
 .glass-pill.is-active {
-  background: linear-gradient(180deg, #3492ff 0%, #007AFF 60%, #0068e6 100%);
-  color: white;
+  background: var(--win-accent);
   border-color: transparent;
-  box-shadow:
-    0 4px 14px rgba(0, 122, 255, 0.3),
-    inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  color: #FFFFFF;
 }
 
-/* ============================================
-   徽章（克制使用、低饱和）
-   ============================================ */
+/* ============================================================
+   徽章（Win11：轻量、低饱和；彩色仅用于状态点/浅底）
+   ============================================================ */
 
 .glass-badge {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 2px 9px;
-  border-radius: var(--radius-glass-pill);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-  border: 1px solid currentColor;
-  border-opacity: 0.18;
+  padding: 2px 10px;
+  border-radius: var(--win-radius-pill);
+  background: var(--win-control-alt);
+  font-size: var(--win-font-caption);
+  font-weight: 500;
+  color: var(--win-text-primary);
+  border: 1px solid var(--win-stroke);
+  white-space: nowrap;
 }
 
-.badge-blue   { color: var(--color-system-blue);   background: rgba(0, 122, 255, 0.1); }
-.badge-green  { color: var(--color-system-green);  background: rgba(52, 199, 89, 0.1); }
-.badge-red    { color: var(--color-system-red);    background: rgba(255, 59, 48, 0.1); }
-.badge-orange { color: var(--color-system-orange); background: rgba(255, 149, 0, 0.1); }
-.badge-purple { color: var(--color-system-purple); background: rgba(175, 82, 222, 0.1); }
-.badge-teal   { color: var(--color-system-teal);   background: rgba(48, 176, 199, 0.12); }
-.badge-amber  { color: var(--color-system-amber);  background: rgba(217, 162, 58, 0.12); }
-.badge-gray   { color: var(--color-system-gray);   background: rgba(142, 142, 147, 0.12); }
+/* 连接状态：8px 圆点 + 12px 文字（Win11 克制风格，无胶囊底） */
+.conn-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--win-font-caption);
+  color: var(--win-text-secondary);
+  white-space: nowrap;
+}
+.conn-state .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--win-text-disabled);
+  flex-shrink: 0;
+}
+.conn-state .dot.on {
+  background: var(--win-success);
+}
+.conn-state .dot.off {
+  background: var(--win-text-disabled);
+}
 
-/* ============================================
-   表单控件（小型玻璃几何体）
-   ============================================ */
+.badge-blue   { color: var(--win-info);       background: var(--win-info-bg);    border-color: transparent; }
+.badge-green  { color: var(--win-success);    background: var(--win-success-bg); border-color: transparent; }
+.badge-red    { color: var(--win-danger);     background: var(--win-danger-bg);  border-color: transparent; }
+.badge-orange { color: var(--win-warning);    background: var(--win-warning-bg); border-color: transparent; }
+.badge-purple { color: var(--win-info);       background: var(--win-info-bg);    border-color: transparent; }
+.badge-teal   { color: var(--win-info);       background: var(--win-info-bg);    border-color: transparent; }
+.badge-amber  { color: var(--win-warning);    background: var(--win-warning-bg); border-color: transparent; }
+.badge-gray   { color: var(--win-text-secondary); background: var(--win-control-alt); border-color: transparent; }
+
+/* ============================================================
+   表单控件（Win11 TextBox / ComboBox）
+   ============================================================ */
 
 .glass-input {
-  width: 100%;
-  padding: 7px 12px;
-  border-radius: var(--radius-glass-md);
-  background: var(--glass-clear);
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
-  border: 1px solid var(--glass-rim-color);
-  color: var(--text-primary);
-  font-size: 13px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: var(--win-radius-control);
+  background: var(--win-control-alt);
+  border: 1px solid var(--win-stroke);
+  color: var(--win-text-primary);
+  font-size: var(--win-font-body);
   font-family: inherit;
   outline: none;
-  transition: all 220ms var(--ease-fluid);
+  transition:
+    background var(--win-duration-fast) var(--win-ease),
+    border-color var(--win-duration-fast) var(--win-ease),
+    box-shadow var(--win-duration-fast) var(--win-ease);
+}
+.glass-input:hover {
+  border-color: var(--win-stroke-strong);
 }
 .glass-input:focus {
-  background: var(--glass-frost);
-  border-color: rgba(0, 122, 255, 0.4);
-  box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  background: var(--win-layer);
+  border-color: var(--win-accent);
+  box-shadow: 0 0 0 1px var(--win-layer), 0 0 0 3px var(--win-accent);
 }
-.glass-input::placeholder { color: var(--text-tertiary); }
+.glass-input::placeholder {
+  color: var(--win-text-disabled);
+}
 
 .glass-select {
-  width: 100%;
-  padding: 7px 32px 7px 12px;
-  border-radius: var(--radius-glass-md);
-  background: var(--glass-clear);
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
-  border: 1px solid var(--glass-rim-color);
-  color: var(--text-primary);
-  font-size: 13px;
+  height: 32px;
+  padding: 0 32px 0 12px;
+  border-radius: var(--win-radius-control);
+  background-color: var(--win-control-alt);
+  border: 1px solid var(--win-stroke);
+  color: var(--win-text-primary);
+  font-size: var(--win-font-body);
   font-family: inherit;
   cursor: pointer;
   outline: none;
-  transition: all 220ms var(--ease-fluid);
   appearance: none;
   -webkit-appearance: none;
-  background-image: url("data:image/svg+xml;charset=US-ASCII,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%238E8E93' d='M5 6L0 0h10z'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml;charset=US-ASCII,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3.5 5L6 7.5 8.5 5' fill='none' stroke='%23606060' stroke-width='1.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 12px center;
   background-size: 8px;
+  transition:
+    background-color var(--win-duration-fast) var(--win-ease),
+    border-color var(--win-duration-fast) var(--win-ease),
+    box-shadow var(--win-duration-fast) var(--win-ease);
+}
+.glass-select:hover {
+  border-color: var(--win-stroke-strong);
 }
 .glass-select:focus {
-  background: var(--glass-frost);
-  border-color: rgba(0, 122, 255, 0.4);
-  box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.12);
+  background-color: var(--win-layer);
+  border-color: var(--win-accent);
+  box-shadow: 0 0 0 1px var(--win-layer), 0 0 0 3px var(--win-accent);
 }
 
-/* ============================================
-   进度条（极简细线 + 流光）
-   ============================================ */
+/* ============================================================
+   进度条（Win11 ProgressBar：4px、无流光）
+   ============================================================ */
 
 .glass-progress-track {
   width: 100%;
   height: 4px;
-  background: var(--glass-fill-subtle);
-  border-radius: var(--radius-glass-pill);
+  background: var(--win-control-alt);
+  border-radius: var(--win-radius-pill);
   overflow: hidden;
 }
 
 .glass-progress-fill {
   height: 100%;
-  background: linear-gradient(90deg, var(--color-system-blue), #5AC8FA);
-  border-radius: var(--radius-glass-pill);
-  box-shadow: 0 0 8px rgba(0, 122, 255, 0.45);
-  transition: width 400ms var(--ease-fluid);
-  position: relative;
-  overflow: hidden;
-}
-.glass-progress-fill::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.45), transparent);
-  animation: shimmer 2.4s ease-in-out infinite;
+  background: var(--win-accent);
+  border-radius: var(--win-radius-pill);
+  transition: width 400ms var(--win-ease);
 }
 
-@keyframes shimmer {
-  0% { transform: translateX(-100%); }
-  100% { transform: translateX(100%); }
-}
-
-/* ============================================
-   表格（透明背景）
-   ============================================ */
+/* ============================================================
+   表格（Win11 Table：40px 行高、表头 12px 非大写）
+   ============================================================ */
 
 .glass-table {
   width: 100%;
   border-collapse: separate;
   border-spacing: 0;
-  font-size: 13px;
+  font-size: var(--win-font-body);
 }
 .glass-table th {
   text-align: left;
-  padding: 10px 14px;
-  font-weight: 600;
-  font-size: 11px;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-  color: var(--text-secondary);
-  border-bottom: 1px solid var(--divider);
+  padding: 10px 16px;
+  font-weight: 400;
+  font-size: var(--win-font-body);
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--win-text-secondary);
+  border-bottom: 1px solid var(--win-stroke);
+  background: var(--win-control-alt);
 }
 .glass-table td {
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--divider);
-  color: var(--text-primary);
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--win-stroke);
+  color: var(--win-text-primary);
 }
 .glass-table tbody tr {
-  transition: background 180ms var(--ease-fluid);
+  height: 40px;
+  transition: background var(--win-duration-fast) var(--win-ease);
 }
 .glass-table tbody tr:hover {
-  background: rgba(0, 122, 255, 0.04);
+  background: var(--win-control-hover);
 }
-html.dark .glass-table tbody tr:hover {
-  background: rgba(0, 122, 255, 0.08);
+.glass-table tbody tr:last-child td {
+  border-bottom: none;
 }
-.glass-table tbody tr:last-child td { border-bottom: none; }
 
-/* ============================================
-   统计数字卡（全局复用）
-   ============================================ */
+/* ============================================================
+   统计数字卡（Win11 Stat Card）
+   ============================================================ */
 
 .glass-stat {
-  background: var(--glass-fill-subtle);
-  border: 1px solid var(--glass-border-subtle);
-  border-radius: 14px;
-  padding: 12px 14px;
+  background: var(--win-layer);
+  border: 1px solid var(--win-stroke);
+  border-radius: var(--win-radius-container);
+  box-shadow: var(--win-shadow-card);
+  padding: 14px 16px;
   position: relative;
 }
 .glass-stat-label {
-  font-size: 0.72rem;
-  color: var(--text-tertiary);
+  font-size: var(--win-font-caption);
+  color: var(--win-text-secondary);
 }
 .glass-stat-value {
-  font-size: 1.15rem;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-  color: var(--text-primary);
+  font-size: var(--win-font-title);
+  font-weight: 600;
+  color: var(--win-text-primary);
   margin-top: 2px;
+  letter-spacing: -0.01em;
 }
 
-/* ============================================
-   代码面（深色半透明玻璃，终端质感）
-   ============================================ */
+/* ============================================================
+   代码面（Win11 深色中性底）
+   ============================================================ */
 
 .code-surface {
-  background: rgba(14, 16, 24, 0.78);
-  backdrop-filter: blur(16px) saturate(140%);
-  -webkit-backdrop-filter: blur(16px) saturate(140%);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: var(--radius-glass-md);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.06),
-    0 8px 24px rgba(10, 12, 24, 0.25);
-  color: #d6d8e0;
-  font-family: ui-monospace, "SF Mono", "Cascadia Code", monospace;
+  background: #1F1F1F;
+  border: 1px solid #3D3D3D;
+  border-radius: var(--win-radius-container);
+  color: #D6D8E0;
+  font-family: "Cascadia Code", Consolas, ui-monospace, monospace;
   font-size: 12px;
   line-height: 1.6;
 }
 .code-green { color: #7ee787; }
 .code-cyan  { color: #6fd9ea; }
 
-/* ============================================
-   滚动边缘柔化（内容滚入玻璃边缘时淡出）
-   由 AppLayout 在主区滚动时切换 .scroll-edge
-   ============================================ */
+/* ============================================================
+   空状态（图标 + 说明文字，垂直居中）
+   ============================================================ */
 
-.scroll-edge {
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 26px, #000 calc(100% - 12px), transparent 100%);
-  mask-image: linear-gradient(to bottom, transparent 0, #000 26px, #000 calc(100% - 12px), transparent 100%);
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 40px 16px;
+  color: var(--win-text-secondary);
+  font-size: var(--win-font-body);
+  text-align: center;
+}
+.empty-state .empty-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--win-text-secondary);
+  opacity: 0.85;
 }
 
-/* ============================================
-   文本层级
-   ============================================ */
+/* ============================================================
+   着色提示（错误/成功/信息，浅底小字）
+   ============================================================ */
+
+.glass-tinted-red    { background: var(--win-danger-bg);  color: var(--win-danger); }
+.glass-tinted-green  { background: var(--win-success-bg); color: var(--win-success); }
+.glass-tinted-blue   { background: var(--win-info-bg);    color: var(--win-info); }
+.glass-tinted-orange { background: var(--win-warning-bg); color: var(--win-warning); }
+
+/* ============================================================
+   文本层级（Win11 排版）
+   ============================================================ */
 
 .section-title {
-  font-size: 22px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  color: var(--text-primary);
+  font-size: var(--win-font-title);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--win-text-primary);
   margin: 0;
 }
 .section-subtitle {
-  font-size: 12px;
-  color: var(--text-secondary);
+  font-size: var(--win-font-body);
+  color: var(--win-text-secondary);
   margin: 4px 0 0;
-  letter-spacing: -0.01em;
 }
 
-/* ============================================
-   玻璃着色（用于错误/成功提示）
-   ============================================ */
+/* ============================================================
+   动效（统一 --win-duration-* / --win-ease）
+   ============================================================ */
 
-.glass-tinted-red    { background: rgba(255, 59, 48, 0.1);  color: var(--color-system-red);    border-color: rgba(255, 59, 48, 0.2); }
-.glass-tinted-green  { background: rgba(52, 199, 89, 0.1);  color: var(--color-system-green);  border-color: rgba(52, 199, 89, 0.2); }
-.glass-tinted-blue   { background: rgba(0, 122, 255, 0.1);  color: var(--color-system-blue);   border-color: rgba(0, 122, 255, 0.2); }
-.glass-tinted-orange { background: rgba(255, 149, 0, 0.1);  color: var(--color-system-orange); border-color: rgba(255, 149, 0, 0.2); }
+.transition-spring { transition: all 300ms var(--win-ease); }
+.transition-fluid  { transition: all 200ms var(--win-ease); }
 
-/* ============================================
-   动画 - 流体缓动
-   ============================================ */
-
-.transition-spring { transition: all 280ms var(--ease-spring); }
-.transition-fluid  { transition: all 220ms var(--ease-fluid); }
-
-/* 路由切换 - 淡入 + 微滑 */
+/* 页面切换：opacity + translateY(6px→0) 250ms */
 .page-enter-active,
 .page-leave-active {
-  transition: opacity 220ms var(--ease-fluid), transform 220ms var(--ease-fluid);
+  transition: opacity 250ms var(--win-ease), transform 250ms var(--win-ease);
 }
 .page-enter-from { opacity: 0; transform: translateY(6px); }
-.page-leave-to   { opacity: 0; transform: translateY(-3px); }
+.page-leave-to   { opacity: 0; transform: translateY(0); }
 
-/* Modal 弹出 */
+/* 对话框：opacity + scale(0.95→1) 300ms */
 .modal-enter-active,
 .modal-leave-active {
-  transition: opacity 260ms var(--ease-fluid), transform 260ms var(--ease-spring);
+  transition: opacity 300ms var(--win-ease), transform 300ms var(--win-ease);
 }
 .modal-enter-from,
 .modal-leave-to {
   opacity: 0;
-  transform: scale(0.96);
-}
-
-/* 点击涟漪 - 径向渐变瞬现消散 */
-@keyframes ripple {
-  0%   { opacity: 0.4; transform: scale(0); }
-  100% { opacity: 0;   transform: scale(2.5); }
-}
-.ripple-effect::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  background: radial-gradient(circle at center, rgba(255, 255, 255, 0.4), transparent 70%);
-  opacity: 0;
-  pointer-events: none;
-}
-.ripple-effect:active::after {
-  animation: ripple 500ms var(--ease-fluid);
+  transform: scale(0.95);
 }
 
 /* 尊重系统减弱动效设置 */
 @media (prefers-reduced-motion: reduce) {
-  body::before { animation: none; }
-  .glass-progress-fill::after { animation: none; }
-  .glass-button::after { display: none; }
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
-/* ============================================
-   兼容保留类（兼容旧组件）
-   ============================================ */
+/* ============================================================
+   兼容保留类（旧组件过渡）
+   ============================================================ */
 
-.theme-card     { background: var(--glass-clear); border-color: var(--glass-rim-color); }
-.theme-sidebar  { background: var(--glass-frost); border-color: var(--glass-rim-color); }
-.theme-text     { color: var(--text-primary); }
-.theme-text-secondary { color: var(--text-secondary); }
-.theme-input    { background: var(--glass-clear); border-color: var(--glass-rim-color); color: var(--text-primary); }
+.theme-card     { background: var(--win-layer); border-color: var(--win-stroke); }
+.theme-sidebar  { background: var(--win-layer); border-color: var(--win-stroke); }
+.theme-text     { color: var(--win-text-primary); }
+.theme-text-secondary { color: var(--win-text-secondary); }
+.theme-input    { background: var(--win-control-alt); border-color: var(--win-stroke); color: var(--win-text-primary); }
 
-/* ============================================
-   Markdown 渲染（SummaryPage）
-   ============================================ */
+/* ============================================================
+   Markdown 渲染（Win11 排版）
+   ============================================================ */
 
-.md-content { color: var(--text-primary); line-height: 1.7; font-size: 14px; }
+.md-content {
+  color: var(--win-text-primary);
+  line-height: 1.7;
+  font-size: 14px;
+}
 .md-content .md-h1, .md-content .md-h2,
 .md-content .md-h3, .md-content .md-h4,
 .md-content .md-h5, .md-content .md-h6 {
-  font-weight: 600; margin: 1.2em 0 0.5em; line-height: 1.3;
+  font-weight: 600;
+  margin: 1.2em 0 0.5em;
+  line-height: 1.3;
 }
-.md-content .md-h1 { font-size: 1.6em; }
-.md-content .md-h2 { font-size: 1.35em; border-bottom: 1px solid var(--divider); padding-bottom: 0.3em; }
-.md-content .md-h3 { font-size: 1.15em; }
+.md-content .md-h1 { font-size: 1.6em; }   /* ≈ 22px */
+.md-content .md-h2 { font-size: 1.4em; border-bottom: 1px solid var(--win-stroke); padding-bottom: 0.3em; }
+.md-content .md-h3 { font-size: 1.2em; }
 .md-content .md-h4 { font-size: 1.05em; }
 .md-content .md-h5 { font-size: 1em; }
-.md-content .md-h6 { font-size: 0.95em; color: var(--text-secondary); }
+.md-content .md-h6 { font-size: 0.95em; color: var(--win-text-secondary); }
 .md-content .md-p { margin: 0.6em 0; }
 .md-content .md-code {
-  background: var(--glass-frost);
+  background: var(--win-control-alt);
   padding: 1px 5px;
   border-radius: 4px;
-  font-family: ui-monospace, "Cascadia Code", monospace;
+  font-family: "Cascadia Code", Consolas, ui-monospace, monospace;
   font-size: 0.9em;
-  color: var(--color-system-purple);
+  color: var(--win-accent);
 }
 .md-content .md-pre {
-  background: rgba(14, 16, 24, 0.82);
-  color: #d6d8e0;
+  background: #1F1F1F;
+  border: 1px solid #3D3D3D;
+  color: #D6D8E0;
   padding: 12px 14px;
-  border-radius: var(--radius-glass-md);
+  border-radius: var(--win-radius-container);
   overflow-x: auto;
   margin: 0.8em 0;
-  font-family: ui-monospace, "Cascadia Code", monospace;
+  font-family: "Cascadia Code", Consolas, ui-monospace, monospace;
   font-size: 12px;
   line-height: 1.5;
 }
-.md-content .md-pre code { background: transparent; padding: 0; color: inherit; }
-.md-content .md-link {
-  color: var(--color-system-blue);
-  text-decoration: none;
-  border-bottom: 1px solid currentColor;
-  transition: all 180ms var(--ease-fluid);
+.md-content .md-pre code {
+  background: transparent;
+  padding: 0;
+  color: inherit;
 }
-.md-content .md-link:hover { opacity: 0.7; border-bottom-color: transparent; }
+.md-content .md-link {
+  color: var(--win-accent);
+  text-decoration: none;
+  transition: color var(--win-duration-fast) var(--win-ease);
+}
+.md-content .md-link:hover { color: var(--win-accent-hover); }
 .md-content .md-ul, .md-content .md-ol { margin: 0.6em 0; padding-left: 2em; }
 .md-content .md-ul li, .md-content .md-ol li { margin: 0.25em 0; }
 .md-content .md-quote {
   margin: 0.8em 0;
   padding: 8px 14px;
-  border-left: 2px solid var(--color-system-blue);
-  background: rgba(0, 122, 255, 0.06);
-  border-radius: 0 var(--radius-glass-md) var(--radius-glass-md) 0;
-  color: var(--text-secondary);
+  border-left: 2px solid var(--win-accent);
+  background: var(--win-accent-soft);
+  border-radius: 0 var(--win-radius-control) var(--win-radius-control) 0;
+  color: var(--win-text-secondary);
 }
-.md-content .md-hr { border: 0; border-top: 1px solid var(--divider); margin: 1.5em 0; }
+.md-content .md-hr { border: 0; border-top: 1px solid var(--win-stroke); margin: 1.5em 0; }
 .md-content .md-table { border-collapse: collapse; width: 100%; margin: 0.8em 0; font-size: 13px; }
 .md-content .md-table th, .md-content .md-table td {
-  border: 1px solid var(--divider);
+  border: 1px solid var(--win-stroke);
   padding: 6px 10px;
   text-align: left;
 }
-.md-content .md-table th { background: rgba(0, 122, 255, 0.06); font-weight: 600; }
+.md-content .md-table th { background: var(--win-control-alt); font-weight: 600; }
 .md-content strong { font-weight: 600; }
 .md-content em { font-style: italic; }
-.md-content del { color: var(--text-secondary); text-decoration: line-through; }
+.md-content del { color: var(--win-text-secondary); text-decoration: line-through; }

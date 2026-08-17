@@ -186,16 +186,16 @@ onUnmounted(() => {
   min-height: 0;
   overflow: auto;
   padding: 16px 18px;
-  color: var(--text-primary);
+  color: var(--win-text-primary);
 }
 .cd-placeholder {
-  color: var(--text-secondary);
+  color: var(--win-text-secondary);
   font-size: 13px;
   padding: 24px 0;
   text-align: center;
 }
 .cd-error {
-  color: var(--color-system-red);
+  color: var(--win-danger);
 }
 .cd-report-head {
   display: flex;
@@ -203,29 +203,29 @@ onUnmounted(() => {
   gap: 8px;
   padding-bottom: 12px;
   margin-bottom: 14px;
-  border-bottom: 1px solid var(--glass-border-subtle);
+  border-bottom: 1px solid var(--win-stroke);
 }
 .cd-chapter {
   font-size: 17px;
-  font-weight: 700;
-  color: var(--text-primary);
+  font-weight: 600;
+  color: var(--win-text-primary);
 }
 .cd-blocksize {
   font-size: 12px;
-  color: var(--text-secondary);
+  color: var(--win-text-secondary);
 }
 .cd-mode {
   margin-left: auto;
-  font-size: 11px;
-  padding: 2px 9px;
-  border-radius: 999px;
-  background: rgba(0, 122, 255, 0.12);
-  color: var(--color-system-blue);
+  font-size: 12px;
+  padding: 2px 10px;
+  border-radius: var(--win-radius-control);
+  background: var(--win-info-bg);
+  color: var(--win-info);
   white-space: nowrap;
 }
 .cd-mode.is-manual {
-  background: rgba(255, 59, 48, 0.12);
-  color: var(--color-system-red);
+  background: var(--win-danger-bg);
+  color: var(--win-danger);
 }
 .cd-section {
   margin-bottom: 18px;
@@ -235,10 +235,10 @@ onUnmounted(() => {
 }
 .cd-section-title {
   font-size: 13px;
-  font-weight: 700;
-  color: var(--color-system-blue);
+  font-weight: 600;
+  color: var(--win-text-primary);
   margin: 0 0 8px;
   padding-left: 9px;
-  border-left: 3px solid var(--color-system-blue);
+  border-left: 3px solid var(--win-accent);
 }
 </style>

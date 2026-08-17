@@ -41,7 +41,7 @@ function fmt(n: number) {
   <div v-if="!compact" class="badge-row">
     <span class="glass-badge badge-blue total-badge">
       <strong>{{ fmt(total) }}</strong>
-      <span style="opacity: 0.7; font-weight: 500">Tokens</span>
+      <span style="opacity: 0.7; font-weight: 400">Tokens</span>
     </span>
     <span class="glass-badge badge-gray">入 {{ fmt(totalIn) }}</span>
     <span class="glass-badge badge-orange">出 {{ fmt(totalOut) }}</span>
@@ -80,6 +80,6 @@ function fmt(n: number) {
   font-size: 11px;
 }
 .compact-meta {
-  color: var(--text-secondary);
+  color: var(--win-text-secondary);
 }
 </style>

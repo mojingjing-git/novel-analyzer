@@ -138,14 +138,14 @@ function typeClass(t: string): string {
 </script>
 
 <template>
-  <div class="space-y-4 p-4">
+  <div class="space-y-6">
     <h2 class="section-title">地图可视化</h2>
     <BookSelector v-model="bookId" />
-    <div v-if="!bookId" class="glass-card p-8 text-center text-sm" style="color: var(--text-tertiary)">请选择书目</div>
-    <div v-else-if="locations.length === 0" class="glass-card p-8 text-center text-sm" style="color: var(--text-tertiary)">暂无数据</div>
+    <div v-if="!bookId" class="glass-card p-8 text-center text-sm" style="color: var(--win-text-disabled)">请选择书目</div>
+    <div v-else-if="locations.length === 0" class="glass-card p-8 text-center text-sm" style="color: var(--win-text-disabled)">暂无数据</div>
     <div v-else class="flex gap-4">
       <div class="flex-1 glass-card p-4 overflow-x-auto">
-        <div class="text-sm mb-2" style="color: var(--text-secondary)">共 {{ locations.length }} 个地点, {{ relationships.length }} 条空间关系</div>
+        <div class="text-sm mb-2" style="color: var(--win-text-secondary)">共 {{ locations.length }} 个地点, {{ relationships.length }} 条空间关系</div>
         <div class="viz-stage">
           <svg :width="svgWidth" :height="layout.totalHeight">
             <line
@@ -178,9 +178,9 @@ function typeClass(t: string): string {
       </div>
       <div v-if="selectedLocation" class="w-64 shrink-0">
         <div class="glass-card p-4 space-y-2">
-          <h3 class="font-semibold pb-2" style="border-bottom: 1px solid var(--glass-border-subtle); letter-spacing: -0.01em">{{ selectedLocation.name }}</h3>
-          <div class="text-sm" style="color: var(--text-secondary)"><span style="color: var(--text-tertiary)">类型:</span> {{ selectedLocation.type || '未知' }}</div>
-          <div v-if="selectedLocation.desc" class="text-sm" style="color: var(--text-secondary)"><span style="color: var(--text-tertiary)">描述:</span> {{ selectedLocation.desc }}</div>
+          <h3 class="font-semibold pb-2" style="border-bottom: 1px solid var(--win-stroke); letter-spacing: -0.01em">{{ selectedLocation.name }}</h3>
+          <div class="text-sm" style="color: var(--win-text-secondary)"><span style="color: var(--win-text-disabled)">类型:</span> {{ selectedLocation.type || '未知' }}</div>
+          <div v-if="selectedLocation.desc" class="text-sm" style="color: var(--win-text-secondary)"><span style="color: var(--win-text-disabled)">描述:</span> {{ selectedLocation.desc }}</div>
         </div>
       </div>
     </div>
@@ -189,31 +189,37 @@ function typeClass(t: string): string {
 
 <style scoped>
 .viz-stage {
-  border-radius: 14px;
-  background: var(--glass-fill-subtle);
-  border: 1px solid var(--glass-border-subtle);
+  border-radius: var(--win-radius-container);
+  background: var(--win-control-alt);
+  border: 1px solid var(--win-stroke);
   overflow: auto;
 }
 .viz-edge {
-  stroke: var(--viz-edge);
+  stroke: var(--win-stroke-strong);
+  opacity: 0.6;
 }
 .viz-spatial {
-  stroke: var(--color-system-orange);
+  stroke: var(--win-warning);
+  opacity: 0.55;
 }
-/* 地点类型配色：通过 CSS 自定义属性级联，选中态统一橙色高亮 */
-.viz-loc { cursor: pointer; --tc: var(--color-system-gray); }
-.viz-loc.type-region   { --tc: var(--color-system-green); }
-.viz-loc.type-city     { --tc: var(--color-system-blue); }
-.viz-loc.type-building { --tc: var(--color-system-purple); }
-.viz-loc.type-natural  { --tc: var(--color-system-teal); }
-.viz-loc.is-selected   { --tc: var(--color-system-orange); }
+/* 地点类型配色：Win11 低饱和功能色，选中态强调色高亮 */
+.viz-loc { cursor: pointer; --tc: var(--win-text-secondary); }
+.viz-loc.type-region   { --tc: var(--win-success); }
+.viz-loc.type-city     { --tc: var(--win-accent); }
+.viz-loc.type-building { --tc: var(--win-info); }
+.viz-loc.type-natural  { --tc: var(--win-info); }
+.viz-loc.is-selected   { --tc: var(--win-accent); }
 .viz-loc circle {
-  fill: var(--tc);
-  fill-opacity: 0.3;
+  fill: var(--win-layer);
+  fill-opacity: 1;
   stroke: var(--tc);
-  transition: fill 200ms var(--ease-fluid), stroke 200ms var(--ease-fluid);
+  transition: fill var(--win-duration-fast) var(--win-ease), stroke var(--win-duration-fast) var(--win-ease);
 }
-.viz-loc:hover circle { fill-opacity: 0.5; }
-.viz-label { fill: var(--text-primary); }
-.viz-type { fill: var(--text-tertiary); }
+.viz-loc:hover circle { stroke-width: 2.5; }
+.viz-loc.is-selected circle {
+  fill: var(--win-accent-soft);
+  stroke-width: 2.5;
+}
+.viz-label { fill: var(--win-text-primary); }
+.viz-type { fill: var(--win-text-disabled); }
 </style>

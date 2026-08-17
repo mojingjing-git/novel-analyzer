@@ -92,14 +92,14 @@ const selectedRelated = computed(() => {
 </script>
 
 <template>
-  <div class="space-y-4 p-4">
+  <div class="space-y-6">
     <h2 class="section-title">角色关系图</h2>
     <BookSelector v-model="bookId" />
-    <div v-if="!bookId" class="glass-card p-8 text-center text-sm" style="color: var(--text-tertiary)">请选择书目</div>
-    <div v-else-if="nodes.length === 0" class="glass-card p-8 text-center text-sm" style="color: var(--text-tertiary)">暂无数据</div>
+    <div v-if="!bookId" class="glass-card p-8 text-center text-sm" style="color: var(--win-text-disabled)">请选择书目</div>
+    <div v-else-if="nodes.length === 0" class="glass-card p-8 text-center text-sm" style="color: var(--win-text-disabled)">暂无数据</div>
     <div v-else class="flex gap-4">
       <div class="flex-1 glass-card p-4">
-        <div class="text-sm mb-2" style="color: var(--text-secondary)">共 {{ nodes.length }} 个角色, {{ edges.length }} 条关系</div>
+        <div class="text-sm mb-2" style="color: var(--win-text-secondary)">共 {{ nodes.length }} 个角色, {{ edges.length }} 条关系</div>
         <div class="viz-stage">
           <svg :width="svgSize" :height="svgSize">
             <line
@@ -127,15 +127,15 @@ const selectedRelated = computed(() => {
       </div>
       <div v-if="selected" class="w-64 shrink-0">
         <div class="glass-card p-4 space-y-2">
-          <h3 class="font-semibold pb-2" style="border-bottom: 1px solid var(--glass-border-subtle); letter-spacing: -0.01em">{{ nodePositions[selected]?.name }}</h3>
-          <div class="text-sm" style="color: var(--text-secondary)">事件数: {{ nodePositions[selected]?.count }}</div>
-          <div class="text-sm font-medium pt-2" style="color: var(--text-primary)">关联角色:</div>
+          <h3 class="font-semibold pb-2" style="border-bottom: 1px solid var(--win-stroke); letter-spacing: -0.01em">{{ nodePositions[selected]?.name }}</h3>
+          <div class="text-sm" style="color: var(--win-text-secondary)">事件数: {{ nodePositions[selected]?.count }}</div>
+          <div class="text-sm font-medium pt-2" style="color: var(--win-text-primary)">关联角色:</div>
           <div class="space-y-1 max-h-60 overflow-y-auto">
             <div v-for="(rel, idx) in selectedRelated" :key="idx" class="rel-row">
-              <span style="color: var(--text-primary)">{{ rel.name }}</span>
-              <span style="color: var(--text-tertiary)">权重: {{ rel.weight }}</span>
+              <span style="color: var(--win-text-primary)">{{ rel.name }}</span>
+              <span style="color: var(--win-text-disabled)">权重: {{ rel.weight }}</span>
             </div>
-            <div v-if="!selectedRelated.length" class="text-xs" style="color: var(--text-tertiary)">无关联</div>
+            <div v-if="!selectedRelated.length" class="text-xs" style="color: var(--win-text-disabled)">无关联</div>
           </div>
         </div>
       </div>
@@ -145,46 +145,47 @@ const selectedRelated = computed(() => {
 
 <style scoped>
 .viz-stage {
-  border-radius: 14px;
-  background: var(--glass-fill-subtle);
-  border: 1px solid var(--glass-border-subtle);
+  border-radius: var(--win-radius-container);
+  background: var(--win-control-alt);
+  border: 1px solid var(--win-stroke);
   display: flex;
   justify-content: center;
   overflow: auto;
 }
 .viz-edge {
-  stroke: var(--viz-edge);
-  transition: stroke 200ms var(--ease-fluid);
+  stroke: var(--win-stroke-strong);
+  opacity: 0.6;
+  transition: stroke var(--win-duration-fast) var(--win-ease);
 }
 .viz-edge.is-related {
-  stroke: var(--color-system-teal);
+  stroke: var(--win-accent);
+  opacity: 0.9;
 }
 .viz-node {
   cursor: pointer;
 }
 .viz-node circle {
-  fill: var(--color-system-blue);
-  fill-opacity: 0.28;
-  stroke: var(--color-system-blue);
-  transition: fill 200ms var(--ease-fluid), stroke 200ms var(--ease-fluid);
+  fill: var(--win-layer);
+  stroke: var(--win-stroke-strong);
+  transition: fill var(--win-duration-fast) var(--win-ease), stroke var(--win-duration-fast) var(--win-ease);
 }
 .viz-node:hover circle {
-  fill-opacity: 0.45;
+  stroke: var(--win-accent);
 }
 .viz-node.is-selected circle {
-  fill: var(--color-system-teal);
-  fill-opacity: 0.4;
-  stroke: var(--color-system-teal);
+  fill: var(--win-accent-soft);
+  stroke: var(--win-accent);
+  stroke-width: 2.5;
 }
-.viz-label { fill: var(--text-primary); }
-.viz-count { fill: var(--text-tertiary); }
+.viz-label { fill: var(--win-text-primary); }
+.viz-count { fill: var(--win-text-disabled); }
 .rel-row {
   display: flex;
   justify-content: space-between;
   font-size: 12px;
-  background: var(--glass-fill-subtle);
-  border: 1px solid var(--glass-border-subtle);
+  background: var(--win-control-alt);
+  border: 1px solid var(--win-stroke);
   padding: 4px 10px;
-  border-radius: 8px;
+  border-radius: var(--win-radius-control);
 }
 </style>

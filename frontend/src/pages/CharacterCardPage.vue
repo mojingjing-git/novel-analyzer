@@ -106,16 +106,16 @@ watch(bookId, loadCharacters)
 </script>
 
 <template>
-  <div class="space-y-4">
+  <div class="space-y-6">
     <h2 class="section-title">角色卡</h2>
     <p class="section-subtitle">从聚合数据中查看每个角色的出场、弧光、事件与关系网。</p>
 
     <BookSelector v-model="bookId" />
 
-    <div v-if="listError" class="glass-tinted-red px-4 py-2 rounded-ios-md text-sm">{{ listError }}</div>
+    <div v-if="listError" class="glass-tinted-red px-4 py-2 rounded text-sm">{{ listError }}</div>
 
     <!-- 角色列表 -->
-    <div v-if="loadingChars" class="text-sm" style="color: var(--text-tertiary)">加载角色列表中…</div>
+    <div v-if="loadingChars" class="text-sm" style="color: var(--win-text-disabled)">加载角色列表中…</div>
     <div v-else-if="characters.length" class="flex gap-2 flex-wrap">
       <button
         v-for="c in characters"
@@ -128,18 +128,18 @@ watch(bookId, loadCharacters)
         <span class="ml-1 opacity-70 text-xs">{{ c.total_events }} 事件</span>
       </button>
     </div>
-    <div v-else-if="bookId" class="text-sm" style="color: var(--text-tertiary)">
+    <div v-else-if="bookId" class="text-sm" style="color: var(--win-text-disabled)">
       该书目暂无角色数据（请先运行「数据聚合」生成 character_tracking 聚合文件）。
     </div>
 
     <!-- 角色卡详情 -->
-    <div v-if="loadingCard" class="glass-card"><div class="text-sm" style="color: var(--text-tertiary)">生成角色卡中…</div></div>
-    <div v-else-if="cardError" class="glass-card" style="color: var(--color-system-red, #e5484d)">{{ cardError }}</div>
+    <div v-if="loadingCard" class="glass-card"><div class="text-sm" style="color: var(--win-text-disabled)">生成角色卡中…</div></div>
+    <div v-else-if="cardError" class="glass-card" style="color: var(--win-danger)">{{ cardError }}</div>
 
     <div v-else-if="card" class="glass-card space-y-5">
       <div class="flex items-baseline justify-between">
-        <h3 class="text-lg font-semibold" style="color: var(--text-primary)">{{ card.name }}</h3>
-        <div class="text-xs" style="color: var(--text-tertiary)">
+        <h3 class="text-lg font-semibold" style="color: var(--win-text-primary)">{{ card.name }}</h3>
+        <div class="text-xs" style="color: var(--win-text-disabled)">
           首次出现：第{{ card.first_appearance ?? '未知' }}章 · 共 {{ card.total_events }} 事件
         </div>
       </div>
@@ -167,7 +167,7 @@ watch(bookId, loadCharacters)
       <!-- 出场章节 -->
       <div v-if="card.chapters.length">
         <div class="block-title">出场章节</div>
-        <div class="text-sm" style="color: var(--text-primary)">{{ formatChapters(card.chapters) }}</div>
+        <div class="text-sm" style="color: var(--win-text-primary)">{{ formatChapters(card.chapters) }}</div>
       </div>
 
       <!-- 人物弧光 -->
@@ -175,14 +175,14 @@ watch(bookId, loadCharacters)
         <div class="block-title">人物弧光（{{ card.arcs.length }}）</div>
         <div class="space-y-2">
           <div v-for="arc in card.arcs" :key="arc.chapter" class="arc-item">
-            <div class="font-medium" style="color: var(--text-primary)">第{{ arc.chapter }}章</div>
-            <div class="text-xs mt-1" style="color: var(--text-secondary)">
+            <div class="font-medium" style="color: var(--win-text-primary)">第{{ arc.chapter }}章</div>
+            <div class="text-xs mt-1" style="color: var(--win-text-secondary)">
               <span class="arc-key">表面行为</span>{{ arc.surface_action }}
             </div>
-            <div class="text-xs mt-0.5" style="color: var(--text-secondary)">
+            <div class="text-xs mt-0.5" style="color: var(--win-text-secondary)">
               <span class="arc-key">内在动机</span>{{ arc.inner_motivation }}
             </div>
-            <div class="text-xs mt-0.5" style="color: var(--text-secondary)">
+            <div class="text-xs mt-0.5" style="color: var(--win-text-secondary)">
               <span class="arc-key">变化幅度</span>{{ arc.change_delta }}
               <span class="arc-key ml-2">驱动</span>{{ arc.driver }}
             </div>
@@ -195,9 +195,9 @@ watch(bookId, loadCharacters)
         <div class="block-title">主要事件（{{ card.events.length }}）</div>
         <div class="space-y-1">
           <div v-for="(ev, i) in card.events" :key="i" class="event-item">
-            <span class="text-xs" style="color: var(--color-system-blue)">第{{ ev.chapter }}章</span>
-            <span class="text-sm ml-2" style="color: var(--text-primary)">{{ ev.event }}</span>
-            <span class="text-xs ml-2 opacity-70" style="color: var(--text-tertiary)">功能：{{ ev.function }}</span>
+            <span class="text-xs" style="color: var(--win-accent)">第{{ ev.chapter }}章</span>
+            <span class="text-sm ml-2" style="color: var(--win-text-primary)">{{ ev.event }}</span>
+            <span class="text-xs ml-2 opacity-70" style="color: var(--win-text-disabled)">功能：{{ ev.function }}</span>
           </div>
         </div>
       </div>
@@ -206,7 +206,7 @@ watch(bookId, loadCharacters)
       <div v-if="sortedStates(card.states).length">
         <div class="block-title">状态演变</div>
         <div class="space-y-0.5">
-          <div v-for="s in sortedStates(card.states)" :key="s.chapter" class="text-xs" style="color: var(--text-secondary)">
+          <div v-for="s in sortedStates(card.states)" :key="s.chapter" class="text-xs" style="color: var(--win-text-secondary)">
             <span class="opacity-70">第{{ s.chapter }}章：</span>{{ s.state }}
           </div>
         </div>
@@ -218,10 +218,10 @@ watch(bookId, loadCharacters)
         <div class="space-y-2">
           <div v-for="r in topRelationships(card.relationships)" :key="r.name" class="rel-item">
             <div class="flex items-baseline justify-between">
-              <span class="font-medium" style="color: var(--text-primary)">{{ r.name }}</span>
-              <span class="text-xs" style="color: var(--text-tertiary)">共同事件 {{ r.rel.event_count }} 个</span>
+              <span class="font-medium" style="color: var(--win-text-primary)">{{ r.name }}</span>
+              <span class="text-xs" style="color: var(--win-text-disabled)">共同事件 {{ r.rel.event_count }} 个</span>
             </div>
-            <div class="text-xs mt-1 opacity-80" style="color: var(--text-secondary)">
+            <div class="text-xs mt-1 opacity-80" style="color: var(--win-text-secondary)">
               首次相遇：第{{ r.rel.first_encounter }}章
             </div>
           </div>
@@ -233,44 +233,27 @@ watch(bookId, loadCharacters)
 
 <style scoped>
 .block-title {
-  font-size: 0.8rem;
+  font-size: var(--win-font-caption);
   font-weight: 600;
-  letter-spacing: 0.04em;
-  color: var(--color-system-gray);
+  color: var(--win-text-secondary);
   padding-bottom: 6px;
   margin-bottom: 8px;
-  border-bottom: 1px solid var(--glass-border-subtle);
-}
-.glass-stat {
-  background: var(--glass-fill-subtle);
-  border: 1px solid var(--glass-border-subtle);
-  border-radius: 12px;
-  padding: 12px 14px;
-}
-.glass-stat-label {
-  font-size: 0.72rem;
-  color: var(--text-tertiary);
-}
-.glass-stat-value {
-  font-size: 1.1rem;
-  font-weight: 600;
-  color: var(--text-primary);
-  margin-top: 2px;
+  border-bottom: 1px solid var(--win-stroke);
 }
 .arc-item, .rel-item {
-  background: var(--glass-fill-subtle);
-  border: 1px solid var(--glass-border-subtle);
-  border-left: 3px solid var(--color-system-blue);
-  border-radius: 10px;
+  background: var(--win-control-alt);
+  border: 1px solid var(--win-stroke);
+  border-left: 3px solid var(--win-accent);
+  border-radius: var(--win-radius-container);
   padding: 10px 12px;
 }
 .event-item {
-  border-left: 3px solid var(--color-system-amber, #d9a23a);
+  border-left: 3px solid var(--win-warning);
   padding-left: 8px;
 }
 .arc-key {
   display: inline-block;
   min-width: 56px;
-  color: var(--text-tertiary);
+  color: var(--win-text-disabled);
 }
 </style>

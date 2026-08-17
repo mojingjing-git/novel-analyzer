@@ -143,13 +143,13 @@ const categoryStats = computed(() => {
 </script>
 
 <template>
-  <div class="space-y-4 p-4">
+  <div class="space-y-6">
     <h2 class="section-title">时间线</h2>
     <BookSelector v-model="bookId" />
     <div v-if="bookId" class="flex gap-2 flex-wrap items-center">
       <button @click="mode = 'events'" class="glass-pill" :class="{ 'is-active': mode === 'events' }">事件时间线 ({{ filteredEvents.length }})</button>
       <button @click="mode = 'foreshadows'" class="glass-pill" :class="{ 'is-active': mode === 'foreshadows' }">伏笔时间线 ({{ filteredForeshadows.length }})</button>
-      <span class="text-sm ml-2" style="color: var(--text-secondary)">最低重要度:</span>
+      <span class="text-sm ml-2" style="color: var(--win-text-secondary)">最低重要度:</span>
       <select v-model="minImportance" class="glass-select" style="width: 92px">
         <option value="低">全部</option>
         <option value="中">中及以上</option>
@@ -168,7 +168,7 @@ const categoryStats = computed(() => {
       class="glass-card p-3"
     >
       <div class="flex items-center justify-between mb-2">
-        <div class="text-sm" style="color: var(--text-secondary)">仅显示勾选分类的伏笔</div>
+        <div class="text-sm" style="color: var(--win-text-secondary)">仅显示勾选分类的伏笔</div>
         <div class="flex gap-2">
           <button @click="selectAllCategories" class="glass-pill">全选</button>
           <button @click="clearAllCategories" class="glass-pill">清空</button>
@@ -187,8 +187,8 @@ const categoryStats = computed(() => {
         </button>
       </div>
     </div>
-    <div v-if="!bookId" class="glass-card p-8 text-center text-sm" style="color: var(--text-tertiary)">请选择书目</div>
-    <div v-else-if="chapters.length === 0" class="glass-card p-8 text-center text-sm" style="color: var(--text-tertiary)">暂无数据</div>
+    <div v-if="!bookId" class="glass-card p-8 text-center text-sm" style="color: var(--win-text-disabled)">请选择书目</div>
+    <div v-else-if="chapters.length === 0" class="glass-card p-8 text-center text-sm" style="color: var(--win-text-disabled)">暂无数据</div>
     <div v-else class="space-y-3">
       <div v-for="[ch, group] in chapters" :key="ch" class="flex gap-3">
         <div class="shrink-0 w-16 text-right">
@@ -198,10 +198,10 @@ const categoryStats = computed(() => {
           <template v-if="mode === 'events'">
             <div v-for="(ev, idx) in group.events" :key="idx" class="tl-card">
               <div class="flex items-start gap-2">
-                <span class="text-xs mt-0.5" style="color: var(--text-tertiary)">#{{ idx + 1 }}</span>
+                <span class="text-xs mt-0.5" style="color: var(--win-text-disabled)">#{{ idx + 1 }}</span>
                 <div class="flex-1">
-                  <p style="color: var(--text-primary)">{{ ev.event }}</p>
-                  <div class="flex gap-3 mt-1 text-xs" style="color: var(--text-secondary)">
+                  <p style="color: var(--win-text-primary)">{{ ev.event }}</p>
+                  <div class="flex gap-3 mt-1 text-xs" style="color: var(--win-text-secondary)">
                     <span v-if="charStr(ev.characters)">角色: {{ charStr(ev.characters) }}</span>
                     <span v-if="ev.function">功能: {{ ev.function }}</span>
                   </div>
@@ -233,19 +233,17 @@ const categoryStats = computed(() => {
 
 <style scoped>
 .tl-card {
-  background: var(--glass-clear);
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
-  border: 1px solid var(--glass-rim-color);
-  box-shadow: var(--glass-inner);
-  border-radius: 14px;
+  background: var(--win-layer);
+  border: 1px solid var(--win-stroke);
+  border-radius: var(--win-radius-container);
   padding: 12px 14px;
   font-size: 13px;
-  color: var(--text-primary);
+  color: var(--win-text-primary);
+  box-shadow: var(--win-shadow-control);
 }
-/* 伏笔类型着色：低饱和系统色底 + 同色描边，暗色下依然和谐 */
-.tl-tint-green  { background: rgba(52, 199, 89, 0.1);  border-color: rgba(52, 199, 89, 0.25); }
-.tl-tint-blue   { background: rgba(0, 122, 255, 0.1);  border-color: rgba(0, 122, 255, 0.25); }
-.tl-tint-orange { background: rgba(255, 149, 0, 0.1);  border-color: rgba(255, 149, 0, 0.25); }
-.tl-tint-purple { background: rgba(175, 82, 222, 0.1); border-color: rgba(175, 82, 222, 0.25); }
+/* 伏笔类型着色：Win11 低饱和功能色浅底 + 同色描边 */
+.tl-tint-green  { background: var(--win-success-bg); border-color: var(--win-success); }
+.tl-tint-blue   { background: var(--win-info-bg);    border-color: var(--win-info); }
+.tl-tint-orange { background: var(--win-warning-bg); border-color: var(--win-warning); }
+.tl-tint-purple { background: var(--win-accent-soft); border-color: var(--win-accent); }
 </style>

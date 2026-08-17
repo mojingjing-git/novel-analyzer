@@ -1,5 +1,6 @@
 @echo off
-setlocal EnableExtensions
+chcp 65001 >nul
+setlocal EnableExtensions EnableDelayedExpansion
 echo === Build Novel Analyzer Frontend ===
 echo === 本地构建（避开 esbuild 网络盘限制），再把 dist 同步回共享盘 ===
 echo.
@@ -24,7 +25,7 @@ echo [%date% %time%] Using npm: %NPM_CMD% >> "%RUN_LOG%"
 rem 1) 源码同步到本地（排除 node_modules/dist/.git）
 set "LOCAL_BUILD=%LOCALAPPDATA%\NovelAnalyzer\build"
 if not exist "%LOCAL_BUILD%" mkdir "%LOCAL_BUILD%"
-robocopy frontend "%LOCAL_BUILD%" /E /XD node_modules dist .git /R:2 /W:2 /NFL /NDL >> "%RUN_LOG%"
+robocopy frontend "%LOCAL_BUILD%" /E /XD node_modules dist .git .bak_* .tmp_verify /R:2 /W:2 /NFL /NDL >> "%RUN_LOG%"
 if errorlevel 8 (
   echo [%date% %time%] 同步前端源码失败 >> "%RUN_LOG%"
   echo 同步前端源码失败！
@@ -38,9 +39,9 @@ if not exist "%LOCAL_BUILD%\node_modules" (
   echo 正在安装前端依赖（首次较慢，需联网）...
   pushd "%LOCAL_BUILD%"
   call %NPM_CMD% install >> "%RUN_LOG%" 2>&1
-  set NPM_ERR=%ERRORLEVEL%
+  set NPM_ERR=!ERRORLEVEL!
   popd
-  if not "%NPM_ERR%"=="0" (
+  if not "!NPM_ERR!"=="0" (
     echo [%date% %time%] npm install 失败 >> "%RUN_LOG%"
     echo npm install 失败，详见 build.log（通常是无外网/代理拦截 npm registry）。
     popd

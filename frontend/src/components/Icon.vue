@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * 线性 SVG 图标库（替代 emoji）
- * 风格：1.6px stroke / 24×24 / 圆角端点
+ * 风格：1.2px stroke / 24×24 / 圆角端点（近 Segoe Fluent 单线）
  */
 import { computed } from 'vue'
 
@@ -12,7 +12,7 @@ interface Props {
 }
 const props = withDefaults(defineProps<Props>(), {
   size: 18,
-  strokeWidth: 1.6,
+  strokeWidth: 1.2,
 })
 
 // SVG 路径数据（来自 Phosphor Icons 的 line 变体，简化版）
@@ -65,6 +65,9 @@ const ICONS: Record<string, string> = {
   error: '<circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>',
   plus: '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
   filter: '<polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>',
+  minus: '<line x1="5" y1="12" x2="19" y2="12"/>',
+  square: '<rect x="5" y="5" width="14" height="14" rx="1.5"/>',
+  maximize: '<rect x="5" y="5" width="14" height="14" rx="1.5"/>',
 }
 
 const path = computed(() => ICONS[props.name] || ICONS.info || '')

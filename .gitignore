@@ -8,7 +8,12 @@ queue_state.json
 *.log
 *.log.*
 *.bak
+.bak_*
 .tmp_verify/
+app.lock
+
+# 测试数据与备份残留
+1/
 
 # Python
 __pycache__/

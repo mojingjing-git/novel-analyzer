@@ -101,16 +101,16 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="space-y-4 p-4">
+  <div class="space-y-6">
     <h2 class="section-title">风格分析</h2>
     <BookSelector v-model="bookId" />
     <div class="glass-card p-4 space-y-3">
-      <label class="flex items-center gap-2 text-sm" style="color: var(--text-primary)">
+      <label class="flex items-center gap-2 text-sm" style="color: var(--win-text-primary)">
         <input v-model="useLlm" type="checkbox" :disabled="running" />
         使用LLM（含七维评分）
       </label>
       <div class="flex items-center gap-2">
-        <label class="text-sm w-20" style="color: var(--text-secondary)">分析章数:</label>
+        <label class="text-sm w-20" style="color: var(--win-text-secondary)">分析章数:</label>
         <input v-model.number="limit" type="number" :disabled="running" class="glass-input w-24" />
       </div>
       <div class="flex gap-2">
@@ -120,17 +120,20 @@ onUnmounted(() => {
         <span v-if="running && phase" class="glass-badge badge-blue self-center">{{ phase === 'computing_stats' ? '统计计算中' : phase === 'llm_extract' ? 'LLM 语义提取中' : phase === 'done' ? '已完成' : phase === 'error' ? '失败' : phase }}</span>
       </div>
     </div>
-    <div v-if="error" class="glass-tinted-red px-4 py-2 rounded-ios-md text-sm">{{ error }}</div>
+    <div v-if="error" class="glass-tinted-red px-4 py-2 rounded text-sm">{{ error }}</div>
     <div>
       <div class="flex items-center justify-between mb-1">
-        <span class="text-sm font-medium" style="color: var(--text-primary)">日志</span>
-        <span class="glass-badge" :class="connected ? 'badge-green' : 'badge-gray'" style="font-size: 11px">{{ connected ? '● 已连接' : '○ 未连接' }}</span>
+        <span class="text-sm font-medium" style="color: var(--win-text-primary)">日志</span>
+        <span class="conn-state" style="font-size: 11px">
+          <span class="dot" :class="connected ? 'on' : 'off'"></span>
+          {{ connected ? '已连接' : '未连接' }}
+        </span>
       </div>
       <LogConsole :logs="logs" />
     </div>
     <div v-if="styleContent" class="glass-card p-4">
-      <h3 class="font-medium pb-2 mb-3" style="border-bottom: 1px solid var(--glass-border-subtle); color: var(--text-primary)">风格分析结果 (style.md)</h3>
-      <pre class="text-sm whitespace-pre-wrap max-h-96 overflow-y-auto" style="color: var(--text-primary)">{{ styleContent }}</pre>
+      <h3 class="font-medium pb-2 mb-3" style="border-bottom: 1px solid var(--win-stroke); color: var(--text-primary)">风格分析结果 (style.md)</h3>
+      <pre class="text-sm whitespace-pre-wrap max-h-96 overflow-y-auto" style="color: var(--win-text-primary)">{{ styleContent }}</pre>
     </div>
   </div>
 </template>

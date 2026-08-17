@@ -28,6 +28,9 @@ DEFAULT_FINAL_REPORT_MIN_WORDS = 5000  # 最终报告最低字数建议
 DEFAULT_VOLUME_COMPRESS_THRESHOLD = 80000  # 卷摘要总字符数阈值（超过则触发压缩）
 DEFAULT_VOLUME_COMPRESS_GROUP = 5          # 每 N 卷为一组（首尾各 1 组保留全文，中间组截断到 1/2）
 
+RECHECK_FULLTEXT_BUDGET_CHARS = 150000  # 全书伏笔复检的卷摘要字符预算（≈10万token，给输出留余量）；超出按伏笔埋设章砍"埋设前的卷"降级（召回无损：回收必发生在埋设之后）
+DEFAULT_FORESHADOW_RECHECK_BATCH_SIZE = 40  # 全书伏笔复检每次 LLM 调用携带的活跃伏笔数
+
 # Rolling Summary 参数（结构化 JSON 增量方案）
 ROLLING_SUMMARY_MAX_TOKENS = None      # rolling 摘要输出 token 上限（None=不限制，让模型自然结束）
 ROLLING_SUMMARY_MAX_RETRIES = 1       # rolling 调用失败后最多重试次数（总调用 = 1 + 此值）

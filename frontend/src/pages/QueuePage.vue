@@ -158,7 +158,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="space-y-4 p-4">
+  <div class="space-y-6">
     <div class="flex items-center justify-between">
       <div>
         <h2 class="section-title">分析队列</h2>
@@ -175,9 +175,9 @@ onUnmounted(() => {
       <ProgressBar :current="progress.current" :total="progress.total" :eta="progress.eta" :block-size="currentBlockSize" label="进度" />
     </div>
 
-    <div v-if="error" class="glass-tinted-red px-4 py-2 rounded-ios-md text-sm" style="color: var(--color-system-red)">{{ error }}</div>
+    <div v-if="error" class="glass-tinted-red px-4 py-2 rounded text-sm">{{ error }}</div>
 
-    <div v-if="summaryHint" class="glass-tinted-blue px-4 py-2 rounded-ios-md text-sm" style="color: var(--color-system-blue)">
+    <div v-if="summaryHint" class="glass-tinted-blue px-4 py-2 rounded text-sm">
       {{ summaryHint }}
     </div>
 
@@ -193,7 +193,12 @@ onUnmounted(() => {
         </thead>
         <tbody>
           <tr v-if="!status?.items?.length">
-            <td colspan="4" style="text-align: center; padding: 32px; color: var(--color-system-gray)">队列为空</td>
+            <td colspan="4">
+              <div class="empty-state">
+                <span class="empty-icon"><Icon name="queue" :size="24" /></span>
+                <span>队列为空 — 扫描工作区或开始分析后，书目会出现在这里</span>
+              </div>
+            </td>
           </tr>
           <tr v-for="(item, idx) in status?.items || []" :key="idx">
             <td style="font-weight: 500">{{ item.name }}</td>
@@ -202,10 +207,10 @@ onUnmounted(() => {
                 {{ statusLabels[item.status] || item.status }}
               </span>
             </td>
-            <td style="color: var(--color-system-gray)">
+            <td style="color: var(--win-text-secondary)">
               <template v-if="item.block_size > 1">
                 {{ item.completed_chapters }}/{{ Math.ceil(item.total_chapters / item.block_size) }} 块
-                <span style="font-size: 10px; margin-left: 4px">({{ item.completed_chapters * item.block_size }}/{{ item.total_chapters }} 章)</span>
+                <span style="font-size: 11px; margin-left: 4px">({{ item.completed_chapters * item.block_size }}/{{ item.total_chapters }} 章)</span>
               </template>
               <template v-else>
                 {{ item.completed_chapters }}/{{ item.total_chapters }}
@@ -296,10 +301,11 @@ onUnmounted(() => {
             <span class="col-sub2">完整日志见「设置」页底部</span>
           </div>
           <div class="flex items-center gap-3">
-            <span class="glass-badge" :class="connected ? 'badge-green' : 'badge-gray'" style="font-size: 11px">
-              {{ connected ? '● 已连接' : '○ 未连接' }}
+            <span class="conn-state" style="font-size: 11px">
+              <span class="dot" :class="connected ? 'on' : 'off'"></span>
+              {{ connected ? '已连接' : '未连接' }}
             </span>
-            <button @click="clear" class="glass-button" style="padding: 4px 10px; font-size: 12px">清空</button>
+            <button @click="clear" class="glass-button" style="font-size: 12px">清空</button>
           </div>
         </div>
         <LogConsole :logs="logs" :simplified="true" class="split-log" />
@@ -307,9 +313,9 @@ onUnmounted(() => {
     </div>
 
     <div v-if="tokens?.chapter_stats?.length" class="glass-card">
-      <div class="px-4 py-2.5 text-sm font-semibold" style="border-bottom: 1px solid var(--glass-border-subtle)">
+      <div class="px-4 py-2.5 text-sm font-semibold" style="border-bottom: 1px solid var(--win-stroke)">
         每章统计
-        <span style="color: var(--color-system-gray); font-weight: 400">(最近 {{ Math.min(50, tokens.chapter_stats.length) }} 章 / 共 {{ tokens.chapter_stats.length }} 章)</span>
+        <span style="color: var(--win-text-secondary); font-weight: 400">(最近 {{ Math.min(50, tokens.chapter_stats.length) }} 章 / 共 {{ tokens.chapter_stats.length }} 章)</span>
       </div>
       <table class="glass-table" style="border-radius: 0; border: none">
         <thead>
@@ -328,7 +334,7 @@ onUnmounted(() => {
     </div>
 
     <div v-if="status?.items?.length && !status?.running" class="flex justify-end">
-      <button @click="handleClear" :disabled="busy" class="glass-button" style="color: var(--color-system-red); padding: 6px 14px">清空队列</button>
+      <button @click="handleClear" :disabled="busy" class="glass-button" style="color: var(--win-danger)">清空队列</button>
     </div>
 
     <!-- 删除确认（玻璃弹窗） -->
@@ -394,10 +400,10 @@ onUnmounted(() => {
   font-size: 14px;
   font-weight: 600;
   letter-spacing: -0.01em;
-  color: var(--text-primary);
+  color: var(--win-text-primary);
 }
 .col-sub {
-  color: var(--color-system-gray);
+  color: var(--win-text-secondary);
   font-weight: 400;
   margin-left: 6px;
   font-size: 12px;
@@ -406,7 +412,7 @@ onUnmounted(() => {
   font-size: 11px;
   font-weight: 400;
   line-height: 1.3;
-  color: var(--text-tertiary);
+  color: var(--win-text-disabled);
 }
 /* 让日志区撑满所在列（覆盖 LogConsole 自带的 max-height:320px） */
 .split-log {
@@ -442,6 +448,6 @@ onUnmounted(() => {
   pointer-events: none;
 }
 .op-danger {
-  color: var(--color-system-red);
+  color: var(--win-danger);
 }
 </style>

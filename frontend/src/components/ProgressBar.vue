@@ -25,10 +25,10 @@ const chapterInfo = computed(() => {
 
 <template>
   <div class="space-y-1.5">
-    <div class="flex justify-between text-xs" style="color: var(--color-system-gray)">
+    <div class="flex justify-between text-xs" style="color: var(--win-text-secondary)">
       <span>
         {{ label || '进度' }}: {{ current }}/{{ total }}
-        <span v-if="chapterInfo" style="color: var(--color-system-blue); margin-left: 6px">
+        <span v-if="chapterInfo" style="color: var(--win-accent); margin-left: 6px">
           ({{ chapterInfo.current }}/{{ chapterInfo.total }} 章)
         </span>
       </span>

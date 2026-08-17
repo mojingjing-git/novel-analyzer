@@ -221,31 +221,31 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="space-y-4 max-w-3xl p-4" v-if="config">
+  <div class="space-y-6 max-w-3xl" v-if="config">
     <div>
       <h2 class="section-title">设置</h2>
       <p class="section-subtitle">API、分析、知识库限制等参数</p>
     </div>
 
     <div class="glass-card p-4 space-y-3">
-      <h3 class="font-semibold pb-2" style="border-bottom: 1px solid var(--glass-border-subtle); letter-spacing: -0.01em">API 配置</h3>
+      <h3 class="font-semibold pb-2" style="border-bottom: 1px solid var(--win-stroke); letter-spacing: -0.01em">API 配置</h3>
       <div class="flex items-center gap-2">
-        <label class="w-32 text-sm" style="color: var(--color-system-gray)">API 预设:</label>
+        <label class="w-32 text-sm" style="color: var(--win-text-secondary)">API 预设:</label>
         <select @change="onPreset(($event.target as HTMLSelectElement).value)" class="glass-input flex-1">
           <option value="">选择预设...</option>
           <option v-for="(_, name) in presets" :key="name" :value="name">{{ name }}</option>
         </select>
       </div>
       <div class="flex items-center gap-2">
-        <label class="w-32 text-sm" style="color: var(--color-system-gray)">Base URL:</label>
+        <label class="w-32 text-sm" style="color: var(--win-text-secondary)">Base URL:</label>
         <input v-model="config.api.base_url" :class="errCls('base_url')" class="glass-input flex-1" />
       </div>
       <div class="flex items-center gap-2">
-        <label class="w-32 text-sm" style="color: var(--color-system-gray)">API Key:</label>
+        <label class="w-32 text-sm" style="color: var(--win-text-secondary)">API Key:</label>
         <input v-model="config.api.api_key" :class="errCls('api_key')" type="password" class="glass-input flex-1" />
       </div>
       <div class="flex items-center gap-2">
-        <label class="w-32 text-sm shrink-0" style="color: var(--color-system-gray)">模型:</label>
+        <label class="w-32 text-sm shrink-0" style="color: var(--win-text-secondary)">模型:</label>
         <div class="relative flex-1" ref="modelBoxRef">
           <input
             v-model="config.api.model"
@@ -260,9 +260,9 @@ onMounted(load)
           <div
             v-if="showModelList"
             class="absolute z-20 mt-1 w-full max-h-60 overflow-auto rounded-lg border p-1 space-y-0.5"
-            style="background: var(--glass-frost); border-color: var(--glass-rim-color); backdrop-filter: var(--glass-blur); box-shadow: var(--glass-shadow), var(--glass-inner)"
+            style="background: var(--win-layer); border: 1px solid var(--win-stroke); box-shadow: var(--win-shadow-flyout); border-radius: 8px"
           >
-            <div v-if="filteredModels.length === 0" class="px-2 py-1.5 text-xs" style="color: var(--text-tertiary)">
+            <div v-if="filteredModels.length === 0" class="px-2 py-1.5 text-xs" style="color: var(--win-text-disabled)">
               无匹配模型，以上方输入值为准
             </div>
             <button
@@ -271,14 +271,14 @@ onMounted(load)
               type="button"
               @mousedown.prevent="pickModel(m)"
               class="model-option block w-full text-left px-2 py-1.5 rounded-md text-sm"
-              style="color: var(--text-primary)"
+              style="color: var(--win-text-primary)"
             >{{ m }}</button>
           </div>
         </div>
         <button @click="loadModels" class="glass-button" style="padding: 8px 12px; white-space: nowrap">获取模型</button>
       </div>
       <div class="flex items-center gap-2">
-        <label class="w-32 text-sm shrink-0" style="color: var(--color-system-gray)" title="请求协议格式：auto=按 base_url/API Key/模型名特征自动检测；openai=OpenAI 兼容 /chat/completions；anthropic=Anthropic /v1/messages">协议格式:</label>
+        <label class="w-32 text-sm shrink-0" style="color: var(--win-text-secondary)" title="请求协议格式：auto=按 base_url/API Key/模型名特征自动检测；openai=OpenAI 兼容 /chat/completions；anthropic=Anthropic /v1/messages">协议格式:</label>
         <select v-model="config.api.provider" class="glass-input flex-1">
           <option value="auto">auto（自动检测）</option>
           <option value="openai">openai（OpenAI 兼容）</option>
@@ -287,25 +287,25 @@ onMounted(load)
       </div>
       <p v-if="modelError" class="glass-tinted-red px-3 py-2 rounded text-xs">{{ modelError }}</p>
       <div class="flex items-center gap-2">
-        <label class="w-32 text-sm" style="color: var(--color-system-gray)">Max Tokens:</label>
+        <label class="w-32 text-sm" style="color: var(--win-text-secondary)">Max Tokens:</label>
         <input v-model.number="config.api.max_tokens" :class="errCls('max_tokens')" type="number" class="glass-input" style="width: 130px" />
       </div>
       <div class="flex items-center gap-2">
-        <label class="w-32 text-sm" style="color: var(--color-system-gray)">分析 Timeout (s):</label>
+        <label class="w-32 text-sm" style="color: var(--win-text-secondary)">分析 Timeout (s):</label>
         <input v-model.number="config.api.timeout" :class="errCls('timeout')" type="number" class="glass-input" style="width: 100px" />
       </div>
       <div class="flex items-center gap-2">
-        <label class="w-32 text-sm" style="color: var(--color-system-gray)" title="最终总结（卷摘要+最终报告+伏笔 reconciliation/复检+风格提取）使用的 API 超时，建议比分析 Timeout 长（默认 600s）">总结 Timeout (s):</label>
+        <label class="w-32 text-sm" style="color: var(--win-text-secondary)" title="最终总结（卷摘要+最终报告+伏笔 reconciliation/复检+风格提取）使用的 API 超时，建议比分析 Timeout 长（默认 600s）">总结 Timeout (s):</label>
         <input v-model.number="config.api.summary_timeout" :class="errCls('summary_timeout')" type="number" class="glass-input" style="width: 100px" />
       </div>
       <div class="flex items-center gap-2">
-        <label class="w-32 text-sm" style="color: var(--color-system-gray)">JSON 模式:</label>
+        <label class="w-32 text-sm" style="color: var(--win-text-secondary)">JSON 模式:</label>
         <select v-model="config.api.json_mode" class="glass-input flex-1">
           <option v-for="m in jsonModes" :key="m.value" :value="m.value">{{ m.label }}</option>
         </select>
       </div>
       <div class="flex items-center gap-2">
-        <label class="w-32 text-sm" style="color: var(--color-system-gray)">思考模式:</label>
+        <label class="w-32 text-sm" style="color: var(--win-text-secondary)">思考模式:</label>
         <select :value="getThinkingMode()" @change="setThinkingMode(($event.target as HTMLSelectElement).value)" class="glass-input flex-1">
           <option v-for="m in [...thinkingModes, ...dynamicThinkingOptions]" :key="m.value" :value="m.value">{{ m.label }}</option>
         </select>
@@ -318,63 +318,63 @@ onMounted(load)
           {{ probeResult.note }}
         </p>
         <div v-for="r in probeResult.results" :key="r.param" class="flex gap-2 items-center flex-wrap">
-          <span class="w-40 shrink-0" style="color: var(--color-system-gray)">{{ r.param }}</span>
-          <span v-if="r.worked === true" class="pm-ok" style="color: var(--color-system-green)">✓ 有效</span>
-          <span v-else-if="r.worked === false" style="color: var(--color-system-red)">✗ 无效</span>
-          <span v-else style="color: var(--text-tertiary)">基线</span>
-          <span style="color: var(--text-tertiary)">思考 {{ r.reasoning_chars }}字 / 内容 {{ r.content_chars }}字</span>
-          <span v-if="r.error" style="color: var(--color-system-red)">{{ r.error }}</span>
+          <span class="w-40 shrink-0" style="color: var(--win-text-secondary)">{{ r.param }}</span>
+          <span v-if="r.worked === true" class="pm-ok" style="color: var(--win-success)">✓ 有效</span>
+          <span v-else-if="r.worked === false" style="color: var(--win-danger)">✗ 无效</span>
+          <span v-else style="color: var(--win-text-disabled)">基线</span>
+          <span style="color: var(--win-text-disabled)">思考 {{ r.reasoning_chars }}字 / 内容 {{ r.content_chars }}字</span>
+          <span v-if="r.error" style="color: var(--win-danger)">{{ r.error }}</span>
         </div>
       </div>
       <p v-if="probeError" class="ml-32 glass-tinted-red px-3 py-2 rounded text-xs">{{ probeError }}</p>
     </div>
 
     <div class="glass-card p-4 space-y-3">
-      <h3 class="font-semibold pb-2" style="border-bottom: 1px solid var(--glass-border-subtle); letter-spacing: -0.01em">温度退火 & 重试</h3>
+      <h3 class="font-semibold pb-2" style="border-bottom: 1px solid var(--win-stroke); letter-spacing: -0.01em">温度退火 & 重试</h3>
       <div class="grid grid-cols-2 gap-3">
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">初始温度:</label><input v-model.number="config.api.temperature" :class="errCls('temperature')" type="number" step="0.01" class="glass-input" style="width: 90px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">温度步长:</label><input v-model.number="config.api.temperature_step" :class="errCls('temperature_step')" type="number" step="0.01" class="glass-input" style="width: 90px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">退火重试:</label><input v-model.number="config.api.temperature_max_retries" :class="errCls('temperature_max_retries')" type="number" min="1" class="glass-input" style="width: 90px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">退避重试:</label><input v-model.number="config.api.backoff_max_retries" :class="errCls('backoff_max_retries')" type="number" min="0" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)">初始温度:</label><input v-model.number="config.api.temperature" :class="errCls('temperature')" type="number" step="0.01" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)">温度步长:</label><input v-model.number="config.api.temperature_step" :class="errCls('temperature_step')" type="number" step="0.01" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)">退火重试:</label><input v-model.number="config.api.temperature_max_retries" :class="errCls('temperature_max_retries')" type="number" min="1" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)">退避重试:</label><input v-model.number="config.api.backoff_max_retries" :class="errCls('backoff_max_retries')" type="number" min="0" class="glass-input" style="width: 90px" /></div>
       </div>
     </div>
 
     <div class="glass-card p-4 space-y-3">
-      <h3 class="font-semibold pb-2" style="border-bottom: 1px solid var(--glass-border-subtle); letter-spacing: -0.01em">分析配置</h3>
+      <h3 class="font-semibold pb-2" style="border-bottom: 1px solid var(--win-stroke); letter-spacing: -0.01em">分析配置</h3>
       <div class="grid grid-cols-2 gap-3">
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">并发数:</label><input v-model.number="config.analysis.concurrency" type="number" min="1" max="20" class="glass-input" style="width: 90px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">块大小 (章/块):</label><input v-model.number="config.analysis.block_size" type="number" min="1" max="10" class="glass-input" style="width: 90px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">主线最大字数:</label><input v-model.number="config.analysis.max_arc_length" type="number" class="glass-input" style="width: 110px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">Prompt 主线条数:</label><input v-model.number="config.analysis.max_arcs_in_prompt" type="number" class="glass-input" style="width: 90px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">Prompt 摘要数:</label><input v-model.number="config.analysis.max_summaries_in_prompt" type="number" class="glass-input" style="width: 90px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">时间线截断:</label><input v-model.number="config.analysis.timeline_truncate" type="number" class="glass-input" style="width: 110px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">角色状态数:</label><input v-model.number="config.analysis.max_character_states" type="number" class="glass-input" style="width: 90px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">世界观条数:</label><input v-model.number="config.analysis.max_world_items" type="number" class="glass-input" style="width: 90px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">伏笔网络条数:</label><input v-model.number="config.analysis.max_foreshadow_entries" type="number" class="glass-input" style="width: 90px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">分卷摘要字数:</label><input v-model.number="config.analysis.batch_summary_min_words" type="number" class="glass-input" style="width: 110px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">最终报告字数:</label><input v-model.number="config.analysis.final_report_min_words" type="number" class="glass-input" style="width: 110px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)" title="卷摘要拼接总字符超过此阈值时触发分层压缩（首尾各 1 组保留全文，中间组截断到 1/2）">压缩阈值 (字符):</label><input v-model.number="config.analysis.volume_compress_threshold" type="number" min="10000" class="glass-input" style="width: 110px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)" title="每 N 卷为一组（首尾各 1 组保留全文，中间组截断到 1/2）">压缩组大小 (卷):</label><input v-model.number="config.analysis.volume_compress_group" type="number" min="1" class="glass-input" style="width: 90px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)" title="伏笔最低保留重要度：低/中/高；过滤阶段会丢弃低于该等级的所有伏笔">伏笔最低重要度:</label>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)">并发数:</label><input v-model.number="config.analysis.concurrency" type="number" min="1" max="20" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)">块大小 (章/块):</label><input v-model.number="config.analysis.block_size" type="number" min="1" max="10" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)">主线最大字数:</label><input v-model.number="config.analysis.max_arc_length" type="number" class="glass-input" style="width: 110px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)">Prompt 主线条数:</label><input v-model.number="config.analysis.max_arcs_in_prompt" type="number" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)">Prompt 摘要数:</label><input v-model.number="config.analysis.max_summaries_in_prompt" type="number" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)">时间线截断:</label><input v-model.number="config.analysis.timeline_truncate" type="number" class="glass-input" style="width: 110px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)">角色状态数:</label><input v-model.number="config.analysis.max_character_states" type="number" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)">世界观条数:</label><input v-model.number="config.analysis.max_world_items" type="number" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)">伏笔网络条数:</label><input v-model.number="config.analysis.max_foreshadow_entries" type="number" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)">分卷摘要字数:</label><input v-model.number="config.analysis.batch_summary_min_words" type="number" class="glass-input" style="width: 110px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)">最终报告字数:</label><input v-model.number="config.analysis.final_report_min_words" type="number" class="glass-input" style="width: 110px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" title="卷摘要拼接总字符超过此阈值时触发分层压缩（首尾各 1 组保留全文，中间组截断到 1/2）">压缩阈值 (字符):</label><input v-model.number="config.analysis.volume_compress_threshold" type="number" min="10000" class="glass-input" style="width: 110px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" title="每 N 卷为一组（首尾各 1 组保留全文，中间组截断到 1/2）">压缩组大小 (卷):</label><input v-model.number="config.analysis.volume_compress_group" type="number" min="1" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" title="伏笔最低保留重要度：低/中/高；过滤阶段会丢弃低于该等级的所有伏笔">伏笔最低重要度:</label>
           <select v-model="config.analysis.foreshadow_min_importance" class="glass-input" style="width: 100px"><option>低</option><option>中</option><option>高</option></select>
         </div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)" title="伏笔最低保留置信度：低/中/高；importance 已收一道，confidence 兜底">伏笔最低置信度:</label>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" title="伏笔最低保留置信度：低/中/高；importance 已收一道，confidence 兜底">伏笔最低置信度:</label>
           <select v-model="config.analysis.foreshadow_min_confidence" class="glass-input" style="width: 100px"><option>低</option><option>中</option><option>高</option></select>
         </div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)" title="importance=高 的伏笔最多保留多少（-1=无上限）">高 importance 上限:</label><input v-model.number="config.analysis.max_foreshadow_catalog_high" type="number" min="-1" class="glass-input" style="width: 90px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)" title="importance=中 的伏笔最多保留多少（按综合权重排序截断）">中 importance 上限:</label><input v-model.number="config.analysis.max_foreshadow_catalog_mid" type="number" min="0" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" title="importance=高 的伏笔最多保留多少（-1=无上限）">高 importance 上限:</label><input v-model.number="config.analysis.max_foreshadow_catalog_high" type="number" min="-1" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" title="importance=中 的伏笔最多保留多少（按综合权重排序截断）">中 importance 上限:</label><input v-model.number="config.analysis.max_foreshadow_catalog_mid" type="number" min="0" class="glass-input" style="width: 90px" /></div>
       </div>
     </div>
 
     <div v-if="categoryDefs.length" class="glass-card p-4 space-y-3">
-      <div class="flex items-center justify-between pb-2" style="border-bottom: 1px solid var(--glass-border-subtle)">
+      <div class="flex items-center justify-between pb-2" style="border-bottom: 1px solid var(--win-stroke)">
         <h3 class="font-semibold" style="letter-spacing: -0.01em">伏笔分类（功能类别，治本核心）</h3>
         <div class="flex gap-2">
           <button @click="selectAllCategories" class="glass-pill">全选</button>
           <button @click="clearAllCategories" class="glass-pill" title="清空 = 只保留「其他」兜底">清空</button>
         </div>
       </div>
-      <p class="text-xs" style="color: var(--text-secondary)">
+      <p class="text-xs" style="color: var(--win-text-secondary)">
         LLM 抽取伏笔时会自由产出 type 字符串（可能 100+ 种），系统会用 LLM 归一化到下列 50 个功能类别之一。
         未勾选的类别会被过滤掉。建议至少保留「其他」作为兜底。已选 {{ keptSet.size }} / {{ categoryDefs.length }}。
       </p>
@@ -382,8 +382,8 @@ onMounted(load)
         <label
           v-for="cat in categoryDefs"
           :key="cat.name"
-          class="flex items-start gap-2 text-sm cursor-pointer p-1.5 rounded"
-          :class="{ 'glass-tinted-blue': keptSet.has(cat.name) }"
+          class="category-chip flex items-start gap-2 text-sm cursor-pointer p-1.5"
+          :class="{ 'is-checked': keptSet.has(cat.name) }"
           :title="cat.description + (cat.examples.length ? '\\n\\n典型示例: ' + cat.examples.join(', ') : '')"
         >
           <input
@@ -392,20 +392,20 @@ onMounted(load)
             @change="toggleCategory(cat.name)"
             style="margin-top: 3px"
           />
-          <span style="color: var(--text-primary)">{{ cat.name }}</span>
+          <span style="color: var(--win-text-primary)">{{ cat.name }}</span>
         </label>
       </div>
     </div>
 
     <div class="glass-card p-4 space-y-3">
-      <h3 class="font-semibold pb-2" style="border-bottom: 1px solid var(--glass-border-subtle); letter-spacing: -0.01em">滚动总结参数</h3>
+      <h3 class="font-semibold pb-2" style="border-bottom: 1px solid var(--win-stroke); letter-spacing: -0.01em">滚动总结参数</h3>
       <div class="grid grid-cols-2 gap-3">
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">触发章数:</label><input v-model.number="config.analysis.rolling_early_chapters" type="number" class="glass-input" style="width: 90px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">里程碑上限:</label><input v-model.number="config.analysis.rolling_max_milestones" type="number" class="glass-input" style="width: 90px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">势头上限:</label><input v-model.number="config.analysis.rolling_max_momentum" type="number" class="glass-input" style="width: 90px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">归档跨度:</label><input v-model.number="config.analysis.rolling_momentum_window" type="number" class="glass-input" style="width: 110px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">归档触发:</label><input v-model.number="config.analysis.rolling_archive_trigger_count" type="number" class="glass-input" style="width: 90px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">Checkpoint:</label><input v-model.number="config.analysis.checkpoint_interval" type="number" min="0" max="100" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)">触发章数:</label><input v-model.number="config.analysis.rolling_early_chapters" type="number" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)">里程碑上限:</label><input v-model.number="config.analysis.rolling_max_milestones" type="number" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)">势头上限:</label><input v-model.number="config.analysis.rolling_max_momentum" type="number" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)">归档跨度:</label><input v-model.number="config.analysis.rolling_momentum_window" type="number" class="glass-input" style="width: 110px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)">归档触发:</label><input v-model.number="config.analysis.rolling_archive_trigger_count" type="number" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)">Checkpoint:</label><input v-model.number="config.analysis.checkpoint_interval" type="number" min="0" max="100" class="glass-input" style="width: 90px" /></div>
       </div>
       <label class="flex items-center gap-2 text-sm cursor-pointer">
         <input v-model="config.analysis.auto_archive" type="checkbox" />
@@ -420,8 +420,9 @@ onMounted(load)
         跳过内容审核拦截章节
       </label>
       <div class="grid grid-cols-2 gap-3">
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">总结并发数:</label><input v-model.number="config.analysis.summary_concurrency" type="number" min="1" max="20" class="glass-input" style="width: 90px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--color-system-gray)">总结批次大小:</label><input v-model.number="config.analysis.summary_batch_size" type="number" min="5" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)">总结并发数:</label><input v-model.number="config.analysis.summary_concurrency" type="number" min="1" max="20" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)">总结批次大小:</label><input v-model.number="config.analysis.summary_batch_size" type="number" min="5" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" title="全书伏笔复检时每次 LLM 调用携带的活跃伏笔数；调大可减少调用次数省钱，单批过大可能稀释注意力降低判断质量">复检批大小:</label><input v-model.number="config.analysis.foreshadow_recheck_batch_size" type="number" min="10" max="200" class="glass-input" style="width: 90px" /></div>
       </div>
     </div>
 
@@ -433,18 +434,18 @@ onMounted(load)
         <span v-if="saved" class="glass-badge badge-green" style="font-size: 12px"> 已保存</span>
       </Transition>
     </div>
-    <div v-if="saveError" class="glass-card p-3 space-y-1" style="border-color: var(--color-system-red); box-shadow: 0 0 0 1px var(--color-system-red)">
-      <p class="text-sm font-medium" style="color: var(--color-system-red)">保存失败</p>
-      <pre class="text-xs whitespace-pre-wrap" style="color: var(--color-system-red)">{{ saveError }}</pre>
+    <div v-if="saveError" class="glass-card p-3 space-y-1" style="border-color: var(--win-danger)">
+      <p class="text-sm font-medium" style="color: var(--win-danger)">保存失败</p>
+      <pre class="text-xs whitespace-pre-wrap" style="color: var(--win-danger)">{{ saveError }}</pre>
     </div>
 
     <!-- 运行日志（完整）：存放真日志，分析队列页只展示简化版 -->
     <div class="glass-card p-4 space-y-3">
       <div class="flex items-center justify-between">
-        <h3 class="font-semibold pb-2" style="border-bottom: 1px solid var(--glass-border-subtle); letter-spacing: -0.01em; flex: 1">运行日志（完整）</h3>
-        <button @click="clearLogs" class="glass-button" style="padding: 4px 12px; font-size: 12px; color: var(--color-system-red)">清空日志</button>
+        <h3 class="font-semibold pb-2" style="border-bottom: 1px solid var(--win-stroke); letter-spacing: -0.01em; flex: 1">运行日志（完整）</h3>
+        <button @click="clearLogs" class="glass-button" style="padding: 4px 12px; font-size: 12px; color: var(--win-danger)">清空日志</button>
       </div>
-      <p class="text-xs" style="color: var(--text-tertiary)">
+      <p class="text-xs" style="color: var(--win-text-disabled)">
         这是完整的运行日志（含调试信息），跨页面与会话保留。分析队列页面仅显示过滤掉调试信息的简化版。
       </p>
       <LogConsole :logs="storeLogs" class="settings-log" />
@@ -454,10 +455,36 @@ onMounted(load)
 
 <style scoped>
 .input-invalid {
-  border-color: var(--color-system-red) !important;
-  box-shadow: 0 0 0 1px var(--color-system-red);
+  border-color: var(--win-danger) !important;
+  box-shadow: 0 0 0 1px var(--win-danger);
+}
+.model-option {
+  border-radius: 4px;
+}
+/* 伏笔分类 chip：Win11 轻量筛选 chip */
+.category-chip {
+  border: 1px solid var(--win-stroke);
+  border-radius: var(--win-radius-control);
+  transition: background var(--win-duration-fast) var(--win-ease), border-color var(--win-duration-fast) var(--win-ease);
+}
+.category-chip.is-checked {
+  background: var(--win-accent-soft);
+  border-color: var(--win-accent);
+}
+.model-option {
+  border-radius: 4px;
+}
+/* 伏笔分类 chip：Win11 轻量筛选 chip */
+.category-chip {
+  border: 1px solid var(--win-stroke);
+  border-radius: var(--win-radius-control);
+  transition: background var(--win-duration-fast) var(--win-ease), border-color var(--win-duration-fast) var(--win-ease);
+}
+.category-chip.is-checked {
+  background: var(--win-accent-soft);
+  border-color: var(--win-accent);
 }
 .model-option:hover {
-  background: var(--glass-fill-subtle);
+  background: var(--win-control-hover);
 }
 </style>

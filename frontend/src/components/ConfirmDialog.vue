@@ -45,8 +45,6 @@ function onCancel() { emit('cancel') }
   align-items: center;
   justify-content: center;
   background: rgba(0, 0, 0, 0.3);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
 }
 
 .confirm-card {
@@ -65,12 +63,12 @@ function onCancel() { emit('cancel') }
   font-weight: 600;
   letter-spacing: -0.01em;
   margin: 0;
-  color: var(--text-primary);
+  color: var(--win-text-primary);
 }
 
 .confirm-message {
   font-size: 13px;
-  color: var(--text-secondary);
+  color: var(--win-text-secondary);
   line-height: 1.5;
   margin: 8px 0 0;
 }

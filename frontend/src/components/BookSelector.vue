@@ -11,7 +11,15 @@ const loading = ref(false)
 
 async function load() {
   loading.value = true
-  try { const data = await api.listBooks(); books.value = data }
+  try {
+    const data = await api.listBooks()
+    books.value = data
+    // 支持 ?book=<book_id> 查询参数作为初始选中（预览/验收用途，不影响默认行为）
+    const q = new URLSearchParams(window.location.search).get('book')
+    if (q && !props.modelValue && data.some((b) => b.id === q)) {
+      emit('update:modelValue', q)
+    }
+  }
   catch (e) { console.error('加载书目失败:', e) }
   finally { loading.value = false }
 }
@@ -32,7 +40,7 @@ onMounted(load)
       </option>
     </select>
     <button @click="load" :disabled="loading" class="glass-button btn-compact">
-      <span v-if="loading" class="ios-spinner"></span>
+      <span v-if="loading" class="win-spinner"></span>
       <Icon v-else name="refresh" :size="13" />
       <span>{{ loading ? '加载中' : '刷新' }}</span>
     </button>
@@ -48,7 +56,7 @@ onMounted(load)
 .btn-compact {
   padding: 7px 12px;
 }
-.ios-spinner {
+.win-spinner {
   display: inline-block;
   width: 12px;
   height: 12px;
