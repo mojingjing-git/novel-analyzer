@@ -217,7 +217,7 @@ const categoryStats = computed(() => {
                 <div class="flex-1">
                   <p>{{ fs.clue }}</p>
                   <div class="mt-1 text-xs opacity-70 flex gap-2 items-center">
-                    <span v-if="fs.category" class="glass-badge badge-blue" style="font-size: 10px; padding: 2px 6px">{{ fs.category }}</span>
+                    <span v-if="fs.category" class="status-tag badge-blue" style="font-size: 11px">{{ fs.category }}</span>
                     <span>置信度: {{ (fs.confidence * 100).toFixed(0) }}%</span>
                   </div>
                 </div>

@@ -245,7 +245,8 @@ watch(bookId, loadCharacters)
   border: 1px solid var(--win-stroke);
   border-left: 3px solid var(--win-accent);
   border-radius: var(--win-radius-container);
-  padding: 10px 12px;
+  /* 12px 对齐 4 倍数（原 10px 12px 不合规） */
+  padding: 12px;
 }
 .event-item {
   border-left: 3px solid var(--win-warning);

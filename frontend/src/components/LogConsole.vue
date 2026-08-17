@@ -87,7 +87,8 @@ watch(
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  padding: 3px 0;
+  /* 4px 0 对齐 4 倍数（原 3px 0 不合规） */
+  padding: 4px 0;
   border-bottom: 1px solid var(--win-stroke);
 }
 

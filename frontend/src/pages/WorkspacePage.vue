@@ -176,7 +176,8 @@ onMounted(load)
 .ws-row {
   min-height: 40px;
   border-radius: var(--win-radius-control);
-  padding: 6px 8px;
+  /* 8px 12px 对齐 4 倍数（原 6px 8px 不合规） */
+  padding: 8px 12px;
   transition: background var(--win-duration-fast) var(--win-ease);
 }
 .ws-row:hover {

@@ -373,16 +373,19 @@ const groupedChapters = computed(() => {
 .seg {
   display: inline-flex;
   border-radius: var(--win-radius-control);
-  padding: 2px;
+  /* 4px 对齐 4 倍数（原 2px 不合规） */
+  padding: 4px;
   background: var(--win-control-alt);
   border: 1px solid var(--win-stroke);
-  gap: 2px;
+  /* 4px 对齐 4 倍数（原 2px 不合规） */
+  gap: 4px;
 }
 .seg button {
   border: none;
   background: transparent;
   color: var(--win-text-secondary);
-  padding: 6px 14px;
+  /* 8px 12px 对齐 4 倍数（原 6px 14px 不合规） */
+  padding: 4px 12px;
   border-radius: var(--win-radius-control);
   cursor: pointer;
   font-size: 13px;

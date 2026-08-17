@@ -87,8 +87,8 @@ function keyLabel(k: string): string {
   word-break: break-word;
 }
 .cv-list {
-  margin: 2px 0;
-  padding-left: 18px;
+  margin: 4px 0;
+  padding-left: 16px;
 }
 .cv-list.cv-cards {
   list-style: none;
@@ -98,14 +98,15 @@ function keyLabel(k: string): string {
   gap: 8px;
 }
 .cv-item {
-  margin: 3px 0;
+  margin: 4px 0;
   line-height: 1.5;
 }
 .cv-card {
   background: var(--win-layer);
   border: 1px solid var(--win-stroke);
   border-radius: var(--win-radius-container);
-  padding: 10px 12px;
+  /* 12px 12px 对齐 4 倍数（原 10px 12px 不合规） */
+  padding: 12px;
   box-shadow: var(--win-shadow-control);
 }
 .cv-object {

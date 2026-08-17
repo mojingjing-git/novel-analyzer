@@ -299,7 +299,7 @@ onUnmounted(() => {
     <div class="flex items-center justify-between flex-wrap gap-3">
       <div class="flex items-center gap-3 flex-wrap">
         <TokenBadge v-if="tokens?.categories" :categories="tokens.categories" />
-        <div v-if="sessionStats" class="glass-card total-card">
+        <div v-if="sessionStats" class="total-card">
           <span class="total-item">输入 <b>{{ fmt(sessionTotal.input) }}</b></span>
           <span class="total-item">输出 <b>{{ fmt(sessionTotal.output) }}</b></span>
           <span class="total-item">命中缓存 <b>{{ fmt(sessionTotal.cached) }}</b></span>
@@ -393,15 +393,21 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-/* 会话 token 累计卡片（分析+总结，内存态）：紧凑单行，与 TokenBadge 同行 */
+/* 会话 token 累计信息条（分析+总结，内存态）：
+   Win11 辅助信息栏风格——融入背景（--win-control-alt），与表格同款分隔；
+   去掉 .glass-card 的强对比边框与阴影，避免视觉突兀 */
 .total-card {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 6px 14px;
+  gap: 16px;
+  padding: 8px 12px;
   font-size: 12px;
   color: var(--win-text-secondary);
   flex-wrap: wrap;
+  background: var(--win-control-alt);
+  border: none;
+  border-radius: var(--win-radius-control);
+  box-shadow: none;
 }
 .total-item {
   white-space: nowrap;

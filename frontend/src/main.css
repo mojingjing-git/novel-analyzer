@@ -91,12 +91,13 @@
   --win-duration-slow: 300ms;
   --win-ease: cubic-bezier(0.2, 0, 0, 1);
 
-  /* Mica 底色：极淡的壁纸色调（克制，无 blur） */
+  /* Mica 底色：极淡的中性灰渐变（用户偏好中性克制，Win11 Mica 真实版本带系统色 tint，
+     此处按用户选择用纯黑透明渐变，避免整体偏蓝） */
   --win-mica:
-    radial-gradient(at 12% -12%, rgba(0, 103, 192, 0.10), transparent 48%),
-    radial-gradient(at 92% 6%, rgba(0, 103, 192, 0.06), transparent 44%),
-    radial-gradient(at 55% 112%, rgba(0, 103, 192, 0.08), transparent 52%),
-    radial-gradient(at 70% 40%, rgba(111, 148, 196, 0.05), transparent 55%);
+    radial-gradient(at 12% -12%, rgba(0, 0, 0, 0.06), transparent 48%),
+    radial-gradient(at 92% 6%, rgba(0, 0, 0, 0.04), transparent 44%),
+    radial-gradient(at 55% 112%, rgba(0, 0, 0, 0.05), transparent 52%),
+    radial-gradient(at 70% 40%, rgba(0, 0, 0, 0.03), transparent 55%);
 }
 
 html.dark {
@@ -135,11 +136,12 @@ html.dark {
   --win-shadow-flyout: 0 16px 40px rgba(0, 0, 0, 0.32);
   --win-shadow-dialog: 0 32px 64px rgba(0, 0, 0, 0.4);
 
+  /* 暗色主题同步改为中性灰渐变，避免偏冷蓝调 */
   --win-mica:
-    radial-gradient(at 12% -12%, rgba(96, 205, 255, 0.08), transparent 48%),
-    radial-gradient(at 92% 6%, rgba(96, 205, 255, 0.05), transparent 44%),
-    radial-gradient(at 55% 112%, rgba(96, 205, 255, 0.06), transparent 52%),
-    radial-gradient(at 70% 40%, rgba(150, 180, 210, 0.04), transparent 55%);
+    radial-gradient(at 12% -12%, rgba(255, 255, 255, 0.05), transparent 48%),
+    radial-gradient(at 92% 6%, rgba(255, 255, 255, 0.03), transparent 44%),
+    radial-gradient(at 55% 112%, rgba(255, 255, 255, 0.04), transparent 52%),
+    radial-gradient(at 70% 40%, rgba(255, 255, 255, 0.02), transparent 55%);
 }
 
 /* ============================================================
@@ -412,6 +414,22 @@ html.dark .glass-clear {
   white-space: nowrap;
 }
 
+/* Win11 状态标签：4px 圆角矩形（控件级），用于"等待中/运行中/失败"等状态指示；
+   与 .glass-badge (pill) 的区别：状态用方形 4px 圆角更克制、信息密度更高 */
+.status-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--win-text-primary);
+  white-space: nowrap;
+  background: var(--win-control-alt);
+  border: 1px solid var(--win-stroke);
+}
+
 /* 连接状态：8px 圆点 + 12px 文字（Win11 克制风格，无胶囊底） */
 .conn-state {
   display: inline-flex;
@@ -537,7 +555,8 @@ html.dark .glass-clear {
 }
 .glass-table th {
   text-align: left;
-  padding: 10px 16px;
+  /* 12px 是 4 倍数（原 10px 不合规）；保持 16px 水平内边距与原意 */
+  padding: 12px 16px;
   font-weight: 400;
   font-size: var(--win-font-body);
   text-transform: none;
@@ -547,7 +566,7 @@ html.dark .glass-clear {
   background: var(--win-control-alt);
 }
 .glass-table td {
-  padding: 10px 16px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--win-stroke);
   color: var(--win-text-primary);
 }
@@ -557,6 +576,14 @@ html.dark .glass-clear {
 }
 .glass-table tbody tr:hover {
   background: var(--win-control-hover);
+}
+/* Win11 列表选中态：用于多选/当前行高亮，与导航选中态语义一致 */
+.glass-table tbody tr.is-selected {
+  background: var(--win-accent-soft);
+}
+.glass-table tbody tr.is-selected td {
+  color: var(--win-text-primary);
+  font-weight: 500;
 }
 .glass-table tbody tr:last-child td {
   border-bottom: none;
@@ -571,7 +598,8 @@ html.dark .glass-clear {
   border: 1px solid var(--win-stroke);
   border-radius: var(--win-radius-container);
   box-shadow: var(--win-shadow-card);
-  padding: 14px 16px;
+  /* padding 14px 改 16px，对齐 4 倍数网格 */
+  padding: 16px;
   position: relative;
 }
 .glass-stat-label {

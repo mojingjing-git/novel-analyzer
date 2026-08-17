@@ -185,7 +185,8 @@ onUnmounted(() => {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 16px 18px;
+  /* 16px 16px 对齐 4 倍数网格（原 18px 不合规） */
+  padding: 16px;
   color: var(--win-text-primary);
 }
 .cd-placeholder {
@@ -218,8 +219,9 @@ onUnmounted(() => {
 .cd-mode {
   margin-left: auto;
   font-size: 12px;
-  padding: 2px 10px;
-  border-radius: var(--win-radius-control);
+  /* 4px / 12px 对齐 4 倍数网格 */
+  padding: 4px 12px;
+  border-radius: 4px;
   background: var(--win-info-bg);
   color: var(--win-info);
   white-space: nowrap;

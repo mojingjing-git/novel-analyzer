@@ -71,7 +71,8 @@ function fmt(n: number) {
 }
 .total-badge {
   font-size: 12px;
-  padding: 3px 10px;
+  /* 4px 12px 对齐 4 倍数（原 3px 10px 不合规） */
+  padding: 4px 12px;
 }
 .compact-row {
   display: inline-flex;

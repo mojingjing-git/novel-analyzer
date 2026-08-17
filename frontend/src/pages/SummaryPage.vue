@@ -365,8 +365,8 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
           <button
             v-if="summaryLogs.length"
             @click.stop="removeByCategory('summary')"
-            class="glass-button"
-            style="padding: 2px 10px; font-size: 11px"
+            class="glass-button btn-sm"
+            style="font-size: 11px"
           >清空</button>
         </div>
         <div v-if="drawerOpen" class="p-2">
@@ -404,7 +404,8 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 14px 16px;
+  /* 16px 16px 对齐 4 倍数（原 14px 16px 不合规） */
+  padding: 16px;
   border-radius: var(--win-radius-container);
   background: var(--win-layer);
   border: 1px solid var(--win-stroke);

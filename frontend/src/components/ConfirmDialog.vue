@@ -83,7 +83,8 @@ html.dark .confirm-mask {
   font-size: 14px;
   color: var(--win-text-secondary);
   line-height: 1.5;
-  margin: 10px 0 0;
+  /* 12px 0 0 对齐 4 倍数（原 10px 0 0 不合规） */
+  margin: 12px 0 0;
 }
 
 .confirm-actions {
