@@ -275,7 +275,7 @@ onMounted(load)
             >{{ m }}</button>
           </div>
         </div>
-        <button @click="loadModels" class="glass-button" style="padding: 8px 12px; white-space: nowrap">获取模型</button>
+        <button @click="loadModels" class="glass-button btn-sm">获取模型</button>
       </div>
       <div class="flex items-center gap-2">
         <label class="w-32 text-sm shrink-0" style="color: var(--win-text-secondary)" title="请求协议格式：auto=按 base_url/API Key/模型名特征自动检测；openai=OpenAI 兼容 /chat/completions；anthropic=Anthropic /v1/messages">协议格式:</label>
@@ -309,7 +309,7 @@ onMounted(load)
         <select :value="getThinkingMode()" @change="setThinkingMode(($event.target as HTMLSelectElement).value)" class="glass-input flex-1">
           <option v-for="m in [...thinkingModes, ...dynamicThinkingOptions]" :key="m.value" :value="m.value">{{ m.label }}</option>
         </select>
-        <button @click="runProbeThinking" :disabled="probeBusy || !config?.api.model" class="glass-button" style="padding: 8px 12px; white-space: nowrap" title="对当前端点发几次微请求，实测哪个禁用思考参数有效，命中后自动填入上方下拉">
+        <button @click="runProbeThinking" :disabled="probeBusy || !config?.api.model" class="glass-button btn-sm" title="对当前端点发几次微请求，实测哪个禁用思考参数有效，命中后自动填入上方下拉">
           {{ probeBusy ? '探测中...' : '自动探测' }}
         </button>
       </div>
@@ -427,7 +427,7 @@ onMounted(load)
     </div>
 
     <div class="flex gap-3 items-center">
-      <button @click="save" :disabled="saving" class="glass-button glass-button-primary" style="padding: 10px 20px">
+      <button @click="save" :disabled="saving" class="glass-button glass-button-primary btn-lg">
         {{ saving ? '保存中...' : '保存设置' }}
       </button>
       <Transition name="modal">
@@ -443,7 +443,7 @@ onMounted(load)
     <div class="glass-card p-4 space-y-3">
       <div class="flex items-center justify-between">
         <h3 class="font-semibold pb-2" style="border-bottom: 1px solid var(--win-stroke); letter-spacing: -0.01em; flex: 1">运行日志（完整）</h3>
-        <button @click="clearLogs" class="glass-button" style="padding: 4px 12px; font-size: 12px; color: var(--win-danger)">清空日志</button>
+        <button @click="clearLogs" class="glass-button btn-danger-link">清空日志</button>
       </div>
       <p class="text-xs" style="color: var(--win-text-disabled)">
         这是完整的运行日志（含调试信息），跨页面与会话保留。分析队列页面仅显示过滤掉调试信息的简化版。
@@ -454,37 +454,47 @@ onMounted(load)
 </template>
 
 <style scoped>
+/* Win11 输入校验态：危险红 + 1px 焦点环 */
 .input-invalid {
   border-color: var(--win-danger) !important;
   box-shadow: 0 0 0 1px var(--win-danger);
 }
+
+/* 模型下拉项：4px 圆角 + hover token */
 .model-option {
   border-radius: 4px;
-}
-/* 伏笔分类 chip：Win11 轻量筛选 chip */
-.category-chip {
-  border: 1px solid var(--win-stroke);
-  border-radius: var(--win-radius-control);
-  transition: background var(--win-duration-fast) var(--win-ease), border-color var(--win-duration-fast) var(--win-ease);
-}
-.category-chip.is-checked {
-  background: var(--win-accent-soft);
-  border-color: var(--win-accent);
-}
-.model-option {
-  border-radius: 4px;
-}
-/* 伏笔分类 chip：Win11 轻量筛选 chip */
-.category-chip {
-  border: 1px solid var(--win-stroke);
-  border-radius: var(--win-radius-control);
-  transition: background var(--win-duration-fast) var(--win-ease), border-color var(--win-duration-fast) var(--win-ease);
-}
-.category-chip.is-checked {
-  background: var(--win-accent-soft);
-  border-color: var(--win-accent);
+  transition: background var(--win-duration-fast) var(--win-ease);
 }
 .model-option:hover {
   background: var(--win-control-hover);
+}
+
+/* 伏笔分类 chip：Win11 轻量筛选 chip */
+.category-chip {
+  border: 1px solid var(--win-stroke);
+  border-radius: var(--win-radius-control);
+  transition: background var(--win-duration-fast) var(--win-ease),
+              border-color var(--win-duration-fast) var(--win-ease);
+}
+.category-chip.is-checked {
+  background: var(--win-accent-soft);
+  border-color: var(--win-accent);
+}
+
+/* ===== 按钮尺寸修饰 ===== */
+/* 紧凑按钮：覆盖 .glass-button 的 padding 0 16px → 0 12px，高度仍由基类 32px 控制 */
+.btn-sm {
+  padding: 0 12px;
+  white-space: nowrap;
+}
+/* 主操作按钮：32px 高 + 略宽 padding */
+.btn-lg {
+  padding: 0 20px;
+}
+/* 文字危险按钮：保留 32px 高，仅文字红 */
+.btn-danger-link {
+  color: var(--win-danger);
+  font-size: 12px;
+  padding: 0 12px;
 }
 </style>

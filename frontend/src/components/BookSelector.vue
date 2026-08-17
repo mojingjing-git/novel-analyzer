@@ -39,7 +39,7 @@ onMounted(load)
         {{ b.name }} ({{ b.total_chapters }} 章){{ b.has_report ? ' ✓已总结' : '' }}{{ b.has_aggregated ? ' ✓已聚合' : '' }}
       </option>
     </select>
-    <button @click="load" :disabled="loading" class="glass-button btn-compact">
+    <button @click="load" :disabled="loading" class="glass-button">
       <span v-if="loading" class="win-spinner"></span>
       <Icon v-else name="refresh" :size="13" />
       <span>{{ loading ? '加载中' : '刷新' }}</span>
@@ -52,9 +52,6 @@ onMounted(load)
   display: flex;
   align-items: center;
   gap: 8px;
-}
-.btn-compact {
-  padding: 7px 12px;
 }
 .win-spinner {
   display: inline-block;
