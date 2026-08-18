@@ -754,6 +754,15 @@ npm run build
 - **保留**：右侧 5 项 `total-card`（输入/输出/命中缓存/命中率/总消耗，已加 `.count-up` 修饰类），这是 8.18 session token 累计的核心展示
 - **结果**：左侧 4 个彩色统计彻底消失，UI 更克制
 
+### 10.5.5 2026-08-18 GUI 多处微调（用户本地编辑器）
+
+**commit `642fb90` style(GUI): 多处微调（4 文件 +78/-41）**
+
+- `AppLayout.vue`: `.nav-list` `overflow-x: hidden` → `clip`（不创建滚动容器）；`scrollbar-width: thin` → `none` + `::-webkit-scrollbar { display: none }`（Win11 NavigationView 同款：内容超高时滚轮可滚、不显示滚动条，避免 17px 滚动槽常驻）
+- `useRipple.ts`: ripple 关键帧 600ms → 800ms（动画更显眼）
+- `main.css`: `--win-duration-fast` 150 → 200ms（更克制的动效）
+- `main.ts`: 加 `prefers-reduced-motion: reduce` 检测并给 `<html>` 加 `.no-reduce` 类，让应用内动效跳过系统 reduce 压平
+
 ### 10.6 相关文档
 - Win11 重做计划：`docs/superpowers/plans/2026-08-16-win11-frontend-redesign.md`
 - 项目 README：`README.md`
