@@ -734,6 +734,14 @@ npm run build
 
 **验证**：vue-tsc 0 错；7 改文件 + 1 新增 `useRipple.ts`；纯 CSS/事件代理层，不动业务逻辑。
 
+### 10.5.3 2026-08-18 sidebar 横向滚动条 bug 修复
+
+**commit `6819b6e` fix(GUI): sidebar 出现错误横向滚动条（1 文件 +1/-0）**
+
+- **根因**：`.nav-item.is-active::before` 用 `left: -8px` 故意溢出贴 sidebar 左边缘（Win11 Selection Indicator 设计）；但 `.nav-list` 只声明 `overflow-y: auto`，flex 容器下浏览器会把 `overflow-x` 默认从 `visible` 升为 `auto`，触发横向滚动条
+- **修复**：`.nav-list` 显式加 `overflow-x: hidden`，保留 ::before 的设计意图不变
+- 用户实测反馈后修：是「GUI 改动后实测发现的新 bug」，而非静态审核能发现的问题
+
 ### 10.6 相关文档
 - Win11 重做计划：`docs/superpowers/plans/2026-08-16-win11-frontend-redesign.md`
 - 项目 README：`README.md`
