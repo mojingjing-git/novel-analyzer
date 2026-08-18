@@ -5,7 +5,6 @@ import LogConsole from '../components/LogConsole.vue'
 import ChapterDetailPanel from '../components/ChapterDetailPanel.vue'
 import BookSelector from '../components/BookSelector.vue'
 import ProgressBar from '../components/ProgressBar.vue'
-import TokenBadge from '../components/TokenBadge.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import { api, type AnalysisStatus, type TokenStatsResponse, type SessionTokenStatsResponse } from '../api/client'
 import { useProgressSocket, type ProgressMessage } from '../api/useProgressSocket'
@@ -297,15 +296,12 @@ onUnmounted(() => {
     </div>
 
     <div class="flex items-center justify-between flex-wrap gap-3">
-      <div class="flex items-center gap-3 flex-wrap">
-        <TokenBadge v-if="tokens?.categories" :categories="tokens.categories" />
-        <div v-if="sessionStats" class="total-card">
-          <span class="total-item">输入 <b class="count-up">{{ fmt(sessionTotal.input) }}</b></span>
-          <span class="total-item">输出 <b class="count-up">{{ fmt(sessionTotal.output) }}</b></span>
-          <span class="total-item">命中缓存 <b class="count-up">{{ fmt(sessionTotal.cached) }}</b></span>
-          <span class="total-item">命中率 <b class="count-up">{{ sessionTotal.hitRate.toFixed(1) }}%</b></span>
-          <span class="total-item">总消耗 <b class="count-up">{{ fmt(sessionTotal.total) }}</b></span>
-        </div>
+      <div v-if="sessionStats" class="total-card">
+        <span class="total-item">输入 <b class="count-up">{{ fmt(sessionTotal.input) }}</b></span>
+        <span class="total-item">输出 <b class="count-up">{{ fmt(sessionTotal.output) }}</b></span>
+        <span class="total-item">命中缓存 <b class="count-up">{{ fmt(sessionTotal.cached) }}</b></span>
+        <span class="total-item">命中率 <b class="count-up">{{ sessionTotal.hitRate.toFixed(1) }}%</b></span>
+        <span class="total-item">总消耗 <b class="count-up">{{ fmt(sessionTotal.total) }}</b></span>
       </div>
       <a href="/api/analysis/logs" target="_blank" class="glass-button" style="font-size: 12px">下载日志</a>
     </div>
