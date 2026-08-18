@@ -742,6 +742,18 @@ npm run build
 - **修复**：`.nav-list` 显式加 `overflow-x: hidden`，保留 ::before 的设计意图不变
 - 用户实测反馈后修：是「GUI 改动后实测发现的新 bug」，而非静态审核能发现的问题
 
+### 10.5.4 2026-08-18 删除 TokenBadge 组件
+
+**commit `7e58091` refactor(GUI): 删除 TokenBadge 组件（2 文件 -90 行）**
+
+- **背景**：分析队列页面左侧曾有 4 个彩色统计（`32.4k Tokens` / `入 22.8k` / `出 9,607` / `章节: 32.4k`），是开始分析后忘记删除的残留 UI
+- **删除范围**：
+  - `QueuePage.vue` 第 8 行 import + 第 301 行 `<TokenBadge v-if="...">` 模板
+  - 删除 `components/TokenBadge.vue` 整个文件（80 行）
+  - 简化 total-card 外层多余的 nested flex div
+- **保留**：右侧 5 项 `total-card`（输入/输出/命中缓存/命中率/总消耗，已加 `.count-up` 修饰类），这是 8.18 session token 累计的核心展示
+- **结果**：左侧 4 个彩色统计彻底消失，UI 更克制
+
 ### 10.6 相关文档
 - Win11 重做计划：`docs/superpowers/plans/2026-08-16-win11-frontend-redesign.md`
 - 项目 README：`README.md`
