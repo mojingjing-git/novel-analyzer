@@ -763,6 +763,21 @@ npm run build
 - `main.css`: `--win-duration-fast` 150 → 200ms（更克制的动效）
 - `main.ts`: 加 `prefers-reduced-motion: reduce` 检测并给 `<html>` 加 `.no-reduce` 类，让应用内动效跳过系统 reduce 压平
 
+### 10.5.6 2026-08-18 数字 count-up 动画
+
+**commit `e6336b3` feat(GUI): 数字 count-up 动画（1 新增 + 1 改 = 2 文件）**
+
+- **新增** `components/CountUp.vue`：接收 `:value`（number）+ `:format`（(n: number) => string）；`watch` 触发时启动 `requestAnimationFrame` 缓动（ease-out cubic：`1 - (1-t)^3`），默认 600ms
+- **实现要点**：
+  - 单 timer / 组件挂载期间动态启动/取消，避免 RAF 泄漏
+  - 差值 < 0.01 不动画（避免抖动）
+  - `onMounted` 立即显示当前值（避免首屏空白）
+  - tabular-nums 来自 `.count-up` class（main.css 已定义），数字宽度不抖动
+- **接入** `QueuePage.vue` 5 个 session stats 切换为 `<CountUp>`：
+  - 输入/输出/命中缓存/总消耗 → `fmt`（K/M 缩写）
+  - 命中率 → `fmtPercent`（保留 1 位小数%）
+- **效果**：5 秒轮询刷新时，5 个数字从旧值缓动到新值（600ms），视觉上能"看见"token 累积过程
+
 ### 10.6 相关文档
 - Win11 重做计划：`docs/superpowers/plans/2026-08-16-win11-frontend-redesign.md`
 - 项目 README：`README.md`
