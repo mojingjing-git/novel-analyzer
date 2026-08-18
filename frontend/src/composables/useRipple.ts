@@ -6,7 +6,7 @@
  *   nav-item、.switch .slider
  *
  * 实现：在 mousedown 时获取指针相对按钮位置，注入 <span class="ripple">，
- * 用 CSS keyframes 触发 600ms scale(0→2.6) + 透明度 0.20→0 的扩散动画。
+ * 用 CSS keyframes 触发 800ms scale(0→2.6) + 透明度 0.20→0 的扩散动画。
  *
  * 设计取舍：用全局事件代理而非 Vue 指令，避免在 30+ 个按钮上手工 v-ripple；
  * 缺点是动态新增按钮需重新调用 setupRipple()（一般 AppLayout 一处初始化足够）。
@@ -52,10 +52,10 @@ function createRipple(host: HTMLElement, e: MouseEvent) {
   span.style.top = `${y}px`
 
   host.appendChild(span)
-  // 700ms 后移除（CSS 动画 600ms，留 100ms 余量防误删）
+  // 900ms 后移除（CSS 动画 800ms，留 100ms 余量防误删）
   setTimeout(() => {
     if (span.parentNode) span.parentNode.removeChild(span)
-  }, 700)
+  }, 900)
 }
 
 function onMouseDown(e: MouseEvent) {

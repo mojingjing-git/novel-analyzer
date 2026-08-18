@@ -245,17 +245,24 @@ html.dark .sidebar {
   left: -8px; /* 竖条仍贴侧边栏左边缘，与内边距无关 */
 }
 
-/* ===== 导航列表 ===== */
+/* ===== 导航列表 =====
+   overflow-x: clip 替代 hidden：clip 根本不创建滚动容器，
+   即便 overflow-y: auto 的垂直滚动条出现（占 17px 布局宽度）也不会触发横向滚动条。
+   滚动条整体隐藏（Win11 NavigationView 同款：内容超高时滚轮可滚、不显示滚动条），
+   故不用 scrollbar-gutter（避免侧边栏右缘常驻 17px 滚动条槽）。 */
 .nav-list {
   flex: 1;
-  overflow-x: hidden;   /* 防止 nav-item 的 ::before（left:-8px Selection Indicator）溢出导致横向滚动条 */
+  overflow-x: clip;
   overflow-y: auto;
   padding: 8px 8px 4px;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  scrollbar-width: thin;
+  scrollbar-width: none;
   position: relative;
+}
+.nav-list::-webkit-scrollbar {
+  display: none;
 }
 .nav-item.foot-item {
   border: none;

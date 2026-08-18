@@ -86,9 +86,9 @@
   --win-font-display: 28px;
 
   /* 动效 */
-  --win-duration-fast: 150ms;
-  --win-duration-normal: 200ms;
-  --win-duration-slow: 300ms;
+  --win-duration-fast: 200ms;
+  --win-duration-normal: 265ms;
+  --win-duration-slow: 400ms;
   --win-ease: cubic-bezier(0.2, 0, 0, 1);
 
   /* Mica 底色：极淡的中性灰渐变（用户偏好中性克制，Win11 Mica 真实版本带系统色 tint，
@@ -193,7 +193,7 @@ body {
   color: var(--win-text-primary);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  transition: background-color 300ms var(--win-ease);
+  transition: background-color 400ms var(--win-ease);
 }
 
 /* Mica 表面（侧边栏/标题栏/主区背景）：基底灰 + 极淡壁纸色调，内容卡片白色叠加其上 */
@@ -218,7 +218,9 @@ body {
 }
 
 /* ============================================================
-   滚动条（Win11：细、圆角、低饱和）
+   滚动条（Win11 overlay：默认透明，容器悬停或滚动中才显示）
+   JS（main.ts）在滚动时给容器加 .is-scrolling，停止 1s 后移除。
+   未悬停/未滚动时滚动条完全不可见，内容超高仍可正常滚动。
    ============================================================ */
 
 ::-webkit-scrollbar {
@@ -226,16 +228,19 @@ body {
   height: 10px;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--win-text-disabled);
+  background: transparent;
   border-radius: 5px;
   border: 3px solid transparent;
   background-clip: content-box;
   min-height: 24px;
+  transition: background var(--win-duration-fast) var(--win-ease);
 }
-::-webkit-scrollbar-thumb:hover {
+*:hover::-webkit-scrollbar-thumb,
+*.is-scrolling::-webkit-scrollbar-thumb {
+  background: var(--win-text-disabled);
+}
+*:hover::-webkit-scrollbar-thumb:hover {
   background: var(--win-text-secondary);
-  border: 3px solid transparent;
-  background-clip: content-box;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
@@ -338,7 +343,7 @@ html.dark .glass-clear {
     background var(--win-duration-fast) var(--win-ease),
     border-color var(--win-duration-fast) var(--win-ease),
     box-shadow var(--win-duration-fast) var(--win-ease),
-    transform 80ms var(--win-ease);
+    transform 105ms var(--win-ease);
 }
 .glass-button:hover:not(:disabled) {
   background: var(--win-control-hover);
@@ -405,7 +410,7 @@ html.dark .glass-clear {
   transition:
     background var(--win-duration-fast) var(--win-ease),
     border-color var(--win-duration-fast) var(--win-ease),
-    transform 80ms var(--win-ease);
+    transform 105ms var(--win-ease);
   -webkit-tap-highlight-color: transparent;
 }
 .glass-pill:hover {
@@ -431,7 +436,7 @@ html.dark .glass-clear {
   opacity: 0.20;
   pointer-events: none;
   transform: scale(0);
-  animation: ripple-expand 600ms cubic-bezier(0.2, 0, 0, 1) forwards;
+  animation: ripple-expand 800ms cubic-bezier(0.2, 0, 0, 1) forwards;
   z-index: -1;
 }
 @keyframes ripple-expand {
@@ -461,7 +466,7 @@ html.dark .glass-clear {
     background var(--win-duration-fast) var(--win-ease),
     border-color var(--win-duration-fast) var(--win-ease),
     color var(--win-duration-fast) var(--win-ease),
-    transform 80ms var(--win-ease);
+    transform 105ms var(--win-ease);
 }
 .glass-badge:hover {
   background: var(--win-control-hover);
@@ -485,7 +490,7 @@ html.dark .glass-clear {
     background var(--win-duration-fast) var(--win-ease),
     border-color var(--win-duration-fast) var(--win-ease),
     color var(--win-duration-fast) var(--win-ease),
-    transform 80ms var(--win-ease);
+    transform 105ms var(--win-ease);
 }
 .status-tag:hover {
   background: var(--win-control-hover);
@@ -603,7 +608,7 @@ html.dark .glass-clear {
   background: var(--win-accent);
   border-radius: var(--win-radius-pill);
   /* C 档：分段缓动（起始慢、中段快、收尾慢），比 linear ease 更显动感 */
-  transition: width 600ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  transition: width 800ms cubic-bezier(0.22, 0.61, 0.36, 1);
 }
 
 /* Indeterminate 状态：等待用（项目暂未用，但留作公共） */
@@ -756,13 +761,13 @@ html.dark .glass-clear {
    动效（统一 --win-duration-* / --win-ease）
    ============================================================ */
 
-.transition-spring { transition: all 300ms var(--win-ease); }
-.transition-fluid  { transition: all 200ms var(--win-ease); }
+.transition-spring { transition: all 400ms var(--win-ease); }
+.transition-fluid  { transition: all 265ms var(--win-ease); }
 
 /* 页面切换：opacity + translateY(6px→0) 250ms */
 .page-enter-active,
 .page-leave-active {
-  transition: opacity 250ms var(--win-ease), transform 250ms var(--win-ease);
+  transition: opacity 330ms var(--win-ease), transform 330ms var(--win-ease);
 }
 .page-enter-from { opacity: 0; transform: translateY(6px); }
 .page-leave-to   { opacity: 0; transform: translateY(0); }
@@ -770,7 +775,7 @@ html.dark .glass-clear {
 /* 对话框：opacity + scale(0.95→1) 300ms */
 .modal-enter-active,
 .modal-leave-active {
-  transition: opacity 300ms var(--win-ease), transform 300ms var(--win-ease);
+  transition: opacity 400ms var(--win-ease), transform 400ms var(--win-ease);
 }
 .modal-enter-from,
 .modal-leave-to {
@@ -790,19 +795,19 @@ html.dark .glass-clear {
   }
 }
 .list-enter > * {
-  animation: list-item-enter 240ms var(--win-ease) backwards;
+  animation: list-item-enter 320ms var(--win-ease) backwards;
 }
 .list-enter > *:nth-child(1)  { animation-delay: 0ms; }
-.list-enter > *:nth-child(2)  { animation-delay: 30ms; }
-.list-enter > *:nth-child(3)  { animation-delay: 60ms; }
-.list-enter > *:nth-child(4)  { animation-delay: 90ms; }
-.list-enter > *:nth-child(5)  { animation-delay: 120ms; }
-.list-enter > *:nth-child(6)  { animation-delay: 150ms; }
-.list-enter > *:nth-child(7)  { animation-delay: 180ms; }
-.list-enter > *:nth-child(8)  { animation-delay: 210ms; }
-.list-enter > *:nth-child(9)  { animation-delay: 240ms; }
-.list-enter > *:nth-child(10) { animation-delay: 270ms; }
-.list-enter > *:nth-child(n+11) { animation-delay: 300ms; }
+.list-enter > *:nth-child(2)  { animation-delay: 40ms; }
+.list-enter > *:nth-child(3)  { animation-delay: 80ms; }
+.list-enter > *:nth-child(4)  { animation-delay: 120ms; }
+.list-enter > *:nth-child(5)  { animation-delay: 160ms; }
+.list-enter > *:nth-child(6)  { animation-delay: 200ms; }
+.list-enter > *:nth-child(7)  { animation-delay: 240ms; }
+.list-enter > *:nth-child(8)  { animation-delay: 280ms; }
+.list-enter > *:nth-child(9)  { animation-delay: 320ms; }
+.list-enter > *:nth-child(10) { animation-delay: 360ms; }
+.list-enter > *:nth-child(n+11) { animation-delay: 400ms; }
 
 /* IconButton hover 微放大（C 档 B）：按钮里的 svg 图标轻微放大 */
 .btn-icon-host svg,
@@ -825,7 +830,7 @@ html.dark .glass-clear {
 .input-invalid {
   border-color: var(--win-danger) !important;
   box-shadow: 0 0 0 1px var(--win-danger);
-  animation: input-error-pulse 600ms ease-out;
+  animation: input-error-pulse 800ms ease-out;
 }
 
 /* 数字 count-up（C 档锦上添花）：父级标记 .count-up，数字字体等宽、变化平滑。
@@ -842,7 +847,7 @@ html.dark .glass-clear {
   from { opacity: 0; transform: translateY(12px); }
   to   { opacity: 1; transform: translateY(0); }
 }
-.toast-enter-active { animation: toast-enter 240ms var(--win-ease); }
+.toast-enter-active { animation: toast-enter 320ms var(--win-ease); }
 
 /* 切换按钮 toggle 入场（C 档 A）：用 overshoot 弹簧感 */
 @keyframes switch-knob-enter {
@@ -850,12 +855,15 @@ html.dark .glass-clear {
   to   { transform: translateX(20px) scale(1); opacity: 1; }
 }
 .switch input:checked + .slider::before {
-  animation: switch-knob-enter 180ms cubic-bezier(0.3, 1.4, 0.7, 1);
+  animation: switch-knob-enter 240ms cubic-bezier(0.3, 1.4, 0.7, 1);
 }
 
-/* 尊重系统减弱动效设置 */
+/* 尊重系统减弱动效设置（应用内可豁免）：
+   main.ts 检测到 prefers-reduced-motion: reduce 时给 <html> 加 .no-reduce，
+   html:not(.no-reduce) 使该压平规则跳过，应用内动效照常显示。
+   （本工具为自用桌面软件，用户明确要求系统关动画时应用内仍有动效） */
 @media (prefers-reduced-motion: reduce) {
-  * {
+  html:not(.no-reduce) *, html:not(.no-reduce) *::before, html:not(.no-reduce) *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
