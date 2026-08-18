@@ -6,6 +6,7 @@ import ChapterDetailPanel from '../components/ChapterDetailPanel.vue'
 import BookSelector from '../components/BookSelector.vue'
 import ProgressBar from '../components/ProgressBar.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
+import CountUp from '../components/CountUp.vue'
 import { api, type AnalysisStatus, type TokenStatsResponse, type SessionTokenStatsResponse } from '../api/client'
 import { useProgressSocket, type ProgressMessage } from '../api/useProgressSocket'
 import { useLogStore } from '../composables/useLogStore'
@@ -95,6 +96,7 @@ function fmt(n: number): string {
   if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K'
   return String(n)
 }
+const fmtPercent = (n: number) => n.toFixed(1) + '%'
 // 分类小计加总为总量（分析/总结共用）
 function catTotal(cats: Record<string, { input_tokens: number; output_tokens: number }> | undefined, key: 'input_tokens' | 'output_tokens'): number {
   if (!cats) return 0
@@ -297,11 +299,11 @@ onUnmounted(() => {
 
     <div class="flex items-center justify-between flex-wrap gap-3">
       <div v-if="sessionStats" class="total-card">
-        <span class="total-item">输入 <b class="count-up">{{ fmt(sessionTotal.input) }}</b></span>
-        <span class="total-item">输出 <b class="count-up">{{ fmt(sessionTotal.output) }}</b></span>
-        <span class="total-item">命中缓存 <b class="count-up">{{ fmt(sessionTotal.cached) }}</b></span>
-        <span class="total-item">命中率 <b class="count-up">{{ sessionTotal.hitRate.toFixed(1) }}%</b></span>
-        <span class="total-item">总消耗 <b class="count-up">{{ fmt(sessionTotal.total) }}</b></span>
+        <span class="total-item">输入 <CountUp :value="sessionTotal.input" :format="fmt" /></span>
+        <span class="total-item">输出 <CountUp :value="sessionTotal.output" :format="fmt" /></span>
+        <span class="total-item">命中缓存 <CountUp :value="sessionTotal.cached" :format="fmt" /></span>
+        <span class="total-item">命中率 <CountUp :value="sessionTotal.hitRate" :format="fmtPercent" /></span>
+        <span class="total-item">总消耗 <CountUp :value="sessionTotal.total" :format="fmt" /></span>
       </div>
       <a href="/api/analysis/logs" target="_blank" class="glass-button" style="font-size: 12px">下载日志</a>
     </div>
