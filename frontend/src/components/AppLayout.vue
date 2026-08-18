@@ -248,6 +248,7 @@ html.dark .sidebar {
 /* ===== 导航列表 ===== */
 .nav-list {
   flex: 1;
+  overflow-x: hidden;   /* 防止 nav-item 的 ::before（left:-8px Selection Indicator）溢出导致横向滚动条 */
   overflow-y: auto;
   padding: 8px 8px 4px;
   display: flex;
