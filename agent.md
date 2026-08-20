@@ -30,11 +30,11 @@
 │   │   ├── analyzer.py           # 单章分析引擎
 │   │   ├── prompt_builder.py     # Prompt 构建器（9路上下文注入）
 │   │   ├── knowledge_base.py     # 知识库管理器（增量合并、缓存、快照隔离）
-│   │   ├── memory_state.py       # 内存状态容器（全内存IO、检查点）
+│   │   ├── memory_state.py       # 内存状态容器（全内存IO、检查点；检查点落盘均走 safe_save_json 原子写）
 │   │   ├── style_analyzer.py     # 风格分析器（22统计+8语义维度）
 │   │   └── moderation.py         # 内容审核识别
 │   ├── services/                 # 业务服务层
-│   │   ├── queue_service.py      # 队列编排 + AnalysisService（单例）
+│   │   ├── queue_service.py      # 队列编排 + AnalysisService（单例；启动扫描移出 __init__，改由 app lifespan 经 to_thread 触发）
 │   │   ├── final_summary.py      # 最终总结执行器（4阶段 + 断点续跑）
 │   │   ├── splitter_service.py   # 小说切章服务
 │   │   ├── workspace_service.py  # 工作区/归档管理
@@ -43,7 +43,7 @@
 │   │   ├── style_service.py      # 风格分析任务生命周期
 │   │   └── viz_service.py        # 可视化数据聚合
 │   ├── api/                      # REST 路由 + WebSocket
-│   │   ├── routes_analysis.py    # 分析控制 + 队列管理（17端点）
+│   │   ├── routes_analysis.py    # 分析控制 + 队列管理（17端点；delete_book 先移回收站成功再改队列）
 │   │   ├── routes_summary.py     # 总结控制（3端点）
 │   │   ├── routes_books.py       # 书籍数据（10端点）
 │   │   ├── routes_viz.py         # 可视化数据（3端点）
@@ -55,7 +55,7 @@
 │   │   ├── routes_settings.py    # 配置管理（6端点）
 │   │   └── ws.py                 # WebSocket /ws/progress
 │   ├── config/
-│   │   ├── settings.py           # 三层 dataclass 配置 + ConfigManager
+│   │   ├── settings.py           # 三层 dataclass 配置 + ConfigManager（save 走 safe_save_json 原子写）
 │   │   └── constants.py          # 所有硬编码默认值 + 50类伏笔定义
 │   ├── models/
 │   │   ├── analysis_result.py    # AnalysisResult 9类结构化输出
@@ -109,7 +109,7 @@
 │   │   └── main.css              # Win11 Fluent 设计系统（--win-* 变量）
 │   ├── package.json
 │   └── vite.config.ts
-├── desktop.py                    # pywebview 桌面入口（单实例锁 + 关闭确认 + uvicorn 后台线程）
+├── desktop.py                    # pywebview 桌面入口（单实例锁 O_EXCL 原子抢锁 + 关闭确认 + crash.log 轮转 + graceful 退出）
 ├── config.json                   # 运行配置（含 API Key，已 gitignore）
 ├── queue_state.json              # 队列状态（已 gitignore）
 ├── workspace/                    # 分析工作区（已 gitignore）
@@ -657,6 +657,14 @@ npm run build
 > ~~.confirm-mask { background: rgba(0,0,0,0.3); }  /* 建议 0.4 */~~
 > ~~```~~
 
+> 2026-08-20 审计遗留（已知、暂未修，详见 10.6）：
+> - **H3 密钥脱敏/加密**：`config.json` 明文存 `api_key`，`GET /api/settings` 原样返回（用户明确跳过，本地小工具可接受）
+> - **`/analysis/logs` 无鉴权**：仅绑 `127.0.0.1`，桌面本地危害有限，未加守卫
+> - **llm_client token None 统计失真**：异常路径 `usage`/`prompt_tokens_details` 为 None 时计数偏差
+> - **style_analyzer 快照边界**：并发乱序完成时的 `get_kb_snapshot` 子集缓存边界（部分风险）
+> - **阻塞 IO 二次读**：`memory_state._validate_block_size` 恢复时对每个文件同步读两遍
+> - **端口锁 boot 窗口残余竞态**：服务器未起、健康检查必然失败期间的极短窗口仍可能误抢锁
+
 ### 10.3 2026-08-17 变更摘要
 - **复检上下文超限保护**：`RECHECK_FULLTEXT_BUDGET_CHARS=150000`、`_plan_recheck_batches()` 按伏笔埋设章砍卷
 - **复检批大小配置化**：`AnalysisConfig.foreshadow_recheck_batch_size`（默认 40），前端 SettingsPage 可调
@@ -778,7 +786,27 @@ npm run build
   - 命中率 → `fmtPercent`（保留 1 位小数%）
 - **效果**：5 秒轮询刷新时，5 个数字从旧值缓动到新值（600ms），视觉上能"看见"token 累积过程
 
-### 10.6 相关文档
+### 10.6 2026-08-20 后端加固（审计 bug 修复）
+
+> 背景：对后端做了一次全量只读审计（24 确认 / 4 部分 / 1 误报），本次落地除 H3 密钥脱敏（用户明确跳过）外的可实锤修复。
+> 备份：`F:\AI\小说分析器\.bak_8.20_fixes\`（6 文件，属已 gitignore 的 `.bak_*` 范围，不入库）。
+
+- **H1 事件循环冻结**：`queue_service.py` 的 `AnalysisService.__init__` 不再同步调 `_auto_scan_workspace()`；改为 `app.py` 的 lifespan 启动期 `asyncio.to_thread` 跑。消除首个请求在事件循环内同步扫描（含 `ex.map` 阻塞）导致的 UI 卡死；顺带修复「扫描异常冒泡成首个请求 500」的异常泄露
+- **H2a 章节结果非原子写**：`memory_state.py` `_write_json_file`（每章结果落盘）由 `open('w')` 截断写改为复用已导入的 `safe_save_json`（临时文件 + rename 原子替换），与 rolling/failed 标记一致，写一半被杀不再留半截 `chapter_N_result.json`
+- **H2b 优雅退出**：`desktop.py` 在 `os._exit(0)` 前加 `logging.shutdown()`，窗口关闭时刷盘所有 handler（含在途日志/落盘）
+- **crash.log 不轮转**：`desktop.py` 的 crash 诊断 `FileHandler` 改为 `RotatingFileHandler(maxBytes=10MB, backupCount=3)`，与 `analyzer.log` 同策略（此前实测 45MB 不切割）
+- **端口锁竞态**：`desktop.py` 单实例锁改用 `os.open(O_CREAT|O_EXCL)` 原子抢锁、抢到即写端口；竞态窗口从「服务器就绪前数秒」缩到微秒级；服务器启动超时则清锁再退（残余 boot 窗口未根除）
+- **config 非原子写**：`settings.py` 的 `ConfigManager.save` 由 `open('w')` + `json.dump` 改为 `safe_save_json`，崩溃不再破坏 `config.json`
+- **delete_book 顺序**：`routes_analysis.py` 的 `delete_book` 改为「先 `delete_novel_to_trash` 移回收站成功、再 `remove_item` 改队列」，杜绝「队列已删但磁盘未删」的状态不一致
+
+**验证**：`python -m py_compile` 对 6 个改动文件全部通过（未跑 pytest / 运行期 import，依赖不在沙箱 venv）。
+
+**有意未动**（说明而非偷懒，详见 10.2）：
+- H3 密钥脱敏 / 加密：用户明确跳过，本地小工具明文存 config 合理
+- `/analysis/logs` 无鉴权：仅绑 127.0.0.1，单用户桌面应用加 fake auth 属过度设计
+- 端口竞态残余 boot 窗口、token None 统计、style 快照并发、阻塞 IO 二次读：需精确行定位或深度重构，未泛泛猜改
+
+### 10.7 相关文档
 - Win11 重做计划：`docs/superpowers/plans/2026-08-16-win11-frontend-redesign.md`
 - 项目 README：`README.md`
 - 更新日志：`CHANGELOG.md`
