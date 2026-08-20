@@ -175,9 +175,13 @@ class MemoryState:
 
     @staticmethod
     def _write_json_file(filepath: Path, data: dict) -> None:
-        """同步写单个 JSON 文件（供 to_thread 调用，格式与旧项目一致）"""
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+        """原子写单个章节结果 JSON（先写临时文件再 rename 替换，供 to_thread 调用）。
+
+        H2a 修复：原实现 open('w') 先截断再写，进程在写入中途被杀（崩溃/强关/断电）会
+        留下半截/空的 chapter_N_result.json；恢复时 json.load 抛异常，该章被误判为损坏。
+        改用已导入的 safe_save_json（临时文件 + os.replace 原子替换），与 rolling/failed
+        标记的写法保持一致，写入中途崩溃最多丢失临时文件、不会污染正式结果文件。"""
+        safe_save_json(data, filepath, ensure_ascii=False)
 
     async def restore_from_disk(self, output_dir: Path, block_size: Optional[int] = None) -> int:
         """从 output_dir 恢复结果到内存（阻塞 IO 走线程池，避免事件循环卡顿）"""

@@ -14,6 +14,8 @@ from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
+from ..utils.json_utils import safe_save_json
+
 from .constants import (
     DEFAULT_BASE_URL, DEFAULT_API_KEY, DEFAULT_MODEL,
     DEFAULT_MAX_ARC_LENGTH,
@@ -266,9 +268,10 @@ class ConfigManager:
                 # env 来源的 key 不回写磁盘：load() 时 env 仍会覆盖，行为一致，
                 # 但避免明文 key 因一次 PUT /api/settings 落盘（MINOR-8）
                 data["api"]["api_key"] = ""
-            with open(self.config_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            return True
+            # 配置非原子写修复：原 open('w') 截断写，并发保存或写一半崩溃会破坏 config.json，
+            # 下次启动 load() 抛 JSONDecodeError 导致 API Key/模型全部丢失（回退默认配置）。
+            # 改用 safe_save_json（临时文件 + os.replace 原子替换），与队列状态/章节结果一致。
+            return safe_save_json(data, self.config_path, ensure_ascii=False)
         except Exception as e:
             print(f"保存配置失败: {e}")
             return False

@@ -381,8 +381,9 @@ class AnalysisService:
         self._analysis_start_time: float = 0.0
         # 运行结束时刻（冻结耗时用：结束后 elapsed 不再随 time.time() 增长）
         self._analysis_end_time: Optional[float] = None
-        # 启动时自动扫描工作区
-        self._auto_scan_workspace()
+        # 注意：启动期自动扫描已迁移到 app.py 的 lifespan 启动阶段（asyncio.to_thread 执行），
+        # 不再在此处同步执行——否则首个触发 get_service() 的 async 请求会在事件循环内
+        # 同步跑完整工作区扫描（网络盘多书时卡数秒~数十秒），冻结整个事件循环。
 
     # ---- 状态 ----
     @property

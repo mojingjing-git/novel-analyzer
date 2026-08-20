@@ -16,6 +16,7 @@ pywebview 桌面入口
 
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 import socket
 import sys
@@ -66,7 +67,12 @@ def _install_crash_diagnostics():
         getattr(h, "baseFilename", "") == str(crash_path)
         for h in crash_logger.handlers
     ):
-        fh = logging.FileHandler(crash_path, encoding="utf-8")
+        # H14 修复：原用裸 FileHandler 不限制大小，crash.log 会无限增长（实测已达 45MB）。
+        # 改用 RotatingFileHandler，与 analyzer.log 同策略（10MB × 3），避免长期运行撑爆磁盘。
+        fh = RotatingFileHandler(
+            str(crash_path), encoding="utf-8",
+            maxBytes=10 * 1024 * 1024, backupCount=3,
+        )
         fh.setFormatter(
             logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
         )
@@ -288,29 +294,51 @@ class Api:
 def main():
     _install_crash_diagnostics()
 
-    # 单实例保护（2026-08-17）：活实例健康检查通过则提示并退出；
-    # 锁文件存在但健康检查失败 = 上次崩溃残留，接管之。
-    # 已知竞态：两个实例同时启动且都未写锁时会双双通过（概率极低，可接受）。
-    if LOCK_FILE.exists():
-        old_lock = _read_lock()
-        if _instance_alive(old_lock):
-            logger.warning("检测到已有实例在运行，本实例退出")
-            try:
-                import ctypes
-                ctypes.windll.user32.MessageBoxW(
-                    0, "小说智能分析器已在运行中。\n如确认无实例运行，请删除项目根目录的 app.lock 后重试。",
-                    "已在运行", 0x40)
-            except Exception:
-                print("小说智能分析器已在运行中")
-            sys.exit(0)
-        try:
-            LOCK_FILE.unlink()
-        except OSError:
-            pass
-
     port = _find_free_port()
     logger.info(f"启动后端服务: http://127.0.0.1:{port}")
     logger.info(f"项目根目录: {PROJECT_ROOT}")
+
+    # 单实例保护（2026-08-17 优化）：
+    # 原实现在服务器就绪后才写锁，竞态窗口长达数秒——两个实例同时启动、在“都还没写锁”的
+    # 窗口内会双双通过 exists() 检查并各自起服务。
+    # 现改为：抢到端口后立即用 os.open(O_CREAT|O_EXCL) 原子创建锁文件，窗口缩到微秒级；
+    # 抢到锁即写入端口，让随后启动的实例立刻读到锁并做健康检查：活实例→提示退出，
+    # 端口未就绪/进程已崩→视为上次残留，删锁后重试抢锁（最多 3 次）。
+    for _attempt in range(3):
+        try:
+            _lock_fd = os.open(str(LOCK_FILE), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            break
+        except FileExistsError:
+            old_lock = _read_lock()
+            if _instance_alive(old_lock):
+                logger.warning("检测到已有实例在运行，本实例退出")
+                try:
+                    import ctypes
+                    ctypes.windll.user32.MessageBoxW(
+                        0, "小说智能分析器已在运行中。\n如确认无实例运行，请删除项目根目录的 app.lock 后重试。",
+                        "已在运行", 0x40)
+                except Exception:
+                    print("小说智能分析器已在运行中")
+                sys.exit(0)
+            try:
+                LOCK_FILE.unlink()
+            except OSError:
+                pass
+    else:
+        logger.error("无法获取单实例锁（反复抢锁失败），退出")
+        sys.exit(1)
+    try:
+        os.write(_lock_fd, json.dumps(
+            {"pid": os.getpid(), "port": port, "started_at": time.time()},
+            ensure_ascii=False).encode("utf-8"))
+        os.fsync(_lock_fd)
+    except OSError as e:
+        logger.warning(f"写入单实例锁失败（不影响启动）: {e}")
+    finally:
+        try:
+            os.close(_lock_fd)
+        except OSError:
+            pass
 
     # 后台线程启动后端
     t = threading.Thread(target=_start_server, args=(port,), daemon=True)
@@ -319,16 +347,12 @@ def main():
     # 等后端就绪
     if not _wait_for_server(port):
         logger.error("后端启动超时")
+        try:
+            LOCK_FILE.unlink()
+        except OSError:
+            pass
         sys.exit(1)
     logger.info("后端已就绪")
-
-    try:
-        LOCK_FILE.write_text(
-            json.dumps({"pid": os.getpid(), "port": port, "started_at": time.time()},
-                       ensure_ascii=False),
-            encoding="utf-8")
-    except OSError as e:
-        logger.warning(f"写入单实例锁失败（不影响启动）: {e}")
 
     # 打开原生窗口
     try:
@@ -377,6 +401,10 @@ def main():
         LOCK_FILE.unlink()
     except OSError:
         pass
+    # H2b 修复：原直接 os._exit(0) 跳过所有 atexit、不 flush 缓冲区，会丢失最后几行日志、
+    # 且硬杀仍在跑的 uvicorn 守护线程（在途写文件可能截断）。退出前先 logging.shutdown()
+    # 刷盘所有 handler（含 analyzer.log 与 crash.log 的 RotatingFileHandler），再结束进程。
+    logging.shutdown()
     os._exit(0)
 
 

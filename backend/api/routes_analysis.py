@@ -163,23 +163,26 @@ async def move_down_queue_item(req: IndexRequest) -> dict:
 
 @router.post("/queue/delete_book")
 async def delete_book(req: DeleteBookRequest) -> dict:
-    """删除队列项对应的小说：先从队列移除，再把 workspace 目录移入系统回收站"""
+    """删除队列项对应的小说：先把文件移入回收站，成功后再从队列移除并持久化。
+
+    顺序修复：原实现先 remove_item + save_queue，再移回收站；若移回收站失败会抛 500，
+    但队列项已删、前端刷新后“书凭空消失而文件还在”，状态不一致。
+    改为先移文件、成功后再动队列，保证任一环节失败都不会出现“队列已删但磁盘未删”。"""
     service = _ensure_idle()
     if not (0 <= req.index < service.queue.count):
         raise HTTPException(status_code=422, detail="索引无效")
     item = service.queue.items[req.index]
     workspace_dir = item.workspace_dir
 
-    # 先从队列移除
-    service.queue.remove_item(req.index)
-    service.save_queue()
-
-    # 再把 workspace 目录移入系统回收站
+    # 先把 workspace 目录移入系统回收站；失败直接报错，绝不先动队列
     if workspace_dir.exists():
         result = workspace_service.delete_novel_to_trash(item.name)
         if not result.get("ok"):
             raise HTTPException(status_code=500, detail=result.get("error", "删除失败"))
 
+    # 文件回收成功（或目录本就不存在）后再从队列移除并持久化
+    service.queue.remove_item(req.index)
+    service.save_queue()
     return service.status()
 
 

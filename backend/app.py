@@ -79,6 +79,20 @@ def create_app() -> FastAPI:
             loop.set_exception_handler(_exc_handler)
         except Exception as e:
             logger.debug(f"设置 asyncio 异常处理器失败: {e}")
+
+        # 启动期自动扫描工作区（H1 修复）：
+        # 原实现在 AnalysisService.__init__ 里同步扫描，而 __init__ 由首个触发
+        # get_service() 的 async 请求在事件循环内调用，导致整个事件循环被同步 IO 冻结
+        # （网络盘多书时卡数秒~数十秒，UI 表现为"点一下没反应/进度卡住"）。
+        # 此处放到 lifespan 启动阶段、用 asyncio.to_thread 离线程执行，请求到来前队列已就绪，
+        # 且扫描期间事件循环不被阻塞。扫描异常在此被吞掉并记录，不影响服务启动。
+        try:
+            from backend.services.queue_service import get_service
+            svc = get_service()
+            await asyncio.to_thread(svc._auto_scan_workspace)
+            logger.info("启动期工作区扫描完成")
+        except Exception as e:
+            logger.warning(f"启动期工作区扫描失败（不影响启动）: {e}")
         yield
 
     app = FastAPI(title="Novel Analyzer Web", version="0.1.0", lifespan=lifespan)
