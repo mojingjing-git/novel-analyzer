@@ -25,6 +25,7 @@ from backend.config.constants import (
 )
 from backend.core.llm_client import LLMClient
 from backend.core.style_analyzer import extract_style_profile
+from backend.services.location_normalizer import LocationNormalizer
 from backend.utils.json_utils import safe_load_json, safe_save_json, extract_json_from_text, safe_parse_json
 from backend.utils.text_utils import deduplicate_foreshadows
 from backend.utils.foreshadow_ledger import ForeshadowLedger, ForeshadowItem
@@ -542,9 +543,26 @@ class FinalSummaryRunner:
         self.book_name = detect_book_name(self.output_dir) or "未知小说"
         logger.info(f"检测到书名: {self.book_name}")
 
+        # Phase 0 归一化器（不立即启动，run() 内按需触发）
+        self._normalizer: Optional[LocationNormalizer] = None
+
     def stop(self):
         self._stop_requested = True
         self._llm.request_stop()
+
+    async def _normalize_phase_0(self) -> bool:
+        """Phase 0：调用 LocationNormalizer 跑完整 4 子阶段"""
+        try:
+            if self._normalizer is None:
+                self._normalizer = LocationNormalizer(
+                    output_dir=self.output_dir,
+                    llm_client=self._llm,
+                    concurrency=self.concurrency,
+                )
+            return await self._normalizer.run()
+        except Exception as e:
+            logger.error(f"Phase 0 归一化异常: {e}", exc_info=True)
+            return False
 
     def _emit_progress(self, payload: dict) -> None:
         if self._on_progress:
@@ -1356,6 +1374,13 @@ class FinalSummaryRunner:
     async def run(self) -> Optional[str]:
         """执行完整总结流程。返回最终报告文本；用户停止返回 None；失败抛 RuntimeError"""
         t_start = time.time()
+
+        # Phase 0: 地点 + 空间关系归一化（LLM 调用，token 计入 summary）
+        if not await self._normalize_phase_0():
+            logger.error("Phase 0 归一化失败，终止总结")
+            self._emit_progress({"type": "complete", "status": "failed"})
+            return
+
         self._emit_progress({"type": "status", "message": "正在加载章节数据..."})
         results = await asyncio.to_thread(self._load_results)
         if not results:

@@ -7,8 +7,9 @@
 import asyncio
 import json
 import sys
+from unittest.mock import AsyncMock, MagicMock, patch
+
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
@@ -70,7 +71,11 @@ def test_resume_skips_completed_llm_calls(tmp_path):
     _write_results(tmp_path, 4)
     runner1 = _make_runner(tmp_path)
 
-    with patch.object(FinalSummaryRunner, '_call_llm_summary', new=AsyncMock(return_value="这是卷摘要正文内容")), \
+    normalizer_mock = MagicMock()
+    normalizer_mock.run = AsyncMock(return_value=True)
+
+    with patch("backend.services.final_summary.LocationNormalizer", return_value=normalizer_mock), \
+         patch.object(FinalSummaryRunner, '_call_llm_summary', new=AsyncMock(return_value="这是卷摘要正文内容")), \
          patch.object(FinalSummaryRunner, '_call_llm_reconciliation', new=AsyncMock(return_value={"reconciliation": []})), \
          patch.object(FinalSummaryRunner, '_call_llm_final', new=AsyncMock(return_value="最终报告正文")):
         report = asyncio.run(runner1.run())
@@ -86,7 +91,10 @@ def test_resume_skips_completed_llm_calls(tmp_path):
     summary_mock = AsyncMock(return_value="不应被调用")
     recon_mock = AsyncMock(return_value={"reconciliation": []})
     final_mock = AsyncMock(return_value="第二次报告")
-    with patch.object(FinalSummaryRunner, '_call_llm_summary', new=summary_mock), \
+    normalizer_mock2 = MagicMock()
+    normalizer_mock2.run = AsyncMock(return_value=True)
+    with patch("backend.services.final_summary.LocationNormalizer", return_value=normalizer_mock2), \
+         patch.object(FinalSummaryRunner, '_call_llm_summary', new=summary_mock), \
          patch.object(FinalSummaryRunner, '_call_llm_reconciliation', new=recon_mock), \
          patch.object(FinalSummaryRunner, '_call_llm_final', new=final_mock):
         report2 = asyncio.run(runner2.run())
@@ -101,8 +109,12 @@ def test_resume_reconciliation_only_when_missing(tmp_path):
     _write_results(tmp_path, 4)
     runner1 = _make_runner(tmp_path)
 
+    normalizer_mock = MagicMock()
+    normalizer_mock.run = AsyncMock(return_value=True)
+
     # 第一次：reconciliation 全部返回 None（模拟该阶段失败/中断）
-    with patch.object(FinalSummaryRunner, '_call_llm_summary', new=AsyncMock(return_value="卷摘要A")), \
+    with patch("backend.services.final_summary.LocationNormalizer", return_value=normalizer_mock), \
+         patch.object(FinalSummaryRunner, '_call_llm_summary', new=AsyncMock(return_value="卷摘要A")), \
          patch.object(FinalSummaryRunner, '_call_llm_reconciliation', new=AsyncMock(return_value=None)), \
          patch.object(FinalSummaryRunner, '_call_llm_final', new=AsyncMock(return_value="报告一")):
         asyncio.run(runner1.run())
@@ -115,9 +127,68 @@ def test_resume_reconciliation_only_when_missing(tmp_path):
     runner2 = _make_runner(tmp_path)
     summary_mock = AsyncMock(return_value="不应调用")
     recon_mock = AsyncMock(return_value={"reconciliation": []})
-    with patch.object(FinalSummaryRunner, '_call_llm_summary', new=summary_mock), \
+    normalizer_mock2 = MagicMock()
+    normalizer_mock2.run = AsyncMock(return_value=True)
+    with patch("backend.services.final_summary.LocationNormalizer", return_value=normalizer_mock2), \
+         patch.object(FinalSummaryRunner, '_call_llm_summary', new=summary_mock), \
          patch.object(FinalSummaryRunner, '_call_llm_reconciliation', new=recon_mock), \
          patch.object(FinalSummaryRunner, '_call_llm_final', new=AsyncMock(return_value="报告二")):
         asyncio.run(runner2.run())
     summary_mock.assert_not_awaited()
     assert recon_mock.await_count == 2, f"应补跑全部批次 reconciliation，实际 {recon_mock.await_count}"
+
+
+class TestPhase0Integration:
+    def test_run_calls_normalizer_before_batch(self, tmp_path):
+        _write_results(tmp_path, chapters=4)
+
+        normalizer_mock = MagicMock()
+        normalizer_mock.run = AsyncMock(return_value=True)
+
+        with patch("backend.services.final_summary.LocationNormalizer") as NL, \
+             patch.object(FinalSummaryRunner, '_call_llm_summary', new=AsyncMock(return_value="卷摘要文本")), \
+             patch.object(FinalSummaryRunner, '_call_llm_reconciliation', new=AsyncMock(return_value={"reconciliation": []})), \
+             patch.object(FinalSummaryRunner, '_call_llm_final', new=AsyncMock(return_value="最终报告")):
+            NL.return_value = normalizer_mock
+            runner = FinalSummaryRunner(
+                config=AppConfig(),
+                output_dir=tmp_path,
+                start_chapter=1,
+                end_chapter=4,
+                batch_size=2,
+                concurrency=1,
+            )
+            # 不实际跑完整个 run（避免 LLM 调用），只验证 normalizer 被调用
+            runner._run_batch = AsyncMock(return_value=None)
+            runner._recheck_remaining = AsyncMock(return_value=None)
+            runner._run_style_extraction = AsyncMock(return_value=None)
+            runner._write_report = AsyncMock(return_value=None)
+            runner._emit_progress = MagicMock()
+
+            asyncio.run(runner.run())
+
+            assert normalizer_mock.run.called
+
+    def test_phase0_failure_marks_summary_failed(self, tmp_path):
+        _write_results(tmp_path, chapters=4)
+
+        normalizer_mock = MagicMock()
+        normalizer_mock.run = AsyncMock(return_value=False)
+
+        with patch("backend.services.final_summary.LocationNormalizer") as NL:
+            NL.return_value = normalizer_mock
+            runner = FinalSummaryRunner(
+                config=AppConfig(),
+                output_dir=tmp_path,
+                start_chapter=1,
+                end_chapter=4,
+                batch_size=2,
+                concurrency=1,
+            )
+            runner._run_batch = AsyncMock(return_value=None)
+            runner._emit_progress = MagicMock()
+
+            asyncio.run(runner.run())
+
+            # Phase 1 不应被调用
+            assert not runner._run_batch.called
