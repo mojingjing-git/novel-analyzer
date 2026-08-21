@@ -702,7 +702,8 @@ class LocationNormalizer:
             ],
         }
         out_path = output_subdir / _LOCATIONS_NORMALIZED_FILENAME
-        safe_save_json(payload, out_path)
+        if not safe_save_json(payload, out_path):
+            raise RuntimeError(f"Phase 0 落盘失败: {out_path}")
 
     def _persist_normalized_spatial(self, spatial) -> None:
         output_subdir = self._output_subdir()
@@ -718,7 +719,8 @@ class LocationNormalizer:
             "relationships": spatial,
         }
         out_path = output_subdir / _SPATIAL_NORMALIZED_FILENAME
-        safe_save_json(payload, out_path)
+        if not safe_save_json(payload, out_path):
+            raise RuntimeError(f"Phase 0 落盘失败: {out_path}")
 
     def _compute_chapter_mtimes_hash(self) -> str:
         output_subdir = self._output_subdir()
@@ -745,4 +747,5 @@ class LocationNormalizer:
                 continue
             data["_normalized_ref"] = _LOCATIONS_NORMALIZED_FILENAME
             data["_normalized_spatial_ref"] = _SPATIAL_NORMALIZED_FILENAME
-            safe_save_json(data, cf)
+            if not safe_save_json(data, cf):
+                raise RuntimeError(f"Phase 0 章节标记落盘失败: {cf}")
