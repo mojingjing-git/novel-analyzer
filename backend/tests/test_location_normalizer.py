@@ -460,6 +460,88 @@ class TestLocationNormalizerRun:
         result = asyncio.run(norm.run())
         assert result is False
 
+    def test_skips_when_normalized_files_current(self, tmp_path):
+        _setup_output_dir(tmp_path, chapters=3)
+
+        first_desc = "第一次描述"
+        first_responses = [
+            json.dumps({"locations": [
+                {"canonical_name": "宁安县", "aliases": ["宁安县", "宁安县城"], "parent": "大周王朝", "type": "城市", "description": first_desc}
+            ]}, ensure_ascii=False),
+            json.dumps({"relationships": [
+                {"from": "宁安县", "to": "宁安县", "direction": "东南", "distance_text": "约两三百里", "distance_estimate_km": 130, "relation_type": "FIRST_REL", "evidence_chapters": [1, 2, 3]}
+            ]}, ensure_ascii=False),
+        ]
+        norm1 = LocationNormalizer(
+            output_dir=tmp_path, llm_client=_make_mock_llm(first_responses), concurrency=1
+        )
+        assert asyncio.run(norm1.run()) is True
+
+        loc_path = tmp_path / "output" / "locations_normalized.json"
+        persisted_after_first = json.loads(loc_path.read_text(encoding="utf-8"))
+        assert persisted_after_first["locations"][0]["description"] == first_desc
+
+        second_desc = "第二次描述"
+        second_responses = [
+            json.dumps({"locations": [
+                {"canonical_name": "宁安县", "aliases": ["宁安县", "宁安县城"], "parent": "大周王朝", "type": "城市", "description": second_desc}
+            ]}, ensure_ascii=False),
+            json.dumps({"relationships": [
+                {"from": "宁安县", "to": "宁安县", "direction": "东南", "distance_text": "约两三百里", "distance_estimate_km": 130, "relation_type": "SECOND_REL", "evidence_chapters": [1, 2, 3]}
+            ]}, ensure_ascii=False),
+        ]
+        norm2 = LocationNormalizer(
+            output_dir=tmp_path, llm_client=_make_mock_llm(second_responses), concurrency=1
+        )
+        assert asyncio.run(norm2.run()) is True
+
+        persisted_after_second = json.loads(loc_path.read_text(encoding="utf-8"))
+        assert persisted_after_second["locations"][0]["description"] == first_desc
+
+    def test_reruns_when_chapter_mtime_changes(self, tmp_path):
+        _setup_output_dir(tmp_path, chapters=3)
+
+        import os
+
+        first_desc = "第一次描述"
+        first_responses = [
+            json.dumps({"locations": [
+                {"canonical_name": "宁安县", "aliases": ["宁安县", "宁安县城"], "parent": "大周王朝", "type": "城市", "description": first_desc}
+            ]}, ensure_ascii=False),
+            json.dumps({"relationships": [
+                {"from": "宁安县", "to": "宁安县", "direction": "东南", "distance_text": "约两三百里", "distance_estimate_km": 130, "relation_type": "FIRST_REL", "evidence_chapters": [1, 2, 3]}
+            ]}, ensure_ascii=False),
+        ]
+        norm1 = LocationNormalizer(
+            output_dir=tmp_path, llm_client=_make_mock_llm(first_responses), concurrency=1
+        )
+        assert asyncio.run(norm1.run()) is True
+
+        loc_path = tmp_path / "output" / "locations_normalized.json"
+
+        bumped_path = tmp_path / "output" / "chapter_2_result.json"
+        future_time = 2_000_000_000
+        os.utime(bumped_path, (future_time, future_time))
+
+        second_desc = "第二次描述"
+        second_responses = [
+            json.dumps({"locations": [
+                {"canonical_name": "宁安县", "aliases": ["宁安县", "宁安县城"], "parent": "大周王朝", "type": "城市", "description": second_desc}
+            ]}, ensure_ascii=False),
+            json.dumps({"relationships": [
+                {"from": "宁安县", "to": "宁安县", "direction": "东南", "distance_text": "约两三百里", "distance_estimate_km": 130, "relation_type": "SECOND_REL", "evidence_chapters": [1, 2, 3]}
+            ]}, ensure_ascii=False),
+        ]
+        mock_llm2 = _make_mock_llm(second_responses)
+        norm2 = LocationNormalizer(
+            output_dir=tmp_path, llm_client=mock_llm2, concurrency=1
+        )
+        assert asyncio.run(norm2.run()) is True
+
+        assert mock_llm2.chat.call_count > 0, "Expected rerun when chapter mtime changed"
+        persisted_after_second = json.loads(loc_path.read_text(encoding="utf-8"))
+        assert persisted_after_second["locations"][0]["description"] == second_desc
+
 
 from backend.services.viz_service import map_data
 

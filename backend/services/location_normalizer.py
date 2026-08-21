@@ -491,6 +491,17 @@ class LocationNormalizer:
 
     async def run(self) -> bool:
         """跑完整 Phase 0；任一阶段失败抛异常或返回 False"""
+        # 0. 缓存短路：若两个 normalized 文件都已存在且 chapter_mtimes_hash 一致，跳过
+        existing_loc, existing_rel = self._load_existing_normalized()
+        current_hash = self._compute_chapter_mtimes_hash()
+        if existing_loc and existing_rel:
+            if (existing_loc.get("chapter_mtimes_hash") == current_hash
+                    and existing_rel.get("chapter_mtimes_hash") == current_hash):
+                logger.info("Phase 0 跳过：归一化文件已是最新")
+                return True
+        elif existing_loc or existing_rel:
+            logger.warning("归一化文件部分缺失，重新运行 Phase 0")
+
         # 1. 读取所有 chapter_*.json
         raw_locations, raw_spatial = self._load_all_chapter_data()
         if not raw_locations:
@@ -521,10 +532,12 @@ class LocationNormalizer:
         # 5. Phase 0b-dedupe：机械去重
         final_spatial = self._run_phase_0b_dedupe(all_spatial)
 
-        # 6. 持久化
+        # 6. 先把 _normalized_ref 写回章节，再写 normalized 文件 —
+        #    让持久化的 chapter_mtimes_hash 与最终的 chapter mtimes 一致，
+        #    下次运行 hash 比对才能匹配成功
+        self._add_normalized_ref_to_chapters()
         self._persist_normalized_locations(final_locations)
         self._persist_normalized_spatial(final_spatial)
-        self._add_normalized_ref_to_chapters()
         logger.info("Phase 0 完成")
         return True
 
@@ -705,6 +718,15 @@ class LocationNormalizer:
         for cf in sorted(output_subdir.glob("chapter_*_result.json")):
             mtimes.append(f"{cf.name}:{int(cf.stat().st_mtime)}")
         return hashlib.md5("\n".join(mtimes).encode("utf-8")).hexdigest()
+
+    def _load_existing_normalized(self) -> tuple:
+        """读已存在的 normalized 文件，返回 (locations, spatial)；不存在则对应项为 None。"""
+        output_subdir = self._output_subdir()
+        loc_path = output_subdir / _LOCATIONS_NORMALIZED_FILENAME
+        rel_path = output_subdir / _SPATIAL_NORMALIZED_FILENAME
+        loc = safe_load_json(loc_path) if loc_path.exists() else None
+        rel = safe_load_json(rel_path) if rel_path.exists() else None
+        return loc, rel
 
     def _add_normalized_ref_to_chapters(self) -> None:
         """给每章 chapter_*.json 顶部加 _normalized_ref + _normalized_spatial_ref 字段"""
