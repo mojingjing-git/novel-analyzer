@@ -459,3 +459,75 @@ class TestLocationNormalizerRun:
         norm = LocationNormalizer(output_dir=tmp_path, llm_client=mock_llm, concurrency=1)
         result = asyncio.run(norm.run())
         assert result is False
+
+
+from backend.services.viz_service import map_data
+
+
+class TestMapDataNormalized:
+    def test_returns_normalized_data_when_ref_exists(self, tmp_path):
+        (tmp_path / "output").mkdir()
+        chapter = {
+            "_normalized_ref": "locations_normalized.json",
+            "_normalized_spatial_ref": "spatial_relationships_normalized.json",
+            "locations": [],
+            "spatial_relationships": [],
+        }
+        (tmp_path / "output" / "chapter_1_result.json").write_text(
+            json.dumps(chapter, ensure_ascii=False), encoding="utf-8"
+        )
+        normalized = {
+            "schema_version": 1,
+            "locations": [
+                {
+                    "canonical_name": "宁安县",
+                    "aliases": ["宁安县", "宁安县城"],
+                    "parent": "大周王朝",
+                    "type": "城市",
+                    "description": "测试",
+                    "chapter_count": 5,
+                }
+            ],
+        }
+        (tmp_path / "output" / "locations_normalized.json").write_text(
+            json.dumps(normalized, ensure_ascii=False), encoding="utf-8"
+        )
+        spatial = {
+            "schema_version": 1,
+            "relationships": [
+                {
+                    "from": "宁安县",
+                    "to": "德胜府",
+                    "direction": "东南",
+                    "distance_text": "约两三百里",
+                    "distance_estimate_km": 130,
+                    "relation_type": "相邻",
+                    "evidence_chapters": [1, 2],
+                }
+            ],
+        }
+        (tmp_path / "output" / "spatial_relationships_normalized.json").write_text(
+            json.dumps(spatial, ensure_ascii=False), encoding="utf-8"
+        )
+
+        result = map_data(tmp_path)
+        assert len(result["locations"]) == 1
+        assert result["locations"][0]["name"] == "宁安县"
+        assert "宁安县城" in result["locations"][0]["aliases"]
+        assert len(result["relationships"]) == 1
+        assert result["relationships"][0]["direction"] == "东南"
+
+    def test_falls_back_to_old_logic_when_no_ref(self, tmp_path):
+        (tmp_path / "output").mkdir()
+        chapter = {
+            "chapter_number": 1,
+            "locations": [{"name": "宁安县", "parent": "", "type": "", "description": ""}],
+            "spatial_relationships": [],
+        }
+        (tmp_path / "output" / "chapter_1_result.json").write_text(
+            json.dumps(chapter, ensure_ascii=False), encoding="utf-8"
+        )
+
+        result = map_data(tmp_path)
+        assert len(result["locations"]) == 1
+        assert result["locations"][0]["name"] == "宁安县"

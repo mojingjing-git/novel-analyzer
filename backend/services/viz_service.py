@@ -210,8 +210,58 @@ def graph_data(
 
 
 def map_data(output_dir: Path) -> Dict[str, Any]:
-    """地图数据：地点层级 + 空间关系"""
-    results = _load_results(output_dir)
+    """地图数据：地点层级 + 空间关系
+
+    检测归一化文件存在性：
+    - 若任一 chapter_*.json 含 _normalized_ref → 读 normalized 文件（已归一化）
+    - 否则走老逻辑（聚合 raw chapter_*.json）
+    """
+    output_subdir = output_dir / "output"
+    if not output_subdir.is_dir():
+        output_subdir = output_dir
+
+    # 检测是否有归一化数据
+    locations_normalized_path = output_subdir / "locations_normalized.json"
+    spatial_normalized_path = output_subdir / "spatial_relationships_normalized.json"
+
+    use_normalized = False
+    if locations_normalized_path.exists() and spatial_normalized_path.exists():
+        for cf in output_subdir.glob("chapter_*_result.json"):
+            try:
+                with open(cf, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if data.get("_normalized_ref") == "locations_normalized.json":
+                    use_normalized = True
+                    break
+            except Exception:
+                continue
+
+    if use_normalized:
+        try:
+            with open(locations_normalized_path, "r", encoding="utf-8") as f:
+                loc_norm = json.load(f)
+            with open(spatial_normalized_path, "r", encoding="utf-8") as f:
+                rel_norm = json.load(f)
+            return {
+                "locations": [
+                    {
+                        "id": loc["canonical_name"],
+                        "name": loc["canonical_name"],
+                        "aliases": loc.get("aliases", []),
+                        "parent": loc.get("parent", ""),
+                        "type": loc.get("type", ""),
+                        "description": loc.get("description", ""),
+                        "chapters": [],  # 归一化文件不含详细章节数组
+                    }
+                    for loc in loc_norm.get("locations", [])
+                ],
+                "relationships": rel_norm.get("relationships", []),
+            }
+        except Exception as e:
+            logger.warning(f"读归一化数据失败，回退到老逻辑: {e}")
+
+    # 老逻辑（保持原实现不变）
+    results = _load_results(output_subdir)
     locations: Dict[str, Dict[str, Any]] = {}
     spatial_rels: List[Dict[str, str]] = []
 
