@@ -218,3 +218,68 @@ class TestParseAndValidateLocations:
         result = parse_and_validate_locations(llm_text, batch)
         assert len(result) == 1
         assert result[0]["canonical_name"] == "A"
+
+
+from backend.services.location_normalizer import (
+    build_spatial_prompt,
+    parse_and_validate_spatial,
+)
+
+
+class TestBuildSpatialPrompt:
+    def test_returns_system_and_user_messages(self):
+        pairs = [{"from": "宁安县", "to": "德胜府", "relations": ["相邻"], "chapters": [1, 2]}]
+        whitelist = [{"canonical": "宁安县", "aliases": ["宁安县"]}, {"canonical": "德胜府", "aliases": ["德胜府"]}]
+        messages = build_spatial_prompt(pairs, whitelist, batch_idx=1, total_batches=3)
+        assert len(messages) == 2
+        assert "batch 1/3" in messages[1]["content"]
+        assert "白名单" in messages[1]["content"] or "canonical" in messages[1]["content"]
+        assert "宁安县" in messages[1]["content"]
+
+    def test_system_prompt_mentions_whitelist_constraint(self):
+        messages = build_spatial_prompt([], [], 1, 1)
+        sys = messages[0]["content"]
+        assert "canonical_name" in sys or "字面" in sys or "引用" in sys
+
+
+class TestParseAndValidateSpatial:
+    def test_accepts_valid_pair(self):
+        llm_text = json.dumps({
+            "relationships": [
+                {"from": "宁安县", "to": "德胜府", "direction": "东南", "distance_text": "约两三百里", "distance_estimate_km": 130, "relation_type": "相邻", "evidence_chapters": [42]}
+            ]
+        }, ensure_ascii=False)
+        result = parse_and_validate_spatial(llm_text, {"宁安县", "德胜府"})
+        assert len(result) == 1
+        assert result[0]["from"] == "宁安县"
+
+    def test_rejects_from_not_in_whitelist(self):
+        llm_text = json.dumps({
+            "relationships": [
+                {"from": "京城市", "to": "德胜府", "direction": "", "distance_text": "", "distance_estimate_km": None, "relation_type": "", "evidence_chapters": [1]}
+            ]
+        }, ensure_ascii=False)
+        result = parse_and_validate_spatial(llm_text, {"宁安县", "德胜府"})
+        assert result == []
+
+    def test_rejects_to_not_in_whitelist(self):
+        llm_text = json.dumps({
+            "relationships": [
+                {"from": "宁安县", "to": "未知地", "direction": "", "distance_text": "", "distance_estimate_km": None, "relation_type": "", "evidence_chapters": [1]}
+            ]
+        }, ensure_ascii=False)
+        result = parse_and_validate_spatial(llm_text, {"宁安县", "德胜府"})
+        assert result == []
+
+    def test_rejects_empty_evidence_chapters(self):
+        llm_text = json.dumps({
+            "relationships": [
+                {"from": "宁安县", "to": "德胜府", "direction": "", "distance_text": "", "distance_estimate_km": None, "relation_type": "", "evidence_chapters": []}
+            ]
+        }, ensure_ascii=False)
+        result = parse_and_validate_spatial(llm_text, {"宁安县", "德胜府"})
+        assert result == []
+
+    def test_invalid_json_returns_empty(self):
+        result = parse_and_validate_spatial("not json", {"宁安县"})
+        assert result == []

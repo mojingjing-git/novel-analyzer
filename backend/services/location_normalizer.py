@@ -219,3 +219,104 @@ def parse_and_validate_locations(
             "description": loc.get("description", "") or "",
         })
     return valid
+
+
+_SPATIAL_SYSTEM_PROMPT = """你是中文小说空间关系结构化专家。你的任务是把每条自由文本空间关系描述抽取为结构化字段。
+
+## 任务 — 空间关系结构化（spatial_relationships）
+
+输入是一组预聚合的 (from, to) 关系对，每对包含：
+- 原始 from / to 地名（已与地点归一化的白名单一致）
+- 多条自由文本 relation 描述
+- 出现的章节列表
+
+对每个 pair，你需要输出：
+{
+  "from": "宁安县",                  // 必须引用白名单中的 canonical_name
+  "to": "德胜府",                    // 同上
+  "direction": "东南",              // 原文中的方向；无明确则 ""
+  "distance_text": "约两三百里",    // 原文距离描述；无明确则 ""
+  "distance_estimate_km": 130,      // 估算公里数（整数）；无明确数字则 null
+  "relation_type": "相邻",          // 包含/相邻/接壤/隔海/跨越/途经/...；无法判断则 ""
+  "evidence_chapters": [42, 43]     // 必须引用原始章节号数组（非空）
+}
+
+## 硬约束（违反则视为输出错误）
+
+1. from / to 必须字面等于用户输入"白名单"中的某个 canonical_name，不容许创造新地名。
+2. evidence_chapters 必须是非空整数数组。
+3. 输出必须是合法 JSON，relationships 数组可为空。
+"""
+
+
+def build_spatial_prompt(
+    pairs: List[Dict[str, Any]],
+    whitelist: List[Dict[str, Any]],
+    batch_idx: int,
+    total_batches: int,
+) -> List[Dict[str, str]]:
+    """构造 spatial 结构化的 system + user 消息"""
+    user_lines = [
+        f"## 可用地名白名单（{len(whitelist)} 个）",
+        "",
+    ]
+    for i, w in enumerate(whitelist, 1):
+        aliases_str = ", ".join(w["aliases"])
+        user_lines.append(f"[L{i}] canonical={w['canonical']}, aliases=[{aliases_str}]")
+    user_lines.append("")
+    user_lines.append(
+        f"## 待结构化的空间关系（batch {batch_idx}/{total_batches}，共 {len(pairs)} 个 pair）"
+    )
+    user_lines.append("")
+    for i, p in enumerate(pairs, 1):
+        relations_str = "; ".join(f"\"{r}\"" for r in p["relations"])
+        chapters_str = ", ".join(str(c) for c in p["chapters"])
+        user_lines.append(
+            f"[P{i}] from={p['from']}, to={p['to']}\n"
+            f"    relations=[{relations_str}]\n"
+            f"    chapters=[{chapters_str}]"
+        )
+    user_lines.append("")
+    user_lines.append("请按 system prompt 规则输出 JSON {\"relationships\": [...]}")
+    return [
+        {"role": "system", "content": _SPATIAL_SYSTEM_PROMPT},
+        {"role": "user", "content": "\n".join(user_lines)},
+    ]
+
+
+def parse_and_validate_spatial(
+    llm_response: str,
+    whitelist_names: set,
+) -> List[Dict[str, Any]]:
+    """解析 LLM 输出并校验：from/to 必须字面在白名单中"""
+    parsed = safe_parse_json(llm_response)
+    if not parsed or not isinstance(parsed, dict):
+        return []
+    raw_rels = parsed.get("relationships", [])
+    if not isinstance(raw_rels, list):
+        return []
+
+    valid: List[Dict[str, Any]] = []
+    for rel in raw_rels:
+        if not isinstance(rel, dict):
+            continue
+        f, t = rel.get("from", ""), rel.get("to", "")
+        if f not in whitelist_names or t not in whitelist_names:
+            logger.warning(f"丢弃幻觉 spatial：from='{f}' to='{t}'（不在白名单）")
+            continue
+        chapters = rel.get("evidence_chapters", [])
+        if not isinstance(chapters, list) or not chapters:
+            continue
+        chapters_clean = [int(c) for c in chapters if isinstance(c, (int, float))]
+        if not chapters_clean:
+            continue
+        valid.append({
+            "from": f,
+            "to": t,
+            "direction": rel.get("direction", "") or "",
+            "distance_text": rel.get("distance_text", "") or "",
+            "distance_estimate_km": rel.get("distance_estimate_km"),
+            "relation_type": rel.get("relation_type", "") or "",
+            "evidence_chapters": sorted(set(chapters_clean)),
+        })
+    return valid
