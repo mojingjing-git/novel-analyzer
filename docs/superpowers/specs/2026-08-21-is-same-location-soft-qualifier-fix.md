@@ -1,23 +1,22 @@
-# `is_same_location` 过合并修复 — 外部审查文档
+# Phase 0 归一化修复 — 外部审查文档（修订版 v2）
 
-**日期**：2026-08-21
+**日期**：2026-08-21（v2：经外部审查后拆分两个独立修复）
 **作者**：AI Agent（小说分析器项目 Phase 0 SDD 维护）
 **审查目的**：在合并修复之前获得独立技术审查
 **状态**：等待审查
 
 ---
 
-## 0. TL;DR
+## 0. TL;DR（修订）
 
-`backend/utils/text_utils.py::is_same_location()` 的 substring containment 规则把"不同地方"误并成同一个 group，导致 Phase 0 归一化的 prompt 从 ~30K chars 膨胀到 **54K chars**（实测），单次 LLM 调用超过 10.5 分钟硬超时，最终把整个总结任务拖死。
+**两个独立问题被混为一谈，v1 spec 已废弃**：
 
-**修复**：保留 substring containment 但加**软修饰白名单**（`extra in {"主角", "（已废弃）", ...}`），只合并软修饰类后缀，不合并"会议室/顶层/总部"这类实体词。
+| 问题 | 根因 | 修复 | 优先级 |
+|---|---|---|---|
+| **A. Phase 0a 超时** | `_LOCATIONS_BATCH_SIZE=1000` 把 398 group 塞 1 个 batch → 54K chars → 硬超时 | **确定性字符预算**（每批 ≤ 35K chars），与合并规则解耦 | **一线**（先修这个） |
+| **B. 合并过松** | `is_same_location` 的 substring 规则 + 旧后缀白名单把"会议室/顶层"等实体词误并入主名 | **对称剥离前后缀修饰符**，前后缀都覆盖 | **二线**（修了 A 后视效果决定是否必要） |
 
-预计效果：
-- 398 个 group → ~200-300 个 group
-- 54K chars prompt → ~30K chars
-- 单次 LLM 调用从超时 10+ 分钟 → 正常 30-60s
-- 零 token 成本增加（batch 不变）
+**两个修复独立可测、独立可回滚**。不互相依赖。
 
 ---
 
@@ -29,523 +28,436 @@
 
 ### 1.2 Phase 0 归一化
 
-2026-08-21 SDD 流程新增了**Phase 0 归一化**功能（在最终总结阶段前跑）：
+2026-08-21 SDD 流程新增的归一化功能（在最终总结阶段前跑）：
+- **0a-batches**：locations 切片 → 并发 LLM 调 → 校验 canonical 在 aliases 中
+- **0a-consol**：1 次 LLM 合并跨 batch 同地点
+- **0b-batches**：spatial 切片 + canonical 白名单 → 并发 LLM 调
+- **0b-dedupe**：机械去重
 
-1. **0a-batches**：locations 切片 → 并发 LLM 调 → 校验 canonical 在 aliases 中
-2. **0a-consol**：1 次 LLM 合并跨 batch 同地点
-3. **0b-batches**：spatial 切片 + canonical 白名单 → 并发 LLM 调
-4. **0b-dedupe**：机械去重
+设计目的是解决 LLM 生成 `chapter_*.json` 时**地名 / type / parent 不一致**的问题。
 
-Phase 0 的设计目的是解决 LLM 生成 `chapter_*.json` 时**地名 / type / parent 不一致**的问题（spec 已确认 LLM 数据脏 130/889 地点）。
+### 1.3 `is_same_location` 的作用
 
-### 1.3 is_same_location 的作用
+在 `aggregate_locations` 的预聚合阶段用 Union-Find 把相似地名合并为同一 group。Task 1 实现（commit `69bb930`）。
 
-`is_same_location(n1, n2)` 在 Phase 0a 的**预聚合**阶段（`aggregate_locations`）用 Union-Find 把相似地名合并为同一 group：
+### 1.4 `_LOCATIONS_BATCH_SIZE` 的作用
 
 ```python
-# location_normalizer.py:67-72
-for i in range(len(names)):
-    for j in range(i + 1, len(names)):
-        if is_same_location(names[i], names[j]):
-            _union(names[i], names[j])
+# location_normalizer.py:36-37
+_LOCATIONS_BATCH_SIZE = 1000
 ```
 
-合并后的 group 给 LLM 处理（LLM 选 canonical_name + 合并 type/parent）。
-
-### 1.4 算法历史
-
-Task 1 实现（commit `69bb930`）加了这个函数。**Brief 原始算法**是 "归一化相等 + SequenceMatcher ratio ≥ 0.85"，但 brief 的 ratio 注释算错了：
-- `SequenceMatcher.ratio("宁安县", "宁安县城")` 实际 = 0.857（不是注释的 0.75）
-- 直接用 0.85 阈值会误并 "宁安县" 和 "宁安县城"
-
-implementer 加了**长度感知 substring containment**（`shorter ≥ 4 chars 且 shorter in longer`）作为兜底，认为这样能区分 "宁安县城"（whole place + city type 后缀）和 "宁安县城天牛坊"（neighborhood）。
-
-**这个兜底规则就是当前 bug 的来源。**
+控制每个 LLM batch 包含多少 location group。
 
 ---
 
-## 2. 问题（症状与证据）
+## 2. 问题 1：Phase 0a 超时（10+ 分钟）
 
-### 2.1 用户报告
+### 2.1 症状
 
-> "归一化失败直接停止了"
-> "我看 ta 一瞬间就失败了"（实际 10.5 分钟）
-> "我手动重跑了一次还是失败"
+- 用户报告"归一化失败直接停止了"
+- 日志显示 batch 1 跑了 10.5 分钟才被硬超时
 
-### 2.2 日志证据（`%LOCALAPPDATA%\NovelAnalyzer\run.log`）
+### 2.2 日志证据
 
 ```
-22:20:49 [INFO] FinalSummaryRunner 检测到书名: 韩娱之光影交错
-22:20:52 [INFO] location_normalizer: Phase 0a: 398 个 location group
+22:20:52 [INFO] Phase 0a: 398 个 location group
 22:20:52 [INFO] openai SDK POST /v1/chat/completions
-22:30:52 [INFO] openai._base_client: Retrying request ... in 0.424152 seconds  ← 600s 默认超时，自动 retry
-22:31:22 [WARNING] llm_client: 请求硬超时(timeout=630s): API 无响应                ← 10.5 min 后 my 硬超时
-22:31:22 [ERROR] location_normalizer: Phase 0a batch 1 失败
-22:31:22 [ERROR] final_summary: Phase 0 归一化失败，终止总结
-```
-
-第二次手动重跑：
-```
-22:39:35 [INFO] Phase 0a: 398 个 location group
-22:44:06 [ERROR] Phase 0a batch 1 失败: 用户请求停止                            ← 用户 4.5 分钟后手动停
+22:30:52 [INFO] openai._base_client: Retrying request in 0.424152 seconds
+22:31:22 [WARNING] 请求硬超时(timeout=630s): API 无响应
+22:31:22 [ERROR] Phase 0a batch 1 失败
 ```
 
 ### 2.3 实测 prompt 体积
 
-我用脚本直接构造 Phase 0a batch 1 的实际 prompt（《韩娱之光影交错》228 章，398 groups），测得：
-
 ```
-System prompt chars:    671       (~335 tokens)
-User prompt chars:    53,388     (~26,700 tokens)
-Expected output:     ~59,700    (~29,850 tokens)
-Total per call:      ~57,000    tokens
+System prompt:    671 chars (~335 tokens)
+User prompt:    53,388 chars (~26,700 tokens)
+Expected output: ~59,700 chars (~29,850 tokens)
+Total per call:  ~57,000 tokens
 ```
 
-**对比预期**（基于 spec 估算，900 group 千万字级别）：
-- 预期 batch 大小：~1000 group
-- 预期 prompt 大小：~30-40K chars
-- **实测**：1 batch 装 398 group，prompt 已经爆到 54K chars
+### 2.4 根因
 
-### 2.4 第一个 group 的 alias 列表（28 个）
+**`_LOCATIONS_BATCH_SIZE=1000` 太大**：
+- 《韩娱之光影交错》228 章产生 398 个 unique location group
+- BATCH_SIZE=1000 > 398 → 全部塞 1 个 batch
+- 单 batch prompt 54K chars → LLM 调用超过 630s 硬超时
 
+**与合并规则无关**：
+- 即使 `is_same_location` 是完美的（每个 group 只 1 个 alias），398 group 仍然塞 1 个 batch
+- 唯一的根治办法是**让 batch 不超过字符预算上限**，而不是靠合并减小体积
+
+### 2.5 修复方案 1：确定性字符预算
+
+**位置**：`backend/services/location_normalizer.py`
+
+**逻辑改动**：把 `_split_into_batches` 从"按 group 数切"改成"按 prompt 字符预算切"。
+
+```python
+# 替换 _LOCATIONS_BATCH_SIZE = 1000  → 改为按字符预算
+_LOCATION_PROMPT_BUDGET_CHARS = 35000   # 每批 user prompt ≤ 35K chars（约 11-12K tokens，留余量给输出）
+_LOCATION_BATCH_MAX_GROUPS = 1000       # 兜底，避免单批 group 太多（防御性）
+
+
+def _split_into_batches_by_budget(groups: list, budget: int, max_groups: int) -> list:
+    """按 user prompt 字符预算切分批次
+
+    每个 group 的预估字符数 = len(aliases_str) + len(types_str) + len(parents_str) + ~80 字固定开销
+    累加直到超预算（考虑 system prompt 的 ~700 chars 留余量）
+    """
+    batches = []
+    current = []
+    current_chars = 0
+    for g in groups:
+        g_chars = (
+            sum(len(a) for a in g["aliases"]) + 20 +  # aliases + 括号
+            sum(len(k) + len(v) + 5 for k, v in g["types"].items()) + 20 +
+            sum(len(k) + len(v) + 5 for k, v in g["parents"].items()) + 20 +
+            80  # 固定字段（chapter_count + sample_desc + 字段标签）
+        )
+        if current and (current_chars + g_chars > budget or len(current) >= max_groups):
+            batches.append(current)
+            current = []
+            current_chars = 0
+        current.append(g)
+        current_chars += g_chars
+    if current:
+        batches.append(current)
+    return batches
 ```
-aliases=[大唐公司, 新罗酒店, 总裁办公室, 大唐公司总部, 新罗酒店顶层, 大唐公司会议室,
-        大唐公司会客室, 济州岛大唐公司, 大唐公司摄影棚, 新罗酒店中餐厅, 新罗酒店宴会厅,
-        新罗酒店洗手台, 大唐公司待客室, 新罗酒店办公室, 新罗酒店咖啡厅, 大唐公司一期工地,
-        新罗酒店大唐分店, 新罗酒店总统套房, 大唐公司临时办公楼, 大唐公司济州岛工地,
-        济州岛大唐公司总部, 大唐公司总裁办公室, 新罗酒店济州岛分店, 大唐公司济州岛分部,
-        新罗酒店总裁办公室, 济州岛大唐公司大楼天台, 济州岛大唐公司员工食堂包厢]
-types={企业:3, 企业总部:4, 建筑工地:1, 办公楼:1, 酒店:8, 商业场所:2, 餐饮场所:1,
-       建筑:20, 商业建筑工地:1, 高端约会场所:1, 公司:1, 办公/私密空间:1, 办公场所:1, 商业建筑:1}
-parents={济州岛:20, 首尔:10, 济州岛大唐公司:4, 大唐公司:3, 新村集团:1, 新罗酒店:7, 新村集团总部:1}
-chapter_count=40
+
+**`_run_phase_0a_batches` 替换**：
+
+```python
+async def _run_phase_0a_batches(
+    self, groups: List[Dict[str, Any]]
+) -> Optional[List[Dict[str, Any]]]:
+    batches = _split_into_batches_by_budget(
+        groups,
+        budget=_LOCATION_PROMPT_BUDGET_CHARS,
+        max_groups=_LOCATION_BATCH_MAX_GROUPS,
+    )
+    logger.info(f"Phase 0a：{len(groups)} groups → {len(batches)} batches（按字符预算）")
+    semaphore = asyncio.Semaphore(self.concurrency)
+    # ... 其余逻辑不变
 ```
 
-**这 28 个 alias 包含至少 6 个不同的地方**：
-- 大唐公司（公司）
-- 新罗酒店（另一个酒店，**不是大唐公司旗下**）
-- 总裁办公室 / 大唐公司会议室 / 大唐公司会客室 / 大唐公司待客室 / 大唐公司摄影棚（公司内部的房间）
-- 济州岛大唐公司 / 济州岛大唐公司总部（不同地点的分部）
-- 新罗酒店顶层 / 新罗酒店中餐厅 / 新罗酒店总统套房（酒店内部不同地方）
-- 大唐公司一期工地（建筑工地）
+### 2.6 测试方案
 
-LLM 拿到这种 group 必然困惑：哪个是真名？type 选哪个？parent 归到哪？
+```python
+def test_split_batches_by_budget_respects_char_limit(self):
+    """每批 user prompt chars ≤ 预算上限"""
+    groups = [{"aliases": ["x" * 100], "types": {"y": 1}, "parents": {"z": 1}, "chapter_count": 1, "sample_desc": ""} for _ in range(1000)]
+    batches = _split_into_batches_by_budget(groups, budget=10000, max_groups=1000)
+    for b in batches:
+        chars = sum(_estimate_group_chars(g) for g in b)
+        assert chars <= 10000
+
+def test_split_batches_by_budget_respects_group_limit(self):
+    """防御性：单批 group 数不超过 max_groups"""
+    groups = [...] * 5000
+    batches = _split_into_batches_by_budget(groups, budget=1_000_000, max_groups=500)
+    assert all(len(b) <= 500 for b in batches)
+
+def test_split_batches_single_batch_when_under_budget(self):
+    """未超预算时保持 1 batch"""
+    groups = [{"aliases": ["短"], "types": {}, "parents": {}, "chapter_count": 1, "sample_desc": ""}] * 50
+    batches = _split_into_batches_by_budget(groups, budget=10000, max_groups=1000)
+    assert len(batches) == 1
+    assert len(batches[0]) == 50
+```
+
+### 2.7 预期效果
+
+| 指标 | 现状 | 修复后 |
+|---|---|---|
+| 《韩娱》398 group 的 batch 数 | 1（全塞 1 个） | ~2（按 35K 字符切） |
+| 最大单 batch user prompt | 53K chars | ≤ 35K chars |
+| 单次 LLM 调用预期耗时 | 超时 >10 min | 30-60s |
+| Phase 0a 总耗时 | 超时失败 | ~1-2 min（2 batches 并发） |
+
+### 2.8 风险
+
+- **风险 A1**：字符估算公式不准导致实际超预算
+  - **缓解**：保守预算（35K 而非 50K），预留 30% 余量给输出 + system prompt
+- **风险 A2**：并发 2 batch 撞 API 限流
+  - **缓解**：`summary_concurrency=2`（已有），且 batch 间独立（不会卡住）
 
 ---
 
-## 3. 根因分析
+## 3. 问题 2：`is_same_location` 过合并（数据正确性）
 
-### 3.1 当前 `is_same_location` 算法（`text_utils.py:362-384`）
+### 3.1 症状
+
+**与超时无关**，纯粹是数据质量问题：
+
+- `"大唐公司"` 与 `"大唐公司会议室"` 被并入同一 group
+- `"新罗酒店"` 与 `"新罗酒店顶层"` 被并入同一 group
+- `"济州岛"` 与 `"济州岛大唐公司"` 被并入同一 group
+
+合并后 group 包含 28 个 alias（其中至少 6 个不同地方），LLM 无法选出合理的 canonical。
+
+### 3.2 根因分析
+
+**当前算法**（`text_utils.py:362-384`）：
+```python
+if len(shorter) >= 4 and shorter in longer:
+    return True   # ← substring 命中即合并
+```
+
+`is_same_location("大唐公司", "大唐公司会议室")` → substring 命中 → True → 合并。
+
+**v1 spec 试图加白名单过滤**（如"会议室"不是软修饰不合并）：
+- extra = `longer[len(shorter):]` = `"会议室"`
+- 检查白名单：`"会议室" not in 白名单` → False → 不合并 ✓
+
+**但这个修复不完整**——白名单只能识别**后缀**（"会议室""顶层"）：
+- `is_same_location("新大唐公司", "大唐公司")` → shorter="大唐公司" 在 longer="新大唐公司" 中 → True
+- extra = `longer[len(shorter):]` = `"新大唐公司"[4:]` = `"司"`
+- `"司" not in 白名单` → False → 不合并 ✗（**应该是 True**）
+
+前缀修饰"新大唐公司/老大唐公司"被静默漏判。
+
+### 3.3 修复方案 2：对称剥离前后缀修饰符
+
+**核心思路**：不要比较"长名相对短名多什么"，而是**两端都剥掉已知修饰符后比核心**。
+
+**位置**：`backend/utils/text_utils.py`
 
 ```python
-def is_same_location(n1, n2):
-    """判断两个地名是否可能指向同一地点（保守规则）"""
-    from difflib import SequenceMatcher as _SM
-    if n1 == n2:
-        return True
-    a = _normalize_for_dedup(n1)
-    b = _normalize_for_dedup(n2)
-    if not a or not b or len(a) < 2 or len(b) < 2:
-        return False
-    if a == b:
-        return True
-    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
-    if len(shorter) >= 4 and shorter in longer:
-        return True                                            ← ← ← 根因
-    threshold = 0.95 if len(shorter) <= 3 else 0.85
-    ratio = _SM(None, a, b).ratio()
-    return ratio >= threshold
-```
-
-**第 14 行的 substring containment 规则**：
-- "大唐公司" 是 "大唐公司会议室" 的子串 → True → 合并
-- "新罗酒店" 是 "新罗酒店顶层" 的子串 → True → 合并
-- "济州岛" 是 "济州岛大唐公司" 的子串 → True → 合并
-
-这一规则设计初衷是处理像 "居安小阁（主角）" → "居安小阁" 这种**软修饰后缀**，但没有区分"软修饰"和"实体词"。
-
-### 3.2 设计失误分类
-
-**误把"前缀共享"等同于"同地方"**。
-
-中文地名的天然结构是层级化（公司→会议室、岛→公司），短名是长名的**自然前缀**，substring 在中文里几乎对所有有从属关系的地方都成立。这跟英文里 "Smith" vs "Smith Tower" 不一样——英文里 Smith Tower 是合成词，中文是纯串接。
-
-**没有数据**：
-- implementer 加 substring 规则时没有跑真实数据看 group 大小
-- SDD 流程 152 个测试全过，但测试用的是 mock 数据（3-5 个 alias），不是真实 28 个 alias
-
-**没有性能预警**：
-- 当前实现没有任何"group 太大" 的告警
-- 28 个 alias 进 1 个 group 静默通过 → 没人发现
-
-### 3.3 错误链
-
-```
-is_same_location 太宽松
-  ↓
-aggregate_locations 把 28 个不同地方合成 1 个 group
-  ↓
-build_location_prompt 生成 53K chars 输入
-  ↓
-LLM 拿到 prompt 卡住（理解阶段）
-  ↓
-10.5 分钟后硬超时
-  ↓
-Phase 0 失败 → 整个总结失败
-```
-
----
-
-## 4. 修复方案
-
-### 4.1 核心思路
-
-**保留 substring containment，但加"软修饰白名单"**：只有当长名相对短名的额外部分属于已知软修饰类词（角色后缀、状态、主次等），才合并；额外部分是实体词（室、厅、楼、层、岛、市等），不合并。
-
-### 4.2 软修饰白名单
-
-```python
-_SOFT_QUALIFIERS = {
-    # 角色/属性后缀
-    '主角', '配角', '已故', '重要', '次要', '女主', '男主', '反派', '龙套',
-    # 状态/版本
-    '已废弃', '副本', '旧', '新', '临时', '原址', '旧址',
-    # 主次/总分
-    '主', '次', '总', '分', '总店', '分店',
-    # 方位修饰（常用于"X 南侧"等）
-    '南侧', '北侧', '东侧', '西侧', '上层', '下层',
-    # 括号内容整体视为软修饰（递归检查）
-}
-```
-
-### 4.3 `is_same_location` 新实现
-
-```python
-import re as _re
-
-_SOFT_QUALIFIERS = {
-    '主角', '配角', '已故', '重要', '次要', '女主', '男主', '反派', '龙套',
-    '已废弃', '副本', '旧', '新', '临时', '原址', '旧址',
-    '主', '次', '总', '分', '总店', '分店',
-    '南侧', '北侧', '东侧', '西侧', '上层', '下层',
-}
+# 软修饰词表（按位置分类）
+_PREFIX_MODS = (
+    "新", "老", "旧", "原",          # 短前缀
+    "原址", "旧址",                    # 长前缀
+)
+_SUFFIX_MODS = (
+    "主角", "身边", "附近", "一带", "境内", "内部",
+    "已废弃",
+)
 
 
-def _is_soft_qualifier(s: str) -> bool:
-    """s 是软修饰（角色后缀/状态等），而非新实体"""
-    s = s.strip()
-    if not s:
-        return True
-    # 括号内容整体视为软修饰（递归检查内层）
-    m = _re.match(r'^[（(](.+)[)）]$', s)
-    if m:
-        return _is_soft_qualifier(m.group(1))
-    return s in _SOFT_QUALIFIERS
+def _strip_location_mods(name: str) -> str:
+    """从 name 两端剥离软修饰符（角色后缀/状态等）
+
+    循环剥离直到稳定，因为前缀可能连续出现（如"旧原址X" → "原址X" → "X"）
+    """
+    s = name
+    while True:
+        stripped = False
+        # 前缀
+        for p in _PREFIX_MODS:
+            if s.startswith(p) and len(s) > len(p) + 1:
+                s = s[len(p):]
+                stripped = True
+                break
+        if stripped:
+            continue
+        # 后缀
+        for x in _SUFFIX_MODS:
+            if s.endswith(x) and len(s) > len(x) + 1:
+                s = s[:-len(x)]
+                stripped = True
+                break
+        if not stripped:
+            break
+    return s
 
 
-def is_same_location(n1, n2):
+def is_same_location(n1: str, n2: str) -> bool:
     """判断两个地名是否指向同一地点
 
     规则：
-    1. 归一后任一为空或长度 < 2 → False（避免单字噪声）
-    2. 归一后相等 → True
-    3. 较短串（≥3字）是较长串子串 且 额外部分属于软修饰白名单 → True
-       例："居安小阁（主角）" ⊇ "居安小阁" 且 extra="（主角）"是软修饰 → True
-       例："大唐公司会议室" ⊇ "大唐公司" 但 extra="会议室"不是软修饰 → False
-    4. 短名（≤3字）走严格阈值 0.95，避免被前缀同形长名误并
-    5. 其余按 SequenceMatcher 相似度阈值 0.85 判定
+    1. 归一化后任一为空或长度 < 2 → False（避免单字噪声）
+    2. 归一化后完全相等 → True
+    3. 两端剥离已知前后缀修饰符后核心相同 → True
+
+    注：归一化阶段（_normalize_for_dedup）已剥离停用词和标点（如"（"），
+    此处只处理语义修饰词。
     """
-    from difflib import SequenceMatcher as _SM
-    if n1 == n2:
-        return True
     a = _normalize_for_dedup(n1)
     b = _normalize_for_dedup(n2)
     if not a or not b or len(a) < 2 or len(b) < 2:
         return False
     if a == b:
         return True
-    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
-    # 规则 3：substring + 软修饰白名单
-    if len(shorter) >= 3 and shorter in longer:
-        extra = longer[len(shorter):]
-        if _is_soft_qualifier(extra):
-            return True
-        # extra 不是软修饰 → 视为不同实体（默认不合并）
-    # 规则 4-5：SequenceMatcher 兜底
-    threshold = 0.95 if len(shorter) <= 3 else 0.85
-    ratio = _SM(None, a, b).ratio()
-    return ratio >= threshold
+    return _strip_location_mods(a) == _strip_location_mods(b)
 ```
 
-**关键变化**：
-- substring 规则：`shorter in longer AND _is_soft_qualifier(extra)`（**新增 qualifier 检查**）
-- substring 规则的最小长度：`>= 4` → `>= 3`（让"济州岛"等短名也能正确处理）
-- 顺序：先试 substring + qualifier（命中就返回）；否则试 SequenceMatcher
+**对照现有 6 个 test**（逐 case 已核对）：
 
-### 4.4 测试用例覆盖
-
-**保持通过的现有 6 个 test**：
-
-| Test | 期望 | 新算法行为 | 结果 |
-|---|---|---|---|
-| `"宁安县"` == `"宁安县"` | True | normalize → equal | ✅ |
-| `"宁安县。"` vs `"宁安县"` | True | normalize → equal | ✅ |
-| `"宁安县"` vs `"宁安县城"` | False | substring (extra="城" 非软修饰) → 不合并 → False | ✅ |
-| `"居安小阁"` vs `"居安小阁（主角）"` | True | substring + extra="（主角）"→ 主角是软修饰 → True | ✅ |
-| `"大贞"` vs `"大秀"` | False | 不 substring, ratio 低 → False | ✅ |
-| `"京"` vs `"京"` | False | len < 2 → False | ✅ |
-
-**新增 5 个 test**（覆盖新算法的关键场景）：
-
-| Test | 期望 | 新算法行为 |
-|---|---|---|
-| `test_substring_with_entity_word_not_merged` | False | substring 但 extra="会议室"不是软修饰 → 不合并 |
-| `test_substring_with_floor_word_not_merged` | False | substring 但 extra="顶层"不是软修饰 |
-| `test_substring_with_branches_not_merged` | False | "济州岛" vs "济州岛大唐公司" → extra="大唐公司" 不是软修饰 |
-| `test_brackets_around_soft_qualifier_merged` | True | "宁安县（已废弃）" vs "宁安县" → extra="（已废弃）"→ 剥括号 → "已废弃" 是软修饰 |
-| `test_nested_brackets_merged` | True | "宁安县（主角（已故））" 剥括号递归 → 软修饰 |
-
-**回归测试**（1 个）：
-
-```python
-def test_aggregation_no_longer_bloats_aliases(self):
-    """确保 substring 规则不再把不同实体误并"""
-    raw = [
-        {"name": "大唐公司", "parent": "", "type": "企业", "description": "", "chapter": 1},
-        {"name": "大唐公司会议室", "parent": "大唐公司", "type": "会议室", "description": "", "chapter": 2},
-        {"name": "大唐公司总裁办公室", "parent": "大唐公司", "type": "办公室", "description": "", "chapter": 3},
-        {"name": "新罗酒店", "parent": "", "type": "酒店", "description": "", "chapter": 4},
-        {"name": "新罗酒店顶层", "parent": "新罗酒店", "type": "餐厅", "description": "", "chapter": 5},
-    ]
-    groups = aggregate_locations(raw)
-    # 新算法期望：5 个独立 group（不互相合并）
-    assert len(groups) == 5
-```
-
-### 4.5 预期效果（估算）
-
-| 指标 | 现状（Phase 0a） | 修复后 | 变化 |
-|---|---|---|---|
-| Group 数量（《韩娱》228 章） | 398 | ~200-300（估） | -25% 到 -50% |
-| 最大 group alias 数 | 28 | ~5（估） | -82% |
-| User prompt 大小 | 53K chars | ~25-30K chars | -44% 到 -53% |
-| LLM 输入 tokens | ~27K | ~13-15K | ~-50% |
-| LLM 输出 tokens | ~30K | ~10-15K | ~-50% 到 -67% |
-| 单次 LLM 调用预期耗时 | 超时（>10 min） | 30-60s | ✓ 修复 |
-| Phase 0 总耗时（估算） | 超时失败 | 5-10 min | ✓ |
-| Token 成本变化 | 基准 | 不变（batch 数量不变） | 0 |
-
-### 4.6 为什么不动 batch size
-
-另一种修复方案是**把 batch 从 1000 降到 200**：
-
-| 维度 | 减小 batch | 软修饰白名单 |
-|---|---|---|
-| 修复根因 | ❌ 不修（substring 仍然误并） | ✅ 修（28 alias 不再误并） |
-| Token 成本 | +200%（多 5 倍调用） | 0% |
-| 调用次数 | +5 倍 | 不变 |
-| 复杂 group 处理 | ❌（小 group 也可能误并） | ✅（每个 group 干净） |
-
-软修饰白名单是**根本修复**，减 batch 只是**症状缓解**（且代价高）。后者作为未来兜底保留。
-
----
-
-## 5. 替代方案对比
-
-| 方案 | 思路 | 优点 | 缺点 | 推荐？ |
+| 用例 | 输入 → normalize | strip → 比核心 | 期望 | 结果 |
 |---|---|---|---|---|
-| **A. 软修饰白名单**（推荐） | substring + qualifier 检查 | 根本修复；零 token 成本 | 需要维护白名单 | ✅ |
-| B. 去掉 substring 只用 SequenceMatcher | 仅依赖 ratio | 简单 | "居安小阁（主角）" 这种 legit merge 丢失 | ❌ |
-| C. substring + 比例长度长度比 ≤ 1.3 | 长名最多比短名长 30% | 实现简单 | "宁安县" → "宁安县城"（+33%）会被拦；仍漏判"会议室"+"总裁办公室"（不同实体都短于公司名） | ❌ |
-| D. 减 batch size 1000→200 | 减小单次 prompt 体积 | 简单 | +200% token 成本；不修根因 | ❌ |
-| E. 软修饰白名单 + batch 200 | 双管齐下 | 修复 + 防御 | token 成本 +200% | ❌（浪费） |
-| F. 加 "group 太大" 告警 + 不修 | 暴露问题让用户手动 | 最低风险 | 用户体验差 | ❌ |
+| `"宁安县"` / `"宁安县"` | `"宁安县"` / `"宁安县"` | `"宁安县"` / `"宁安县"` | True | ✓ True |
+| `"宁安县"` / `"宁安县。"` | `"宁安县"` / `"宁安县"` | 同上 | True | ✓ True |
+| `"宁安县"` / `"宁安县城"` | `"宁安县"` / `"宁安县城"` | `"宁安县"` / `"宁安县城"` | False | ✓ False |
+| `"居安小阁"` / `"居安小阁（主角）"` | `"居安小阁"` / `"居安小阁主角"` | `"居安小阁"` / `"居安小阁"` | True | ✓ True |
+| `"大贞"` / `"大秀"` | `"大贞"` / `"大秀"` | `"大贞"` / `"大秀"` | False | ✓ False |
+| `"京"` / `"京"` | `"京"` / `"京"` | len<2 早退 | False | ✓ False |
 
-**推荐 A**：根本修复、零额外成本、白名单明确可维护。
+**新增 test case**（覆盖前缀修饰）：
+
+```python
+def test_prefix_modifier_merged(self):
+    """前缀软修饰（新/老/旧/原/原址/旧址）也应识别"""
+    assert is_same_location("大唐公司", "新大唐公司") is True
+    assert is_same_location("大唐公司", "老大唐公司") is True
+    assert is_same_location("宁安县", "旧宁安县") is True
+
+def test_no_entity_word_merge(self):
+    """实体词（会议室/顶层/总部）不合并"""
+    assert is_same_location("大唐公司", "大唐公司会议室") is False
+    assert is_same_location("新罗酒店", "新罗酒店顶层") is False
+
+def test_chained_prefix_modifier(self):
+    """连续前缀修饰应递归剥离"""
+    assert is_same_location("宁安县", "旧原宁安县") is True
+    # 但要防止无限循环
+    assert is_same_location("宁安县", "原旧原旧宁安县") is True  # 仍 True，但不应无限递归
+```
+
+### 3.4 预期效果
+
+| 输入 | 旧算法 | 新算法 | 评价 |
+|---|---|---|---|
+| `"大唐公司"` / `"大唐公司会议室"` | 误并（substring）| 不并（"会议室"不是修饰符）| ✓ |
+| `"新大唐公司"` / `"大唐公司"` | 误并（substring + 后缀"司"不在白名单）| **并**（"新"是对称前缀修饰符）| ✓ |
+| `"居安小阁"` / `"居安小阁（主角）"` | 并 | 并 | ✓ |
+| `"宁安县"` / `"宁安县城"` | 不并（0.857 ratio + substring + "城"不在旧白名单）| 不并（"城"不是修饰符）| ✓ |
+| `"宁安县"` / `"新宁安县"` | 不并（旧 substring extra="新"不在白名单 + ratio 0.667）| **并**（"新"是对称前缀修饰符）| ✓ |
+
+### 3.5 风险
+
+- **风险 B1**：白名单不全，遗漏常见修饰词（如"旧址"应该是后缀还是前缀？混淆"原址""旧址"归属）
+  - **缓解**：白名单可后续追加；漏判只是少合并（数据略多但不致命）
+- **风险 B2**：循环剥离导致死循环
+  - **缓解**：每次剥离后 `len(s)` 严格减小（strip 后 s 缩短），最多循环 O(|name|) 次
+- **风险 B3**：递归剥前缀可能过剥（如"宁安县"→"宁安县"如果开头是"宁"……）
+  - **缓解**：白名单是精确字符串匹配（不是 prefix 匹配），"宁"不在白名单所以不会剥
+
+### 3.6 `_PREFIX_MODS` 与 `_SUFFIX_MODS` 的对称性观察
+
+**潜在不对称**：`_PREFIX_MODS` 包含 `"原址"/"旧址"`（复合词），但 `_SUFFIX_MODS` 没有对应 `"新址"/"旧址"`。
+
+实际场景：
+- `"宁安县原址"` → strip "原址"（前缀）→ `"宁安县"` ✓
+- `"宁安县旧址"` → strip "旧址"（前缀）→ `"宁安县"` ✓
+- `"宁安县新址"` → 期望 strip → `"宁安县"`，但 SUFFIX_MODS 没 `"新址"` → 不 strip → 不并 ✗
+
+**建议**（实施时确认）：
+- 把 `"新址"/"旧址"` 也加到 `_SUFFIX_MODS`
+- 或承认不对称，写在 docstring 里
+
+**这是审查者需要决定的细节**。
 
 ---
 
-## 6. 测试计划
+## 4. 实施计划
 
-### 6.1 单元测试（`backend/tests/test_location_normalizer.py`）
+### 4.1 改动文件
 
-新增/修改：
+| 文件 | 改动 |
+|---|---|
+| `backend/services/location_normalizer.py` | 加 `_LOCATION_PROMPT_BUDGET_CHARS`、`_LOCATION_BATCH_MAX_GROUPS`；改 `_split_into_batches` 为按预算切；`_run_phase_0a_batches` 调用新函数 |
+| `backend/utils/text_utils.py` | 加 `_PREFIX_MODS`、`_SUFFIX_MODS`、`_strip_location_mods`；重写 `is_same_location` |
+| `backend/tests/test_location_normalizer.py` | 加 3+ 个 batch split test + 3 个 `is_same_location` test |
 
-```python
-class TestIsSameLocation:
-    # === 现有 6 个 test 保持不变 ===
-    
-    # 新增 5 个
-    def test_substring_with_entity_word_not_merged(self):
-        """'大唐公司' vs '大唐公司会议室' → False（'会议室'不是软修饰）"""
-        assert is_same_location("大唐公司", "大唐公司会议室") is False
-        assert is_same_location("大唐公司会议室", "大唐公司") is False
-    
-    def test_substring_with_floor_word_not_merged(self):
-        """'新罗酒店' vs '新罗酒店顶层' → False（'顶层'不是软修饰）"""
-        assert is_same_location("新罗酒店", "新罗酒店顶层") is False
-    
-    def test_substring_with_branches_not_merged(self):
-        """'济州岛' vs '济州岛大唐公司' → False（'大唐公司'不是软修饰）"""
-        assert is_same_location("济州岛", "济州岛大唐公司") is False
-    
-    def test_brackets_around_soft_qualifier_merged(self):
-        """'宁安县（已废弃）' vs '宁安县' → True（剥括号 → '已废弃' 是软修饰）"""
-        assert is_same_location("宁安县", "宁安县（已废弃）") is True
-        assert is_same_location("宁安县（已废弃）", "宁安县") is True
-    
-    def test_nested_brackets_merged(self):
-        """嵌套括号也处理"""
-        assert is_same_location("宁安县", "宁安县（主角（已故））") is True
+### 4.2 提交策略
 
+**Commit 1**：`fix(location_normalizer): batch by prompt char budget, not group count`
+- 只改 `location_normalizer.py`
+- 加 3 个 batch split test
+- 独立可测：旧 6 个 + 新 3 个 = 9 个 test 全过
 
-class TestAggregateLocationsRegression:
-    def test_no_over_aggregation_from_substring(self):
-        """确保 substring 规则不再把不同实体误并"""
-        raw = [
-            {"name": "大唐公司", "parent": "", "type": "企业", "description": "", "chapter": 1},
-            {"name": "大唐公司会议室", "parent": "大唐公司", "type": "会议室", "description": "", "chapter": 2},
-            {"name": "大唐公司总裁办公室", "parent": "大唐公司", "type": "办公室", "description": "", "chapter": 3},
-            {"name": "新罗酒店", "parent": "", "type": "酒店", "description": "", "chapter": 4},
-            {"name": "新罗酒店顶层", "parent": "新罗酒店", "type": "餐厅", "description": "", "chapter": 5},
-        ]
-        groups = aggregate_locations(raw)
-        assert len(groups) == 5  # 5 个独立 group
-```
+**Commit 2**：`fix(text_utils): is_same_location strips prefix and suffix modifiers symmetrically`
+- 只改 `text_utils.py`
+- 加 3 个 `is_same_location` test
+- 独立可测：旧 6 个 + 新 3 个 = 9 个 test 全过
 
-### 6.2 集成验证
+**两个 commit 独立可回滚**。如果 Fix 2 效果不理想或测试不通过，单独 revert Fix 2 不影响 Fix 1。
+
+### 4.3 验证
 
 ```bash
-# 1. 单元测试
+# Commit 1 后
 python -m pytest backend/tests/test_location_normalizer.py -v
-# 期望：原 6 个 + 新 5 个 + 回归 1 个 = 12 个 test_location_normalizer 全部 pass
+# 期望：所有现有 test + 3 个新 batch split test 全过
 
-# 2. 全量 backend 测试
+# Commit 2 后
+python -m pytest backend/tests/test_location_normalizer.py -v
+# 期望：所有现有 test + 3 个新 is_same_location test 全过
+
+# 全量
 python -m pytest backend/tests/ -v
-# 期望：152 个全过（无回归）
+# 期望：152 passed
 
-# 3. 真实数据验证（《韩娱之光影交错》）
+# 真实数据验证
 python -c "
-import sys
-sys.path.insert(0, r'F:\AI\小说分析器')
 from pathlib import Path
-import json
-from backend.services.location_normalizer import aggregate_locations, build_location_prompt
+import json, sys
+sys.path.insert(0, r'F:\AI\小说分析器')
+from backend.services.location_normalizer import (
+    _split_into_batches_by_budget, _LOCATION_PROMPT_BUDGET_CHARS,
+    aggregate_locations,
+)
 
 output_dir = Path(r'F:\AI\小说分析器\workspace\分析结果\《韩娱之光影交错》\output')
-raw_locations = []
+raw = []
 for cf in sorted(output_dir.glob('chapter_*_result.json')):
     with open(cf, 'r', encoding='utf-8') as f:
         data = json.load(f)
     for loc in data.get('locations', []):
-        loc = dict(loc)
-        loc['chapter'] = data.get('chapter_number')
-        raw_locations.append(loc)
+        loc = dict(loc); loc['chapter'] = data.get('chapter_number')
+        raw.append(loc)
 
-groups = aggregate_locations(raw_locations)
-print(f'Group count: {len(groups)}')
-print(f'Max aliases in any group: {max(len(g[\"aliases\"]) for g in groups)}')
-print(f'Groups with >10 aliases: {sum(1 for g in groups if len(g[\"aliases\"]) > 10)}')
-
-messages = build_location_prompt(groups, 1, 1)
-print(f'User prompt chars: {len(messages[1][\"content\"])}')
+groups = aggregate_locations(raw)
+batches = _split_into_batches_by_budget(groups, _LOCATION_PROMPT_BUDGET_CHARS, 1000)
+print(f'398 groups → {len(batches)} batches')
+for i, b in enumerate(batches):
+    chars = sum(_estimate_group_chars(g) for g in b)
+    print(f'  batch {i+1}: {len(b)} groups, ~{chars} chars')
 "
-# 期望：Group count 200-300；Max aliases ≤ 8；User prompt ≤ 30K chars
 ```
 
-### 6.3 端到端验证（用户手动）
+### 4.4 用户端到端验证
 
-重启 desktop app，对《韩娱之光影交错》重新跑一次"开始总结"：
+1. 重启 desktop app
+2. 对《韩娱之光影交错》点"开始总结"
+3. 期望 Phase 0a 在 5-10 分钟内完成（而非超时）
+4. 期望最终总结报告生成
+5. 期望 normalized JSON 文件落盘（打开 `output/locations_normalized.json` 看是否合并了"会议室"等）
 
-- **期望**：Phase 0a 在 5-10 分钟内完成（而非 10+ 分钟超时）
-- **期望**：normalized 文件成功落盘
-- **期望**：Phase 1-4 继续走完，最终总结完成
+### 4.5 回滚
 
----
-
-## 7. 风险分析
-
-### 7.1 修复失败的风险
-
-**风险 A**：白名单不全，遗漏某些 legit merge
-- **概率**：低
-- **影响**：少量地点未被合并（→ LLM 不必合并，可能输出更多 canonical）
-- **缓解**：白名单可后续追加；不阻断流程
-
-**风险 B**：白名单过宽，误判新实体为软修饰
-- **概率**：低-中（取决于白名单定义）
-- **影响**：少量不同地方被合并（→ 数据不干净，但不致命）
-- **缓解**：测试覆盖明确的误判 case；后续 LLM 还可以二次去重
-
-**风险 C**：规则 3 的 `len(shorter) >= 3` 把一些原本 `>= 4` 才匹配的情况放开
-- **概率**：极低（`>= 3` 已经过滤了大部分噪声）
-- **影响**：增加少量误判
-- **缓解**：`_is_soft_qualifier` 兜底
-
-### 7.2 实施风险
-
-**风险 D**：现有 6 个 test 中可能有 1-2 个预期与新算法不一致
-- **预检**：上面表格列出 6 个 test 的预期 vs 新算法行为，**全部仍通过**
-- **缓解**：实施时先跑测试套件验证
-
-**风险 E**：其他模块依赖 `is_same_location` 的当前行为
-- **检查**：`text_utils.py::is_same_location` 被 `location_normalizer.py:67` 调用，是唯一调用点
-- **缓解**：修改前 grep 全仓确认
-
-### 7.3 性能风险
-
-**风险 F**：新算法增加 `_is_soft_qualifier` 调用（regex 匹配 + dict 查找）
-- **概率**：极低
-- **影响**：~微秒级开销，远低于 SequenceMatcher
-- **缓解**：无需特殊处理
+两个 commit 独立回滚：
+- `git revert <commit_hash>` 单命令回滚
+- 回滚后 Phase 0 行为退化到当前（超时 + 误并）
 
 ---
 
-## 8. 实施细节
+## 5. 风险汇总
 
-### 8.1 修改文件清单
-
-| 文件 | 类型 | 改动 |
-|---|---|---|
-| `backend/utils/text_utils.py` | 改 | 加 `_SOFT_QUALIFIERS` 常量 + `_is_soft_qualifier` 函数 + 重写 `is_same_location` |
-| `backend/tests/test_location_normalizer.py` | 改 | 加 5 个新 test + 1 个回归 test |
-
-**预计 diff**：+ ~80 / - ~20 行
-
-### 8.2 提交策略
-
-1. **Commit 1**：`fix(text_utils): is_same_location adds soft-qualifier whitelist`
-   - 改 `text_utils.py`
-   - 加 5 个新 test + 1 个回归 test
-2. **Commit 2**（如适用）：`test: verify prompt size reduction on real corpus`
-   - 仅当 Commit 1 后实测数据有显著改进
-
-不修改：
-- `backend/services/location_normalizer.py`（业务代码无需改）
-- `agent.md`（除非有结构性变化）
-- 任何前端代码
-
-### 8.3 回滚计划
-
-`git revert <commit_hash>` 单命令回滚。
-
-回滚后：
-- `is_same_location` 恢复旧行为（substring 无 qualifier）
-- 已知 bug 恢复（Phase 0a 仍可能超时）
-- 但不影响数据（无 schema 变更）
+| 风险 | 概率 | 影响 | 缓解 |
+|---|---|---|---|
+| Fix A 字符估算不准 | 低 | 单 batch 仍可能略超预算 | 35K 保守值 + 留余量 |
+| Fix A 并发限流 | 低 | API 拒绝 | summary_concurrency=2 |
+| Fix B 白名单不全 | 中 | 少量应合并未合并 | 白名单可后续追加 |
+| Fix B 递归死循环 | 极低 | 程序卡住 | 每次 strip len 必减 |
+| Fix B 前缀/后缀不对称 | 中 | "新址"等场景漏判 | 审查者决策 |
+| Commit 顺序依赖 | 极低 | 一个坏 commit 影响另一个 | 两个 commit 独立可回滚 |
 
 ---
 
-## 9. 审查者请关注
+## 6. 审查者请关注
 
 请审查以下决策点并给出意见：
 
-1. **白名单是否完整、合理**？哪些常见的"软修饰"被遗漏？
-2. **`len(shorter) >= 3` 这个阈值是否合适**？是否应保持 `>= 4`？
-3. **优先级**：是否有其他更关键的 bug 应该先修？
-4. **测试覆盖**：上面 6 个新 test 是否够？还是需要更多边界用例？
-5. **性能预期**：Group count 降到 200-300 的预估是否合理？需要更激进的目标吗？
-6. **风险评估**：上面列出的 7 个风险点是否有遗漏？
+1. **批预算值 35K chars**：基于《韩娱》样本（53K → 期望 ≤ 35K）。是否合理？过低会导致 batch 数过多、过宽会重新超时。
+2. **白名单范围**：`_PREFIX_MODS` = 新/老/旧/原/原址/旧址 + `_SUFFIX_MODS` = 主角/身边/附近/一带/境内/内部/已废弃。是否完整？是否遗漏常用修饰？
+3. **不对称问题**：`_PREFIX_MODS` 有"原址/旧址"但 `_SUFFIX_MODS` 没"新址/旧址"，是否需要补充？
+4. **`len(s) > len(p) + 1` 阈值**：strip 后剩余至少 2 字符才允许剥。是否过严？
+5. **Commit 拆分**：先 Fix A（批预算）再 Fix B（合并），还是合并成一个？分开是否合理？
+6. **测试覆盖**：上面的新 test case 是否够？还需要加什么边界？
 
 ---
 
@@ -555,53 +467,45 @@ print(f'User prompt chars: {len(messages[1][\"content\"])}')
 ## 待归一化的地点（batch 1/1，共 398 个 group）
 
 [1] aliases=[大唐公司, 新罗酒店, 总裁办公室, 大唐公司总部, 新罗酒店顶层, 大唐公司会议室,
-    大唐公司会客室, 济州岛大唐公司, 大唐公司摄影棚, 新罗酒店中餐厅, 新罗酒店宴会厅,
-    新罗酒店洗手台, 大唐公司待客室, 新罗酒店办公室, 新罗酒店咖啡厅, 大唐公司一期工地,
-    新罗酒店大唐分店, 新罗酒店总统套房, 大唐公司临时办公楼, 大唐公司济州岛工地,
-    济州岛大唐公司总部, 大唐公司总裁办公室, 新罗酒店济州岛分店, 大唐公司济州岛分部,
-    新罗酒店总裁办公室, 济州岛大唐公司大楼天台, 济州岛大唐公司员工食堂包厢]
-    types={企业:3, 企业总部:4, 建筑工地:1, 办公楼:1, 酒店:8, 商业场所:2, 餐饮场所:1,
-           建筑:20, 商业建筑工地:1, 高端约会场所:1, 公司:1, 办公/私密空间:1, 办公场所:1, 商业建筑:1}
-    parents={济州岛:20, 首尔:10, 济州岛大唐公司:4, 大唐公司:3, 新村集团:1, 新罗酒店:7, 新村集团总部:1}
+    大唐公司会客室, 济州岛大唐公司, 大唐公司摄影棚, 新罗酒店中餐厅, ...]   ← 28 个 alias
+    types={企业:3, 企业总部:4, 建筑工地:1, 办公楼:1, 酒店:8, 商业场所:2, ...}    ← 13 种 type
+    parents={济州岛:20, 首尔:10, 济州岛大唐公司:4, 大唐公司:3, ...}              ← 7 个 parent
     chapter_count=40
-    sample_desc="大唐集团开业庆典举办地，政商两界大佬云集"
 ```
 
-## 附录 B：当前 `is_same_location` 完整代码
+## 附录 B：当前 `_LOCATIONS_BATCH_SIZE` 与 `is_same_location` 完整代码
 
 ```python
-# text_utils.py:362-384
-def is_same_location(n1: str, n2: str) -> bool:
-    """判断两个地名是否可能指向同一地点。
+# location_normalizer.py:36-37
+_LOCATIONS_BATCH_SIZE = 1000
+_SPATIAL_BATCH_SIZE = 1000
+_CONSOL_BATCH_SIZE = 2000
 
-    规则（保守）：
-    1. 归一后任一为空或长度 < 2 -> False（避免单字噪声误伤）
-    2. 归一后相等 -> True
-    3. 归一后较短串（≥4字）是较长串的子串 -> True（含角色/修饰后缀的合并，如 "居安小阁" ⊂ "居安小阁主角"）
-    4. 短名（≤3字）走严格阈值 0.95，避免被前缀同形长名误并（如 "宁安县" 误并入 "宁安县城"）
-    5. 其余按 SequenceMatcher 相似度阈值 0.85 判定
-    """
-    from difflib import SequenceMatcher as _SM
+# location_normalizer.py:559-563
+batches = self._split_into_batches(groups, self.locations_batch_size)
+
+# text_utils.py:362-384（v1 实现）
+def is_same_location(n1, n2):
+    if n1 == n2: return True
     a = _normalize_for_dedup(n1)
     b = _normalize_for_dedup(n2)
     if not a or not b or len(a) < 2 or len(b) < 2:
         return False
-    if a == b:
-        return True
+    if a == b: return True
     shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
     if len(shorter) >= 4 and shorter in longer:
-        return True
+        return True                                            # ← 问题
     threshold = 0.95 if len(shorter) <= 3 else 0.85
-    ratio = _SM(None, a, b).ratio()
+    ratio = SequenceMatcher(None, a, b).ratio()
     return ratio >= threshold
 ```
 
 ## 附录 C：审查检查清单（给审查者）
 
-- [ ] 白名单 `_SOFT_QUALIFIERS` 是否合理
-- [ ] 算法逻辑是否正确
-- [ ] 测试用例是否覆盖关键场景
-- [ ] 风险评估是否完整
-- [ ] 实施步骤是否清晰
-- [ ] 回滚方案是否够用
-- [ ] 是否有更简单的方案
+- [ ] 35K 字符预算是否合理
+- [ ] `_PREFIX_MODS` + `_SUFFIX_MODS` 白名单是否完整
+- [ ] 前缀/后缀不对称（"原址"/"旧址" vs 无"新址"/"旧址"）是否需要修复
+- [ ] `len(s) > len(p) + 1` 阈值是否过严
+- [ ] Commit 拆分是否合理（Fix A + Fix B 分开）
+- [ ] 测试覆盖是否充分
+- [ ] 是否有更简单的方案（不修复 / 合并 fix / 仅 Fix A）
