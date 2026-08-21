@@ -373,3 +373,89 @@ class TestApplyMerges:
         assert len(result) == 1
         assert set(result[0]["aliases"]) == {"甲", "乙", "丙"}
         assert result[0]["canonical_name"] == "丙"
+
+
+import asyncio
+import shutil
+from unittest.mock import AsyncMock, MagicMock
+
+from backend.services.location_normalizer import LocationNormalizer
+
+
+def _setup_output_dir(tmp_path: Path, chapters: int = 5):
+    """写 N 个最小 chapter_*.json"""
+    (tmp_path / "output").mkdir(exist_ok=True)
+    for ch in range(1, chapters + 1):
+        data = {
+            "chapter_number": ch,
+            "core_events": [],
+            "character_arcs": [],
+            "foreshadowing": [],
+            "plot_holes": [],
+            "locations": [
+                {"name": "宁安县", "parent": "大周王朝", "type": "城市", "description": "测试县城"}
+            ] if ch == 1 else [
+                {"name": "宁安县城", "parent": "大周王朝", "type": "城池", "description": ""}
+            ],
+            "spatial_relationships": [
+                {"from": "宁安县", "to": "德胜府", "relation": "相邻", "chapter": ch}
+            ] if ch <= 3 else [],
+        }
+        (tmp_path / "output" / f"chapter_{ch}_result.json").write_text(
+            json.dumps(data, ensure_ascii=False), encoding="utf-8"
+        )
+
+
+def _make_mock_llm(responses):
+    """构造 mock LLM client，按调用顺序返回 (success, content, error, tokens)"""
+    client = MagicMock()
+    client.model = "mock-model"
+    client.chat = AsyncMock(side_effect=[
+        (True, r, "", (10, 20)) for r in responses
+    ])
+    return client
+
+
+class TestLocationNormalizerRun:
+    def test_runs_all_four_phases_and_writes_outputs(self, tmp_path):
+        _setup_output_dir(tmp_path, chapters=3)
+
+        # Phase 0a batch 返回：归一化宁安县 + 宁安县城 → "宁安县"
+        # Phase 0a consol (因为只有1个canonical，直接跳过)
+        # Phase 0b batch 返回：宁安县→德胜府
+        responses = [
+            json.dumps({"locations": [
+                {"canonical_name": "宁安县", "aliases": ["宁安县", "宁安县城"], "parent": "大周王朝", "type": "城市", "description": "测试"}
+            ]}, ensure_ascii=False),
+            json.dumps({"relationships": [
+                {"from": "宁安县", "to": "德胜府", "direction": "东南", "distance_text": "约两三百里", "distance_estimate_km": 130, "relation_type": "相邻", "evidence_chapters": [1, 2, 3]}
+            ]}, ensure_ascii=False),
+        ]
+        mock_llm = _make_mock_llm(responses)
+
+        norm = LocationNormalizer(
+            output_dir=tmp_path,
+            llm_client=mock_llm,
+            concurrency=2,
+        )
+        result = asyncio.run(norm.run())
+        assert result is True
+
+        # 验证落盘
+        assert (tmp_path / "output" / "locations_normalized.json").exists()
+        assert (tmp_path / "output" / "spatial_relationships_normalized.json").exists()
+        # 验证 _normalized_ref 加到 chapter_*.json
+        for ch in range(1, 4):
+            data = json.loads((tmp_path / "output" / f"chapter_{ch}_result.json").read_text(encoding="utf-8"))
+            assert data.get("_normalized_ref") == "locations_normalized.json"
+            assert data.get("_normalized_spatial_ref") == "spatial_relationships_normalized.json"
+
+    def test_returns_false_when_phase_fails(self, tmp_path):
+        _setup_output_dir(tmp_path, chapters=3)
+        mock_llm = MagicMock()
+        mock_llm.model = "mock-model"
+        mock_llm.chat = AsyncMock(side_effect=Exception("LLM 故障"))
+
+        norm = LocationNormalizer(output_dir=tmp_path, llm_client=mock_llm, concurrency=1)
+        result = asyncio.run(norm.run())
+        assert result is False

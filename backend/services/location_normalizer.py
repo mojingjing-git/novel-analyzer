@@ -442,3 +442,277 @@ def apply_merges(
         result.append(merged)
     result.sort(key=lambda c: -c.get("chapter_count", 0))
     return result
+
+
+# ---------------------------------------------------------------------------
+# Phase 0 orchestration（Task 6）
+# ---------------------------------------------------------------------------
+import asyncio
+import hashlib
+from datetime import datetime
+from typing import Set
+
+from backend.core.llm_client import LLMClient
+from backend.utils.json_utils import safe_load_json, safe_save_json
+
+
+_LOCATIONS_NORMALIZED_FILENAME = "locations_normalized.json"
+_SPATIAL_NORMALIZED_FILENAME = "spatial_relationships_normalized.json"
+_LOCATIONS_BATCH_SIZE = 1000
+_SPATIAL_BATCH_SIZE = 1000
+_CONSOL_BATCH_SIZE = 2000
+
+
+class LocationNormalizer:
+    """地点与空间关系归一化（Phase 0）
+
+    流程：
+    - _run_phase_0a_batches: 切片 locations → 并发 LLM → 校验
+    - _run_phase_0a_consolidate: 1+ 次 LLM 合并跨 batch 同地点
+    - _run_phase_0b_batches: 切片 spatial + canonical 白名单 → 并发 LLM
+    - _run_phase_0b_dedupe: 机械去重同 (from, to)
+    - 持久化到 output/{_LOCATIONS_NORMALIZED_FILENAME, _SPATIAL_NORMALIZED_FILENAME}
+    - 给每章 chapter_*.json 加 _normalized_ref + _normalized_spatial_ref
+    """
+
+    def __init__(
+        self,
+        output_dir: Path,
+        llm_client: LLMClient,
+        concurrency: int = 1,
+        locations_batch_size: int = _LOCATIONS_BATCH_SIZE,
+        spatial_batch_size: int = _SPATIAL_BATCH_SIZE,
+    ):
+        self.output_dir = Path(output_dir)
+        self.llm_client = llm_client
+        self.concurrency = max(1, concurrency)
+        self.locations_batch_size = max(1, locations_batch_size)
+        self.spatial_batch_size = max(1, spatial_batch_size)
+
+    async def run(self) -> bool:
+        """跑完整 Phase 0；任一阶段失败抛异常或返回 False"""
+        # 1. 读取所有 chapter_*.json
+        raw_locations, raw_spatial = self._load_all_chapter_data()
+        if not raw_locations:
+            logger.info("无 locations 数据，跳过 Phase 0")
+            return False
+
+        # 2. Phase 0a-batches：并发归一化 locations
+        groups = aggregate_locations(raw_locations)
+        logger.info(f"Phase 0a：{len(groups)} 个 location group")
+        all_canonicals = await self._run_phase_0a_batches(groups)
+        if all_canonicals is None:
+            return False
+
+        # 3. Phase 0a-consol：合并跨 batch 同地点
+        final_locations = await self._run_phase_0a_consolidate(all_canonicals)
+        if final_locations is None:
+            return False
+
+        # 4. Phase 0b-batches：并发结构化 spatial
+        pairs = aggregate_spatial_pairs(raw_spatial)
+        logger.info(f"Phase 0b：{len(pairs)} 个 spatial pair")
+        whitelist = [{"canonical": c["canonical_name"], "aliases": c["aliases"]} for c in final_locations]
+        whitelist_names: Set[str] = {c["canonical_name"] for c in final_locations}
+        all_spatial = await self._run_phase_0b_batches(pairs, whitelist, whitelist_names)
+        if all_spatial is None:
+            return False
+
+        # 5. Phase 0b-dedupe：机械去重
+        final_spatial = self._run_phase_0b_dedupe(all_spatial)
+
+        # 6. 持久化
+        self._persist_normalized_locations(final_locations)
+        self._persist_normalized_spatial(final_spatial)
+        self._add_normalized_ref_to_chapters()
+        logger.info("Phase 0 完成")
+        return True
+
+    # ---- 数据读取 ----
+
+    def _output_subdir(self) -> Path:
+        sub = self.output_dir / "output"
+        return sub if sub.is_dir() else self.output_dir
+
+    def _load_all_chapter_data(self) -> tuple:
+        """从 output_dir/output/chapter_*.json 聚合 locations + spatial_relationships"""
+        raw_locations = []
+        raw_spatial = []
+        output_subdir = self._output_subdir()
+        for cf in sorted(output_subdir.glob("chapter_*_result.json")):
+            data = safe_load_json(cf)
+            if not data:
+                continue
+            ch = data.get("chapter_number")
+            if ch is None:
+                continue
+            for loc in data.get("locations", []) or []:
+                loc_copy = dict(loc)
+                loc_copy["chapter"] = ch
+                raw_locations.append(loc_copy)
+            for rel in data.get("spatial_relationships", []) or []:
+                rel_copy = dict(rel)
+                rel_copy["chapter"] = ch
+                raw_spatial.append(rel_copy)
+        return raw_locations, raw_spatial
+
+    # ---- Phase 0a ----
+
+    async def _run_phase_0a_batches(self, groups):
+        batches = self._split_into_batches(groups, self.locations_batch_size)
+        if not batches:
+            return []
+        semaphore = asyncio.Semaphore(self.concurrency)
+
+        async def _process(batch_idx, batch):
+            async with semaphore:
+                messages = build_location_prompt(batch, batch_idx, len(batches))
+                try:
+                    success, content, error, _tokens = await self.llm_client.chat(messages)
+                except Exception as e:
+                    logger.error(f"Phase 0a batch {batch_idx} 失败: {e}")
+                    return None
+                if not success:
+                    logger.error(f"Phase 0a batch {batch_idx} 失败: {error}")
+                    return None
+                return parse_and_validate_locations(content, batch)
+
+        tasks = [_process(i, b) for i, b in enumerate(batches, 1)]
+        results = await asyncio.gather(*tasks, return_exceptions=False)
+        all_canonicals = []
+        for r in results:
+            if r is None:
+                return None
+            all_canonicals.extend(r)
+        return all_canonicals
+
+    async def _run_phase_0a_consolidate(self, all_canonicals):
+        if len(all_canonicals) <= 2:
+            return all_canonicals
+        canonical_list = [
+            {"canonical": c["canonical_name"], "aliases": c["aliases"]}
+            for c in all_canonicals
+        ]
+        valid_names = {c["canonical"] for c in canonical_list}
+        all_merges = []
+        for i in range(0, len(canonical_list), _CONSOL_BATCH_SIZE):
+            batch = canonical_list[i:i + _CONSOL_BATCH_SIZE]
+            batch_idx = i // _CONSOL_BATCH_SIZE + 1
+            total_batches = (len(canonical_list) + _CONSOL_BATCH_SIZE - 1) // _CONSOL_BATCH_SIZE
+            messages = build_consolidation_prompt(batch, batch_idx, total_batches)
+            try:
+                success, content, error, _tokens = await self.llm_client.chat(messages)
+            except Exception as e:
+                logger.error(f"Phase 0a consol 失败: {e}")
+                return None
+            if not success:
+                logger.error(f"Phase 0a consol 失败: {error}")
+                return None
+            partial = parse_merge_map(content, valid_names)
+            all_merges.extend(partial["merges"])
+        return apply_merges(all_canonicals, {"merges": all_merges})
+
+    # ---- Phase 0b ----
+
+    async def _run_phase_0b_batches(self, pairs, whitelist, whitelist_names):
+        if not pairs:
+            return []
+        batches = self._split_into_batches(pairs, self.spatial_batch_size)
+        semaphore = asyncio.Semaphore(self.concurrency)
+
+        async def _process(batch_idx, batch):
+            async with semaphore:
+                messages = build_spatial_prompt(batch, whitelist, batch_idx, len(batches))
+                try:
+                    success, content, error, _tokens = await self.llm_client.chat(messages)
+                except Exception as e:
+                    logger.error(f"Phase 0b batch {batch_idx} 失败: {e}")
+                    return None
+                if not success:
+                    logger.error(f"Phase 0b batch {batch_idx} 失败: {error}")
+                    return None
+                return parse_and_validate_spatial(content, whitelist_names)
+
+        tasks = [_process(i, b) for i, b in enumerate(batches, 1)]
+        results = await asyncio.gather(*tasks, return_exceptions=False)
+        all_spatial = []
+        for r in results:
+            if r is None:
+                return None
+            all_spatial.extend(r)
+        return all_spatial
+
+    @staticmethod
+    def _run_phase_0b_dedupe(all_spatial):
+        """同 (from, to) 对的多 batch 结果合并：evidence_chapters 取并集"""
+        pair_meta = {}
+        for rel in all_spatial:
+            key = (rel["from"], rel["to"])
+            if key not in pair_meta:
+                pair_meta[key] = dict(rel)
+            else:
+                existing = pair_meta[key]
+                existing["evidence_chapters"] = sorted(set(
+                    existing["evidence_chapters"] + rel["evidence_chapters"]
+                ))
+        return list(pair_meta.values())
+
+    # ---- 工具 ----
+
+    @staticmethod
+    def _split_into_batches(items, batch_size):
+        return [items[i:i + batch_size] for i in range(0, len(items), batch_size)]
+
+    # ---- 持久化 ----
+
+    def _persist_normalized_locations(self, locations) -> None:
+        output_subdir = self._output_subdir()
+        payload = {
+            "schema_version": 1,
+            "normalized_at": datetime.now().isoformat(timespec="seconds"),
+            "model": getattr(self.llm_client, "model", "unknown"),
+            "chapter_mtimes_hash": self._compute_chapter_mtimes_hash(),
+            "locations": [
+                {
+                    "canonical_name": loc["canonical_name"],
+                    "aliases": loc["aliases"],
+                    "parent": loc.get("parent", ""),
+                    "type": loc.get("type", ""),
+                    "description": loc.get("description", ""),
+                    "chapter_count": loc.get("chapter_count", 0),
+                }
+                for loc in locations
+            ],
+        }
+        out_path = output_subdir / _LOCATIONS_NORMALIZED_FILENAME
+        safe_save_json(payload, out_path)
+
+    def _persist_normalized_spatial(self, spatial) -> None:
+        output_subdir = self._output_subdir()
+        payload = {
+            "schema_version": 1,
+            "normalized_at": datetime.now().isoformat(timespec="seconds"),
+            "model": getattr(self.llm_client, "model", "unknown"),
+            "chapter_mtimes_hash": self._compute_chapter_mtimes_hash(),
+            "relationships": spatial,
+        }
+        out_path = output_subdir / _SPATIAL_NORMALIZED_FILENAME
+        safe_save_json(payload, out_path)
+
+    def _compute_chapter_mtimes_hash(self) -> str:
+        output_subdir = self._output_subdir()
+        mtimes = []
+        for cf in sorted(output_subdir.glob("chapter_*_result.json")):
+            mtimes.append(f"{cf.name}:{int(cf.stat().st_mtime)}")
+        return hashlib.md5("\n".join(mtimes).encode("utf-8")).hexdigest()
+
+    def _add_normalized_ref_to_chapters(self) -> None:
+        """给每章 chapter_*.json 顶部加 _normalized_ref + _normalized_spatial_ref 字段"""
+        output_subdir = self._output_subdir()
+        for cf in output_subdir.glob("chapter_*_result.json"):
+            data = safe_load_json(cf)
+            if not data:
+                continue
+            data["_normalized_ref"] = _LOCATIONS_NORMALIZED_FILENAME
+            data["_normalized_spatial_ref"] = _SPATIAL_NORMALIZED_FILENAME
+            safe_save_json(data, cf)
