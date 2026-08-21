@@ -1378,6 +1378,7 @@ class FinalSummaryRunner:
         # Phase 0: 地点 + 空间关系归一化（LLM 调用，token 计入 summary）
         if not await self._normalize_phase_0():
             logger.error("Phase 0 归一化失败，终止总结")
+            self._emit_progress({"type": "phase_failed", "phase": "phase0"})
             self._emit_progress({"type": "complete", "status": "failed"})
             return
 
