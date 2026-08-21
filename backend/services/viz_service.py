@@ -88,9 +88,13 @@ def timeline_data(output_dir: Path) -> Dict[str, Any]:
     }
 
 
-def graph_data(output_dir: Path) -> Dict[str, Any]:
-    """关系图数据：角色作为节点，同章出现/关系变化作为边"""
-    results = _load_results(output_dir)
+def _aggregate_chars_edges(
+    results: List[AnalysisResult],
+) -> tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]]]:
+    """从 results 聚合 nodes_map / edges_map（同章共现建边，weight=同章次数）
+
+    抽出为独立函数，便于 graph_data() 先对全集跑一次拿总数、再对过滤后跑一次拿数据。
+    """
     nodes_map: Dict[str, Dict[str, Any]] = {}
     edges_map: Dict[str, Dict[str, Any]] = {}
 
@@ -130,9 +134,78 @@ def graph_data(output_dir: Path) -> Dict[str, Any]:
                 edges_map[key]["chapters"].append(ch)
                 edges_map[key]["weight"] += 1
 
+    return nodes_map, edges_map
+
+
+def graph_data(
+    output_dir: Path,
+    chapter_start: Optional[int] = None,
+    chapter_end: Optional[int] = None,
+    min_edge_weight: int = 1,
+    max_nodes: int = 200,
+    min_node_count: int = 1,
+) -> Dict[str, Any]:
+    """关系图数据：角色作为节点，同章出现/关系变化作为边
+
+    支持章节范围切片 + Top-N 截断 + 边权阈值过滤。
+    """
+    all_results = _load_results(output_dir)
+
+    # 全书章节范围（始终来自全集，过滤前记录；用于前端 slider 边界/重置）
+    chapter_min = min(r.chapter_number for r in all_results) if all_results else None
+    chapter_max = max(r.chapter_number for r in all_results) if all_results else None
+
+    # 全量统计（章节过滤前的角色/边总数；用于 total_characters/total_edges）
+    full_nodes_map, full_edges_map = _aggregate_chars_edges(all_results)
+    total_characters_before = len(full_nodes_map)
+    total_edges_before = len(full_edges_map)
+
+    # 章节范围过滤
+    if chapter_start is not None or chapter_end is not None:
+        results = [r for r in all_results
+                   if (chapter_start is None or r.chapter_number >= chapter_start)
+                   and (chapter_end is None or r.chapter_number <= chapter_end)]
+    else:
+        results = all_results
+
+    # 过滤后聚合
+    nodes_map, edges_map = _aggregate_chars_edges(results)
+
+    # 节点 count 阈值过滤
+    nodes_map = {k: v for k, v in nodes_map.items()
+                 if v["event_count"] >= min_node_count}
+
+    # 边权重阈值过滤（同时要求两端节点仍在 nodes_map 中）
+    edges_map = {k: v for k, v in edges_map.items()
+                 if v["weight"] >= min_edge_weight
+                 and v["source"] in nodes_map
+                 and v["target"] in nodes_map}
+
+    # Top-N 截断（按 event_count 降序，超出 max_nodes 的节点剔除，并连带剔除其所有边）
+    if len(nodes_map) > max_nodes:
+        sorted_names = sorted(nodes_map.items(),
+                              key=lambda x: x[1]["event_count"], reverse=True)
+        keep = {n for n, _ in sorted_names[:max_nodes]}
+        nodes_map = {k: v for k, v in nodes_map.items() if k in keep}
+        edges_map = {k: v for k, v in edges_map.items()
+                     if v["source"] in keep and v["target"] in keep}
+
     return {
         "nodes": [{"id": n["id"], "name": n["name"], "event_count": n["event_count"]} for n in nodes_map.values()],
         "edges": [{"source": e["source"], "target": e["target"], "weight": e["weight"]} for e in edges_map.values()],
+        "total_characters": total_characters_before,
+        "total_edges": total_edges_before,
+        "filtered": {
+            "chapter_start": chapter_start,
+            "chapter_end": chapter_end,
+            "min_edge_weight": min_edge_weight,
+            "max_nodes": max_nodes,
+            "min_node_count": min_node_count,
+        },
+        "chapter_range": {
+            "min": chapter_min,
+            "max": chapter_max,
+        },
     }
 
 
