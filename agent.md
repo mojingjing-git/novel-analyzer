@@ -95,7 +95,7 @@
 │   │   │   ├── SplitterPage.vue  # 批量切章
 │   │   │   ├── WorkspacePage.vue # 工作区/归档管理
 │   │   │   ├── TimelinePage.vue  # 时间线（事件+伏笔，分类筛选）
-│   │   │   ├── GraphPage.vue     # 角色关系图（SVG 力导向）
+│   │   │   ├── GraphPage.vue     # 角色关系图（ECharts force 力导向）
 │   │   │   ├── MapPage.vue       # 地图（SVG 树形布局）
 │   │   │   ├── CharacterCardPage.vue  # 角色数据库
 │   │   │   ├── StylePage.vue     # 风格分析
@@ -383,11 +383,24 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 - **发现来源**：队列项 + 文件系统扫描 + 归档目录 + 手动注册
 - **懒刷新**：`get_book_path()` 在找不到 ID 时触发 `refresh_books()`
 
-#### viz_service.py（168行）
+#### viz_service.py（229行）
 - **三种可视化数据**：
   1. `timeline_data()` — 事件 + 伏笔（含分类映射）
-  2. `graph_data()` — 角色节点 + 共现边
+  2. `graph_data(output_dir, chapter_start?, chapter_end?, min_edge_weight=1, max_nodes=200, min_node_count=1)` — 角色节点 + 共现边，支持章节范围切片、边权阈值过滤、Top-N 截断，返回 `nodes/edges/total_characters/total_edges/filtered/chapter_range`
   3. `map_data()` — 地点 + 空间关系
+
+#### location_normalizer.py（420+行）
+- **职责**：地点与空间关系 LLM 归一化（Phase 0）
+- **关键类**：`LocationNormalizer`
+- **4 子阶段**：
+  1. `_run_phase_0a_batches`：locations 切片 + 并发 LLM 调 + 校验（canonical ∈ aliases）
+  2. `_run_phase_0a_consolidate`：1+ 次 LLM 合并跨 batch 同地点
+  3. `_run_phase_0b_batches`：spatial 切片 + canonical 白名单 + 并发 LLM
+  4. `_run_phase_0b_dedupe`：机械去重同 (from, to) 对
+- **触发**：`FinalSummaryRunner.run()` 内自动调用（`_init_progress` 之后）
+- **复用配置**：`summary_model` / `summary_concurrency` / `summary_timeout` / `summary_thinking_mode`
+- **输出**：`output/locations_normalized.json` + `output/spatial_relationships_normalized.json`
+- **chapter 标记**：每章 chapter_*.json 顶部加 `_normalized_ref` + `_normalized_spatial_ref` 字段
 
 ### 5.3 工具层（backend/utils/）
 
@@ -432,7 +445,7 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 | `routes_splitter.py` | 4 | `/api/splitter` | 预览/保存/批量切章 |
 | `routes_aggregate.py` | 4 | `/api/aggregate` | 聚合/文件列表/读取/Excel |
 | `routes_summary.py` | 3 | `/api/summary` | 总结 start/stop/status |
-| `routes_viz.py` | 3 | `/api/viz` | 时间线/关系图/地图 |
+| `routes_viz.py` | 3 | `/api/viz` | 时间线/关系图（支持 chapter_start/chapter_end/min_edge_weight/max_nodes/min_node_count query 参数）/地图 |
 | `routes_prompt.py` | 1 | `/api/prompt` | Prompt 预览 |
 | `routes_foreshadow.py` | 1 | `/api/foreshadow` | 50类伏笔分类定义 |
 | `ws.py` | 1 WS | `/ws/progress` | WebSocket 实时进度 |
@@ -486,7 +499,7 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 | SplitterPage | 419 | 批量切章：文件选择、预览、自定义正则、卷识别、pywebview 文件对话框 |
 | WorkspacePage | 185 | 工作区/归档：列表、归档、删除（自定义确认对话框） |
 | TimelinePage | 249 | 时间线：事件+伏笔、重要性/分类筛选 |
-| GraphPage | 191 | 角色关系图：SVG 静态环形布局、节点点击高亮 |
+| GraphPage | 361 | 角色关系图：ECharts force 力导向、章节范围切片、Top-N 截断、边权阈值过滤、邻接高亮、右侧关联面板 |
 | MapPage | 225 | 地图：SVG 树形布局、空间关系虚线 |
 | CharacterCardPage | 259 | 角色数据库：统计、弧光、事件、状态演化、关系 |
 | StylePage | 139 | 风格分析：启停、轮询、结果展示 |
@@ -806,8 +819,93 @@ npm run build
 - `/analysis/logs` 无鉴权：仅绑 127.0.0.1，单用户桌面应用加 fake auth 属过度设计
 - 端口竞态残余 boot 窗口、token None 统计、style 快照并发、阻塞 IO 二次读：需精确行定位或深度重构，未泛泛猜改
 
-### 10.7 相关文档
+### 10.8 2026-08-21 角色关系图重构
+
+> 备份：`.bak_8.21_graph/`（viz_service.py, routes_viz.py, client.ts, GraphPage.vue, package.json）
+
+**后端**：
+- `viz_service.py` `graph_data()` 新增 5 个参数：`chapter_start`、`chapter_end`（章节范围过滤）、`min_edge_weight`（边权阈值）、`max_nodes`（Top-N 截断）、`min_node_count`（节点出场次数阈值）。返回结构新增 `total_characters`/`total_edges`/`filtered`/`chapter_range` 字段
+- `routes_viz.py` `GET /api/viz/graph/{book_id}` 新增 5 个 query 参数（`chapter_start`/`chapter_end`/`min_edge_weight`/`max_nodes`/`min_node_count`），使用 `Optional[int]` + `Query()` 风格
+
+**前端**：
+- `package.json` 新增 `echarts` 依赖（按需引入 `echarts/core` + `GraphChart` + `TooltipComponent` + `DataZoomComponent` + `LegendComponent` + `SVGRenderer`）
+- `client.ts` `getGraph()` 新增可选 params 参数 + query 字符串构建；新增 `GraphNode`/`GraphEdge` interface 并 export
+- `GraphPage.vue` 整页重写：ECharts force 力导向替代环形 SVG，支持缩放拖拽、邻接高亮、标签避让、节点大小按 event_count 映射、社区四色分桶、右侧关联角色面板、章节范围输入 + Top-N + 边权阈值控制
+
+**验证**：
+- vue-tsc 类型检查通过（EXIT:0）
+- py_compile viz_service.py + routes_viz.py 通过
+- vite build 因 WorkBuddy safe-delete hook 拦截 dist 清理失败（OS 层面，与代码无关）
+
+**有意未动**：`backend/utils/character_graph.py`（戴森球独立 HTML 导出）、`backend/utils/aggregate_utils.py`
+
+### 10.9 2026-08-21 graph bug 修复（chapter_range 锁死 [1,1]）
+
+**症状**：首次选择书目后，"章节范围"输入框永远显示 `1 - 1`，无法调整。
+
+**根因链**：
+1. 前端初始化 `chapterRangeSelected = [1, 1]`
+2. `loadData()` 携带 `chapter_start=1, chapter_end=1` 调后端
+3. 后端 `graph_data()` 先做章节过滤（line 112-115），再从过滤后的 `results` 计算 `chapter_min/max`（line 118-120）→ 返回 `{min:1, max:1}`
+4. 前端用 `[1,1] === [1,1]` 哨兵判首次，把 `chapterRangeSelected` 重置为后端返回的 `[1,1]`
+5. 永远锁死；UI 上 `chapterRange.value={min:1,max:1}` 让两个输入框也无法超出 [1,1]
+
+**修复**：
+- **后端 `viz_service.py`**：抽出聚合逻辑到 `_aggregate_chars_edges(results)`；`chapter_min/max` 与 `total_characters/total_edges` 都从**全集**计算（plan §2.1 注："过滤前记录"）；过滤后再跑一次聚合拿过滤后的数据
+- **前端 `GraphPage.vue`**：用独立的 `initialized = ref(false)` flag 替代 `[1,1] === [1,1]` 哨兵，避免用户手动输入 `[1,1]` 时被误覆盖回全章
+
+**验证**：py_compile OK；vue-tsc 0 错；vite build 8.45s 通过；dist 同步到共享盘。
+
+### 10.10 2026-08-21 graph bug 修复（图表白屏）
+
+**症状**：选书 → 数据加载完成（`nodes.length > 0`）→ 图表容器（560px 高度）依然空白，没有任何节点/边。
+
+**根因**：`plan §3.3.3` 的 `onMounted` 把 `echarts.init()` 放在 `if (chartContainer.value)` 守卫里：
+```typescript
+onMounted(() => {
+  if (chartContainer.value) {       // ← 这里永远 false
+    chart = echarts.init(chartContainer.value, ...)
+  }
+})
+```
+但 `<div ref="chartContainer">` 在模板的最后一个 `v-else` 分支里：
+```vue
+<div v-if="!bookId">请选择书目</div>
+<div v-else-if="loading && nodes.length === 0">加载中...</div>
+<div v-else-if="nodes.length === 0">暂无数据</div>
+<div v-else><div ref="chartContainer"></div></div>   ← 组件 mount 时不渲染
+```
+onMounted 触发时 `!bookId` 为真（首屏 `bookId=''`），第一个 `v-if` 命中，**`chartContainer` ref 尚未挂载**，`chartContainer.value` 为 `undefined`，`if` 失败 → `chart` 永远 null。
+
+之后 `renderChart()` 第一行 `if (!chart || nodes.value.length === 0) return` 早退，**图表从未初始化**。
+
+**修复**：
+- 抽出 `initChart()` 辅助函数（幂等：`if (chart || !chartContainer.value) return`）
+- `renderChart()` 第一行改为 `initChart(); if (!chart) return`
+- `loadData()` 在赋值 `nodes.value` 之后 `await nextTick()`，等 v-else 分支渲染、ref 挂载后再调 `renderChart()`
+- `onMounted` 保留为空钩子（注释说明 init 已推迟到 renderChart）
+
+**未动原则**：plan §3.3.3 的 chart.on('click') / resize 监听逻辑原样搬到 initChart。
+
+**验证**：vue-tsc 0 错；vite build 7.02s 通过（dist hash 从 `T8WHxJuJ` 变 `B_KQHSDt`）；dist 同步并清理 6 个 orphan 文件（约 1.7 MB）。
+
+### 10.11 2026-08-21 地点 + 空间关系归一化（Phase 0）
+
+**症状**：`MapPage.vue` 渲染树形布局时节点分散、parent 跳转、type 颜色不一致；spatial_relationships 无法按方向/距离过滤。
+
+**根因**：LLM 生成 `chapter_*.json` 时 `locations.parent` 多达 8 种不同值（实测 130/889 地点）、`type` 多达 9 种不同值（143/889 地点）；`spatial_relationships.relation` 是自由文本散文（54 对边有多重不一致描述）。
+
+**修复**（spec: `docs/superpowers/specs/2026-08-21-location-spatial-normalization-design.md`，plan: `docs/superpowers/plans/2026-08-21-location-spatial-normalization.md`）：
+- 新增 `LocationNormalizer`（`backend/services/location_normalizer.py`，420+ 行）
+- 在 `FinalSummaryRunner.run()` 最前面插入 4 子阶段流水线（0a-batches → 0a-consol → 0b-batches → 0b-dedupe）
+- 输出 `output/locations_normalized.json` + `output/spatial_relationships_normalized.json`，非破坏性
+- 每章 `chapter_*.json` 顶部加 `_normalized_ref` 字段，`viz_service.map_data()` 检测该字段决定读归一化数据
+- 复用 `summary_model/summary_concurrency/summary_timeout/summary_thinking_mode` 配置，无 UI 改动
+- 大书（千万字）通过 1000 group/batch + 2000 canonical/consol-batch 拆分避免 context 溢出
+
+### 10.12 相关文档
 - Win11 重做计划：`docs/superpowers/plans/2026-08-16-win11-frontend-redesign.md`
+- 角色关系图重构计划：`docs/superpowers/plans/2026-08-21-graph-redesign.md`
 - 项目 README：`README.md`
 - 更新日志：`CHANGELOG.md`
 
