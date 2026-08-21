@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from backend.utils.text_utils import is_same_location
+from backend.utils.json_utils import safe_parse_json
 
 logger = logging.getLogger(__name__)
 
@@ -125,3 +126,96 @@ def aggregate_spatial_pairs(raw_rels: List[Dict[str, Any]]) -> List[Dict[str, An
     ]
     pairs.sort(key=lambda p: -len(p["chapters"]))
     return pairs
+
+
+_LOCATION_SYSTEM_PROMPT = """你是中文网络小说数据归一化专家。你的任务是把同一地点在不同章节里的不同写法/不同分类合并为规范条目。
+
+## 任务 1 — 地点归一化（locations）
+
+输入是一组预聚合的地点，每个 group 包含：
+- 该组里出现过的所有原始地名（aliases）
+- 这些地点的所有 type 变体 + 各自次数
+- 这些地点的所有 parent 变体 + 各自次数
+- 出现总章节数
+- 1 个样本描述（其他描述类似）
+
+对每个 group，你需要输出：
+{
+  "canonical_name": "宁安县",        // 字面等于 aliases 中的某一个
+  "aliases": ["宁安县", "宁安县城", "宁安县桐树坊"],   // 合并原始所有名称
+  "parent": "京畿府",                // 最合理的上级；必须是某个原始 parent，否则 ""
+  "type": "县城",                    // 选最合适的类型；可基于已有 type 创建新类
+  "description": "大贞王朝下辖县城，..."   // 取最完整的描述
+}
+
+## 硬约束（违反则视为输出错误）
+
+1. canonical_name 必须字面等于 aliases 中的某一个字符串。不容许改字、删字、合并字。
+2. aliases 必须包含输入时该 group 的所有原始名称（字面保留，不得遗漏或改写）。
+3. 输出必须是合法 JSON，locations 数组可为空。
+"""
+
+
+def build_location_prompt(
+    groups: List[Dict[str, Any]],
+    batch_idx: int,
+    total_batches: int,
+) -> List[Dict[str, str]]:
+    """构造 locations 归一化的 system + user 消息"""
+    user_lines = [f"## 待归一化的地点（batch {batch_idx}/{total_batches}，共 {len(groups)} 个 group）", ""]
+    for i, g in enumerate(groups, 1):
+        aliases_str = ", ".join(g["aliases"])
+        types_str = ", ".join(f"{k}:{v}" for k, v in g["types"].items())
+        parents_str = ", ".join(f"{k}:{v}" for k, v in g["parents"].items())
+        user_lines.append(
+            f"[{i}] aliases=[{aliases_str}]\n"
+            f"    types={{{types_str}}}\n"
+            f"    parents={{{parents_str}}}\n"
+            f"    chapter_count={g['chapter_count']}\n"
+            f"    sample_desc=\"{g['sample_desc']}\""
+        )
+    user_lines.append("")
+    user_lines.append("请按 system prompt 规则输出 JSON {\"locations\": [...]}")
+    return [
+        {"role": "system", "content": _LOCATION_SYSTEM_PROMPT},
+        {"role": "user", "content": "\n".join(user_lines)},
+    ]
+
+
+def parse_and_validate_locations(
+    llm_response: str,
+    batch: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """解析 LLM 输出并校验：canonical_name 必须字面等于某个 alias
+
+    返回清洗后的 canonical 列表。无效条目被丢弃。
+    """
+    parsed = safe_parse_json(llm_response)
+    if not parsed or not isinstance(parsed, dict):
+        return []
+    raw_locations = parsed.get("locations", [])
+    if not isinstance(raw_locations, list):
+        return []
+
+    valid: List[Dict[str, Any]] = []
+    for loc in raw_locations:
+        if not isinstance(loc, dict):
+            continue
+        canonical = loc.get("canonical_name", "")
+        aliases = loc.get("aliases", [])
+        if not isinstance(canonical, str) or not isinstance(aliases, list):
+            continue
+        aliases = [a for a in aliases if isinstance(a, str)]
+        # 硬约束1：canonical 必须字面等于某个 alias
+        if canonical not in aliases:
+            logger.warning(f"丢弃幻觉 location：canonical='{canonical}' 不在 aliases={aliases}")
+            continue
+        # 必填字段兜底
+        valid.append({
+            "canonical_name": canonical,
+            "aliases": sorted(set(aliases)),
+            "parent": loc.get("parent", "") or "",
+            "type": loc.get("type", "") or "",
+            "description": loc.get("description", "") or "",
+        })
+    return valid

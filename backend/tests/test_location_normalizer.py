@@ -129,3 +129,92 @@ class TestAggregateSpatialPairs:
         ]
         pairs = aggregate_spatial_pairs(raw)
         assert pairs[0]["from"] == "C"
+
+
+import json
+
+from backend.services.location_normalizer import (
+    build_location_prompt,
+    parse_and_validate_locations,
+)
+
+
+class TestBuildLocationPrompt:
+    def test_returns_system_and_user_messages(self):
+        batch = [
+            {
+                "aliases": ["宁安县", "宁安县城"],
+                "types": {"城市": 2},
+                "parents": {"大周王朝": 5},
+                "chapter_count": 87,
+                "sample_desc": "县城描述",
+            }
+        ]
+        messages = build_location_prompt(batch, batch_idx=1, total_batches=5)
+        assert len(messages) == 2
+        assert messages[0]["role"] == "system"
+        assert messages[1]["role"] == "user"
+        assert "batch 1/5" in messages[1]["content"]
+        assert "宁安县" in messages[1]["content"]
+        assert "城市:2" in messages[1]["content"]
+
+    def test_system_prompt_includes_hard_constraints(self):
+        messages = build_location_prompt([], 1, 1)
+        sys = messages[0]["content"]
+        assert "canonical_name" in sys
+        assert "字面" in sys or "完全匹配" in sys
+        assert "JSON" in sys
+
+
+class TestParseAndValidateLocations:
+    def test_accepts_valid_canonical(self):
+        batch = [
+            {"aliases": ["宁安县", "宁安县城"], "types": {"城市": 2}, "parents": {"大周王朝": 5}, "chapter_count": 87, "sample_desc": ""}
+        ]
+        llm_text = json.dumps({
+            "locations": [
+                {"canonical_name": "宁安县", "aliases": ["宁安县", "宁安县城"], "parent": "大周王朝", "type": "县城", "description": "测试"}
+            ]
+        }, ensure_ascii=False)
+        result = parse_and_validate_locations(llm_text, batch)
+        assert len(result) == 1
+        assert result[0]["canonical_name"] == "宁安县"
+        assert "宁安县城" in result[0]["aliases"]
+
+    def test_rejects_hallucinated_canonical(self):
+        # LLM 编造了 "京城市" 这个不存在的 alias
+        batch = [
+            {"aliases": ["宁安县"], "types": {"城市": 1}, "parents": {"大周王朝": 1}, "chapter_count": 5, "sample_desc": ""}
+        ]
+        llm_text = json.dumps({
+            "locations": [
+                {"canonical_name": "京城市", "aliases": ["宁安县"], "parent": "", "type": "城市", "description": ""}
+            ]
+        }, ensure_ascii=False)
+        result = parse_and_validate_locations(llm_text, batch)
+        assert result == []  # 整条拒收
+
+    def test_handles_empty_locations(self):
+        batch = []
+        llm_text = json.dumps({"locations": []})
+        result = parse_and_validate_locations(llm_text, batch)
+        assert result == []
+
+    def test_invalid_json_returns_empty(self):
+        result = parse_and_validate_locations("not json {{{", [])
+        assert result == []
+
+    def test_keeps_valid_entries_rejects_invalid_in_batch(self):
+        batch = [
+            {"aliases": ["A"], "types": {"城": 1}, "parents": {"X": 1}, "chapter_count": 1, "sample_desc": ""},
+            {"aliases": ["B"], "types": {"城": 1}, "parents": {"X": 1}, "chapter_count": 1, "sample_desc": ""},
+        ]
+        llm_text = json.dumps({
+            "locations": [
+                {"canonical_name": "A", "aliases": ["A"], "parent": "X", "type": "城", "description": ""},
+                {"canonical_name": "WRONG", "aliases": ["B"], "parent": "X", "type": "城", "description": ""},
+            ]
+        }, ensure_ascii=False)
+        result = parse_and_validate_locations(llm_text, batch)
+        assert len(result) == 1
+        assert result[0]["canonical_name"] == "A"
