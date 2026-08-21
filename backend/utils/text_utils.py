@@ -357,3 +357,28 @@ def deduplicate_foreshadows(
         })
 
     return catalog
+
+
+def is_same_location(n1: str, n2: str) -> bool:
+    """判断两个地名是否可能指向同一地点。
+
+    规则（保守）：
+    1. 归一后任一为空或长度 < 2 -> False（避免单字噪声误伤）
+    2. 归一后相等 -> True
+    3. 归一后较短串（≥4字）是较长串的子串 -> True（含角色/修饰后缀的合并，如 "居安小阁" ⊂ "居安小阁主角"）
+    4. 短名（≤3字）走严格阈值 0.95，避免被前缀同形长名误并（如 "宁安县" 误并入 "宁安县城"）
+    5. 其余按 SequenceMatcher 相似度阈值 0.85 判定
+    """
+    from difflib import SequenceMatcher as _SM
+    a = _normalize_for_dedup(n1)
+    b = _normalize_for_dedup(n2)
+    if not a or not b or len(a) < 2 or len(b) < 2:
+        return False
+    if a == b:
+        return True
+    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+    if len(shorter) >= 4 and shorter in longer:
+        return True
+    threshold = 0.95 if len(shorter) <= 3 else 0.85
+    ratio = _SM(None, a, b).ratio()
+    return ratio >= threshold
