@@ -4,7 +4,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from backend.utils.json_utils import repair_missing_quotes, parse_json_robust
+from backend.utils.json_utils import (
+    repair_missing_quotes,
+    parse_json_robust,
+    _normalize_fullwidth_outside_strings,
+)
 
 
 def test_key_missing_opening_quote():
@@ -62,3 +66,139 @@ def test_python_dict_style_still_works():
     data, detail = parse_json_robust("{'a': 'x', 'b': 1}")
     assert data is not None
     assert data["a"] == "x"
+
+
+# === 2026-08-22 增补：全角标点状态机归一 ===
+
+
+class TestNormalizeFullwidth:
+    """_normalize_fullwidth_outside_strings：只动 string 外部，string 内部保持原样"""
+
+    def test_escaped_quote_inside_string_preserves_fullwidth(self):
+        # \" 是合法转义，不应被当成 string 结束
+        text = r'"a\"b"，"c":1'  # "a\"b"，"c":1
+        result = _normalize_fullwidth_outside_strings(text)
+        # \" 不切换 in_string，所以整段都在 string 内
+        # 第一个 " 是开 string，最后的 " 才是闭 string
+        # 那中间的 " 也都在 string 内
+        # 整体是: "a\"b"，"c":1
+        # 第一个 " (开), a, \, ", b, " (??), ， (这是string 内的), " (闭), , (string外,保持), " (开), c, " (闭), :1
+        # 嗯这个case有点tricky
+        # 实际上: "a\"b"，"c":1
+        # 第一个 " 开启 string
+        # a, \, ", b -> 这是a\"b, " 是转义的引号
+        # 接下来 ",  切换 in_string = False
+        # ，是 string 外的全角逗号，应被替换为 ,
+        # " 切换回 in_string = True
+        # c 是 string 内的字符
+        # " 关闭 string
+        # :1 是 string 外
+        # 结果: "a\"b","c":1
+        assert result == r'"a\"b","c":1'
+
+    def test_fullwidth_comma_outside_string_replaced(self):
+        # "value"，"key" 中间的全角逗号（string 外的）应被替换
+        text = '"a"，"b"'
+        assert _normalize_fullwidth_outside_strings(text) == '"a","b"'
+
+    def test_fullwidth_colon_outside_string_replaced(self):
+        # "key"：后面是 string 外的全角冒号
+        text = '"key"：1'
+        assert _normalize_fullwidth_outside_strings(text) == '"key":1'
+
+    def test_fullwidth_paren_outside_string_replaced(self):
+        text = '{"key"：（val）}'
+        assert _normalize_fullwidth_outside_strings(text) == '{"key":(val)}'
+
+    def test_fullwidth_inside_chinese_string_preserved(self):
+        # "太子跳下凡间，袖子被云挂了一下" — 字符串内的全角逗号必须保留
+        text = '"event": "太子跳下凡间，袖子被云挂了一下"'
+        result = _normalize_fullwidth_outside_strings(text)
+        assert "太子跳下凡间，袖子被云挂了一下" in result  # 内部全角保留
+
+    def test_mixed_complex_real_case(self):
+        # 真实 LLM 输出（minimaxi/M2.7）：结构标点全角，字符串内容全角
+        text = (
+            "{\n"
+            '  "canonical_name": "宁安县"，\n'
+            '  "aliases": ["宁安县城"]，\n'
+            '  "description": "测试"：\n'
+            '  "count": 10\n'
+            "}"
+        )
+        result = _normalize_fullwidth_outside_strings(text)
+        # 外部全角应被替换
+        assert '宁安县",' in result  # 第一个 "value"， 变成 "value",
+        assert '宁安县城"],' in result  # 第二个，
+        assert '"description": "测试":' in result  # "： → :
+        # 字符串内：description 的值 "测试" 保持
+        assert '"description": "测试":' in result
+
+    def test_empty_string(self):
+        assert _normalize_fullwidth_outside_strings("") == ""
+
+    def test_no_fullwidth_passes_through(self):
+        text = '{"a":1,"b":"hello, world"}'
+        assert _normalize_fullwidth_outside_strings(text) == text
+
+    def test_array_with_fullwidth_commas(self):
+        text = '["a"，"b"，"c"]'
+        # 数组内的全角逗号（语法）应被替换
+        # 元素内的字符保持原样（"a" "b" "c" 是单独的 string）
+        assert _normalize_fullwidth_outside_strings(text) == '["a","b","c"]'
+
+    def test_nested_strings(self):
+        text = '"outer \"inner\" text"，"key":1'
+        result = _normalize_fullwidth_outside_strings(text)
+        assert '"key":1' in result
+        assert "inner" in result  # 内部字符串内容保持
+
+
+class TestParseJsonRobustWithFullwidth:
+    """parse_json_robust 现在能直接处理全角标点（策略0 归一化后，策略1 json.loads 成功）"""
+
+    def test_fullwidth_comma_json_parses_directly(self):
+        # 之前要等 json_repair 才能恢复，现在策略0 + 策略1 直接通过
+        text = '{"canonical_name": "宁安县"，"type": "县城"}'
+        data, detail = parse_json_robust(text)
+        assert data is not None
+        assert data["canonical_name"] == "宁安县"
+        assert data["type"] == "县城"
+        # detail 为 None 表示直接成功（没经过漏引号修复）
+        assert detail is None
+
+    def test_fullwidth_colon_in_object_parses_directly(self):
+        text = '{"key"：1，"key2"：2}'
+        data, detail = parse_json_robust(text)
+        assert data is not None
+        assert data["key"] == 1
+        assert data["key2"] == 2
+
+    def test_fullwidth_in_string_value_preserved(self):
+        # 字符串内的全角逗号/冒号必须保留（中文文本渲染需要）
+        text = '{"event": "太子跳下凡间，袖子被云挂了一下"}'
+        data, detail = parse_json_robust(text)
+        assert data is not None
+        assert data["event"] == "太子跳下凡间，袖子被云挂了一下"
+
+    def test_real_llm_output_pattern(self):
+        # 模拟 minimaxi/M2.7 实际 LLM 输出（之前会卡 ast.literal_eval）
+        text = (
+            "{\n"
+            '  "locations": [\n'
+            '    {\n'
+            '      "canonical_name": "宁安县"，\n'
+            '      "aliases": ["宁安县城"]，\n'
+            '      "parent": "京畿府"，\n'
+            '      "type": "县城"，\n'
+            '      "description": "谢怜故国"：\n'
+            '      "chapter_count": 10\n'
+            '    }\n'
+            '  ]\n'
+            "}"
+        )
+        data, detail = parse_json_robust(text)
+        assert data is not None
+        assert data["locations"][0]["canonical_name"] == "宁安县"
+        assert data["locations"][0]["aliases"] == ["宁安县城"]
+        assert data["locations"][0]["description"] == "谢怜故国"

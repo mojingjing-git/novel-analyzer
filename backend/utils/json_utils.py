@@ -129,6 +129,48 @@ def repair_missing_quotes(text: str) -> str:
     return fixed
 
 
+def _normalize_fullwidth_outside_strings(text: str) -> str:
+    """状态机：只把 string 外部的全角 JSON 标点替换为半角，string 内部保持原样
+
+    解决 minimaxi/M2.7 LLM 习惯输出 `，` `（` `）` `：` 等全角字符作 JSON 分隔符的问题。
+    状态机逐字符扫描，避免破坏中文字符串内的标点（如"太子跳下凡间，袖子被云挂了"中的"，"必须保留）。
+
+    Args:
+        text: 原始 LLM 输出
+
+    Returns:
+        归一化后的文本
+    """
+    fw_to_hw = {
+        "，": ",",   # fullwidth comma
+        "：": ":",   # fullwidth colon
+        "；": ";",   # fullwidth semicolon
+        "（": "(",   # fullwidth left paren
+        "）": ")",   # fullwidth right paren
+    }
+    result = []
+    in_string = False
+    escape = False
+    for ch in text:
+        if escape:
+            result.append(ch)
+            escape = False
+            continue
+        if in_string and ch == "\\":
+            result.append(ch)
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            result.append(ch)
+            continue
+        if not in_string and ch in fw_to_hw:
+            result.append(fw_to_hw[ch])
+        else:
+            result.append(ch)
+    return "".join(result)
+
+
 def parse_json_robust(text: str):
     """
     安全解析 JSON 并返回诊断信息（LLM 输出容错链 + 漏引号定向修复）
@@ -138,6 +180,12 @@ def parse_json_robust(text: str):
     实测 json_repair 会把 `{"b":、伏笔线索"}` 静默"修复"成 `{"b":"伏笔线索"}`
     （丢全角字符）；lenient 解析器先跑会"错误成功"，定向修复永远轮不到。
     修复正则只在合法 JSON 不可能出现的模式上匹配，提前执行安全。
+
+    2026-08-22 增补：策略0 全角标点归一（状态机）放在策略4 漏引号修复之后。
+    - 顺序关键：必须先补回缺失的引号（让 string 边界合法），再让状态机归一（只动 string 外的标点）
+    - 如果先归一再补引号，状态机会把 `"b":（重要内容）"}` 错认为 `（` 在 string 外而错误归一为 `(`，
+      导致补完引号后值变成 `"(重要内容）"`（一半半角一半全角）
+    - string 内部的中文标点（","等）始终保持原样，不影响文本渲染
 
     Returns:
         (dict, None)                    — 直接解析成功
@@ -197,11 +245,17 @@ def parse_json_robust(text: str):
         except Exception:
             pass
 
+    # 策略0 (2026-08-22 增补): 全角标点归一（状态机，只动 string 外的全角标点）
+    # 位置：策略4 漏引号修复之后 → 此时 string 边界已合法，状态机不会误伤 string 内容
+    # 修复文本的命名误导（"策略0"）：实际是策略顺序中的第 5 步，为不破坏既有注释/日志编号而保留
+    repaired = _normalize_fullwidth_outside_strings(repaired)
+
     # 策略5: json5 — 处理单引号、尾逗号、注释、Python bool/None
+    # 注：用 repaired（已含归一化）而非 text，让 json5 也能享受全角→半角归一
     _log.info(f"JSON解析进入 json5 策略（文本长度={text_len}）")
     try:
         import json5
-        result = json5.loads(text)
+        result = json5.loads(repaired)
         if isinstance(result, dict):
             return result, None
     except ImportError:
@@ -213,7 +267,7 @@ def parse_json_robust(text: str):
     _log.info(f"JSON解析进入 ast.literal_eval 策略（文本长度={text_len}）")
     try:
         import ast
-        result = ast.literal_eval(text)
+        result = ast.literal_eval(repaired)
         if isinstance(result, dict):
             return result, None
     except Exception as e:
@@ -223,18 +277,20 @@ def parse_json_robust(text: str):
     _log.info(f"JSON解析进入 json_repair 策略（文本长度={text_len}）")
     try:
         import json_repair
-        result = json_repair.loads(text)
+        result = json_repair.loads(repaired)
         if isinstance(result, dict):
+            _log.info(f"json_repair 解析成功（顶层键={len(result)}）")
             return result, None
+        _log.warning(f"json_repair 返回非 dict 类型: {type(result).__name__}")
     except ImportError:
-        _log.debug("json_repair 未安装，跳过")
+        _log.warning("json_repair 未安装")
     except Exception as e:
-        _log.debug(f"json_repair 解析失败: {e}")
+        _log.warning(f"json_repair 解析失败: {e}")
 
     # 策略8: 单引号→双引号替换（保守：只替换键值对中的单引号值）
     try:
-        fixed = _replace_single_quoted_values(text)
-        if fixed != text:
+        fixed = _replace_single_quoted_values(repaired)
+        if fixed != repaired:
             return json.loads(fixed), None
     except json.JSONDecodeError:
         pass
