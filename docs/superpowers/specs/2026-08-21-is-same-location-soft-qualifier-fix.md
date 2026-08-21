@@ -100,22 +100,23 @@ _LOCATION_PROMPT_BUDGET_CHARS = 35000   # 每批 user prompt ≤ 35K chars（约
 _LOCATION_BATCH_MAX_GROUPS = 1000       # 兜底，避免单批 group 太多（防御性）
 
 
-def _split_into_batches_by_budget(groups: list, budget: int, max_groups: int) -> list:
-    """按 user prompt 字符预算切分批次
+def _estimate_group_chars(g: dict) -> int:
+    """估算单个 group 在 user prompt 中的字符数（用于 batch 切分）"""
+    return (
+        sum(len(a) for a in g.get("aliases", [])) + 20 +  # aliases + 括号
+        sum(len(k) + len(v) + 5 for k, v in g.get("types", {}).items()) + 20 +
+        sum(len(k) + len(v) + 5 for k, v in g.get("parents", {}).items()) + 20 +
+        80  # 固定字段（chapter_count + sample_desc + 字段标签）
+    )
 
-    每个 group 的预估字符数 = len(aliases_str) + len(types_str) + len(parents_str) + ~80 字固定开销
-    累加直到超预算（考虑 system prompt 的 ~700 chars 留余量）
-    """
+
+def _split_into_batches_by_budget(groups: list, budget: int, max_groups: int) -> list:
+    """按 user prompt 字符预算切分批次"""
     batches = []
     current = []
     current_chars = 0
     for g in groups:
-        g_chars = (
-            sum(len(a) for a in g["aliases"]) + 20 +  # aliases + 括号
-            sum(len(k) + len(v) + 5 for k, v in g["types"].items()) + 20 +
-            sum(len(k) + len(v) + 5 for k, v in g["parents"].items()) + 20 +
-            80  # 固定字段（chapter_count + sample_desc + 字段标签）
-        )
+        g_chars = _estimate_group_chars(g)
         if current and (current_chars + g_chars > budget or len(current) >= max_groups):
             batches.append(current)
             current = []
@@ -133,6 +134,8 @@ def _split_into_batches_by_budget(groups: list, budget: int, max_groups: int) ->
 async def _run_phase_0a_batches(
     self, groups: List[Dict[str, Any]]
 ) -> Optional[List[Dict[str, Any]]]:
+    # 替换原来的 self._split_into_batches(groups, self.locations_batch_size)
+    # 用按预算切的版本（保持调用位置不变）
     batches = _split_into_batches_by_budget(
         groups,
         budget=_LOCATION_PROMPT_BUDGET_CHARS,
@@ -142,6 +145,8 @@ async def _run_phase_0a_batches(
     semaphore = asyncio.Semaphore(self.concurrency)
     # ... 其余逻辑不变
 ```
+
+**注意**：原有的 `LocationNormalizer._split_into_batches` 静态方法在 Commit 1 中**删除**（被模块级函数替代）。如果其他地方（如 `_run_phase_0b_batches`）也调用它，需要相应更新。但 `_run_phase_0b_batches` 用的是 `spatial_batch_size`，仍可保留原 `_split_into_batches` 逻辑，或为其也加预算版。**为最小改动，仅替换 locations 一处；spatial 保持原 `_split_into_batches` 调用。**
 
 ### 2.6 测试方案
 
@@ -208,14 +213,16 @@ if len(shorter) >= 4 and shorter in longer:
 
 `is_same_location("大唐公司", "大唐公司会议室")` → substring 命中 → True → 合并。
 
-**v1 spec 试图加白名单过滤**（如"会议室"不是软修饰不合并）：
-- extra = `longer[len(shorter):]` = `"会议室"`
-- 检查白名单：`"会议室" not in 白名单` → False → 不合并 ✓
+**注意**：当前生产代码**没有白名单**，substring 命中即合并。v1 spec 提出的"软修饰白名单"是未落地的提案；当前合并纯粹因为 substring 规则，不是因为白名单缺失。
 
-**但这个修复不完整**——白名单只能识别**后缀**（"会议室""顶层"）：
+白名单路径（v1 spec 提出、从未落地）的不可行性：
+- extra = `longer[len(shorter):]` = `"会议室"`
+- 若有白名单：`"会议室" not in 白名单` → False → 不合并 ✓
+
+**但白名单只能识别后缀**——前缀修饰无法识别：
 - `is_same_location("新大唐公司", "大唐公司")` → shorter="大唐公司" 在 longer="新大唐公司" 中 → True
 - extra = `longer[len(shorter):]` = `"新大唐公司"[4:]` = `"司"`
-- `"司" not in 白名单` → False → 不合并 ✗（**应该是 True**）
+- `"司" not in 白名单` → 不合并 ✗（**应该合并**）
 
 前缀修饰"新大唐公司/老大唐公司"被静默漏判。
 
@@ -234,6 +241,7 @@ _PREFIX_MODS = (
 _SUFFIX_MODS = (
     "主角", "身边", "附近", "一带", "境内", "内部",
     "已废弃",
+    "新址",   # 与前缀 "原址"/"旧址" 对称；否则"宁安县新址"漏判
 )
 
 
@@ -337,18 +345,16 @@ def test_chained_prefix_modifier(self):
 
 ### 3.6 `_PREFIX_MODS` 与 `_SUFFIX_MODS` 的对称性观察
 
-**潜在不对称**：`_PREFIX_MODS` 包含 `"原址"/"旧址"`（复合词），但 `_SUFFIX_MODS` 没有对应 `"新址"/"旧址"`。
+**已采取的补救**：`_SUFFIX_MODS` 加了 `"新址"`，与 `_PREFIX_MODS` 的 `"原址"/"旧址"` 大致对称。
 
-实际场景：
+实际场景覆盖：
 - `"宁安县原址"` → strip "原址"（前缀）→ `"宁安县"` ✓
 - `"宁安县旧址"` → strip "旧址"（前缀）→ `"宁安县"` ✓
-- `"宁安县新址"` → 期望 strip → `"宁安县"`，但 SUFFIX_MODS 没 `"新址"` → 不 strip → 不并 ✗
+- `"宁安县新址"` → strip "新址"（后缀）→ `"宁安县"` ✓（v2 补的）
 
-**建议**（实施时确认）：
-- 把 `"新址"/"旧址"` 也加到 `_SUFFIX_MODS`
-- 或承认不对称，写在 docstring 里
+**残留不对称**：`_SUFFIX_MODS` 没有 `"旧址"`（已被前缀占）。若场景出现 `"X旧址"`（如"宁安县旧址"已是前缀情况），会被剥前缀而不是后缀，**结果相同**（都是 → `"宁安县"`），不影响。
 
-**这是审查者需要决定的细节**。
+**无更严重的不对称**。审查者如希望加更多复合词可后续追加。
 
 ---
 
@@ -389,7 +395,7 @@ python -m pytest backend/tests/test_location_normalizer.py -v
 
 # 全量
 python -m pytest backend/tests/ -v
-# 期望：152 passed
+# 期望：158 passed（152 现有 + 3 batch split test + 3 is_same_location test）
 
 # 真实数据验证
 python -c "
