@@ -35,6 +35,10 @@ class TestIsSameLocation:
 from backend.services.location_normalizer import (
     aggregate_locations,
     aggregate_spatial_pairs,
+    _estimate_group_chars,
+    _split_into_batches_by_budget,
+    _LOCATION_PROMPT_BUDGET_CHARS,
+    _LOCATION_BATCH_MAX_GROUPS,
 )
 
 
@@ -618,3 +622,56 @@ class TestMapDataNormalized:
         result = map_data(tmp_path)
         assert len(result["locations"]) == 1
         assert result["locations"][0]["name"] == "宁安县"
+class TestBudgetBatchSplit:
+    """2026-08-21 修复：按字符预算切分 batch（防 Phase 0a 超时）"""
+
+    def test_estimate_group_chars_includes_all_fields(self):
+        g = {
+            "aliases": ["大唐公司", "新罗酒店"],
+            "types": {"建筑": 5, "企业": 1},
+            "parents": {"济州岛": 20},
+            "chapter_count": 40,
+            "sample_desc": "测试描述",
+        }
+        chars = _estimate_group_chars(g)
+        # 应包含 aliases(20+8) + types(20+30) + parents(20+15) + 80 固定 = ~193
+        assert 150 < chars < 300
+
+    def test_split_batches_respects_char_budget(self):
+        # 每个 group 约 130 chars；预算 300 chars 强制每批 ≤ 3 个
+        groups = [
+            {"aliases": ["x" * 30], "types": {"y": 1}, "parents": {"z": 1}, "chapter_count": 1, "sample_desc": ""}
+            for _ in range(20)
+        ]
+        batches = _split_into_batches_by_budget(groups, budget_chars=400, max_groups=1000)
+        # 验证每批累计 chars ≤ 预算（容许最后一组 < budget）
+        for b in batches[:-1]:
+            chars = sum(_estimate_group_chars(g) for g in b)
+            assert chars <= 400, f"batch over budget: {chars} > 400"
+        # 至少 2 批（证明不是 1 batch 全塞）
+        assert len(batches) >= 2
+
+    def test_split_batches_single_batch_when_under_budget(self):
+        groups = [
+            {"aliases": ["短"], "types": {}, "parents": {}, "chapter_count": 1, "sample_desc": ""}
+            for _ in range(10)
+        ]
+        batches = _split_into_batches_by_budget(groups, budget_chars=10000, max_groups=1000)
+        assert len(batches) == 1
+        assert len(batches[0]) == 10
+
+    def test_split_batches_respects_group_cap(self):
+        """max_groups 是硬上限（防御性）：即使字符预算允许也强制切"""
+        # 每个 group 1 char；budget 1M；max_groups=5 → 必须 5 个一组
+        groups = [
+            {"aliases": ["a"], "types": {}, "parents": {}, "chapter_count": 1, "sample_desc": ""}
+            for _ in range(20)
+        ]
+        batches = _split_into_batches_by_budget(groups, budget_chars=1_000_000, max_groups=5)
+        assert all(len(b) <= 5 for b in batches)
+        assert len(batches) == 4  # 20 / 5 = 4
+
+    def test_constants_have_expected_defaults(self):
+        """防御：预算值与 max_groups 默认值与 spec 一致"""
+        assert _LOCATION_PROMPT_BUDGET_CHARS == 35000
+        assert _LOCATION_BATCH_MAX_GROUPS == 1000

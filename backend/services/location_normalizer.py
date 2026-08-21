@@ -458,9 +458,53 @@ from backend.utils.json_utils import safe_load_json, safe_save_json
 
 _LOCATIONS_NORMALIZED_FILENAME = "locations_normalized.json"
 _SPATIAL_NORMALIZED_FILENAME = "spatial_relationships_normalized.json"
-_LOCATIONS_BATCH_SIZE = 1000
+# Phase 0a locations batch 控制（2026-08-21 修复）：
+# - 硬上限：单批 user prompt ≤ 35K chars（防 LLM 调用超时）
+# - 软上限：单批 ≤ 1000 groups（防御性兜底，避免 group 数爆炸）
+# 实测《韩娱》228 章产生 398 group、user prompt 53K chars → 按 35K 切分约 2 批
+_LOCATION_PROMPT_BUDGET_CHARS = 35000
+_LOCATION_BATCH_MAX_GROUPS = 1000
 _SPATIAL_BATCH_SIZE = 1000
 _CONSOL_BATCH_SIZE = 2000
+
+
+def _estimate_group_chars(g: Dict[str, Any]) -> int:
+    """估算单个 location group 在 user prompt 中的字符数（用于 batch 切分预算）
+
+    估算项：aliases 拼接 + types 字典展开（key+count → str）+ parents 字典展开 + 固定字段标签
+    实际可能偏差 ±20%，预算值已留余量。
+    """
+    return (
+        sum(len(a) for a in g.get("aliases", [])) + 20
+        + sum(len(k) + len(str(v)) + 5 for k, v in g.get("types", {}).items()) + 20
+        + sum(len(k) + len(str(v)) + 5 for k, v in g.get("parents", {}).items()) + 20
+        + 80  # 固定字段（chapter_count + sample_desc + 字段标签）
+    )
+
+
+def _split_into_batches_by_budget(
+    items: List[Any],
+    budget_chars: int,
+    max_groups: int,
+) -> List[List[Any]]:
+    """按 user prompt 字符预算切分批次
+
+    累加每个 item 的预估字符数，超过 budget_chars 或 len == max_groups 就切新批。
+    """
+    batches: List[List[Any]] = []
+    current: List[Any] = []
+    current_chars = 0
+    for item in items:
+        item_chars = _estimate_group_chars(item)
+        if current and (current_chars + item_chars > budget_chars or len(current) >= max_groups):
+            batches.append(current)
+            current = []
+            current_chars = 0
+        current.append(item)
+        current_chars += item_chars
+    if current:
+        batches.append(current)
+    return batches
 
 
 class LocationNormalizer:
@@ -480,7 +524,7 @@ class LocationNormalizer:
         output_dir: Path,
         llm_client: LLMClient,
         concurrency: int = 1,
-        locations_batch_size: int = _LOCATIONS_BATCH_SIZE,
+        locations_batch_size: int = _LOCATION_BATCH_MAX_GROUPS,
         spatial_batch_size: int = _SPATIAL_BATCH_SIZE,
     ):
         self.output_dir = Path(output_dir)
@@ -572,7 +616,16 @@ class LocationNormalizer:
     # ---- Phase 0a ----
 
     async def _run_phase_0a_batches(self, groups):
-        batches = self._split_into_batches(groups, self.locations_batch_size)
+        # 2026-08-21 修复：按 user prompt 字符预算切分（不再按 group 数硬切）
+        # 实测：398 groups + 53K chars user prompt → 拆 2 批避免 10+ min 超时
+        batches = _split_into_batches_by_budget(
+            groups,
+            budget_chars=_LOCATION_PROMPT_BUDGET_CHARS,
+            max_groups=self.locations_batch_size,
+        )
+        logger.info(
+            f"Phase 0a：{len(groups)} groups → {len(batches)} batches（按字符预算）"
+        )
         if not batches:
             return []
         semaphore = asyncio.Semaphore(self.concurrency)
