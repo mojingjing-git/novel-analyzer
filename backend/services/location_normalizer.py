@@ -683,7 +683,11 @@ class LocationNormalizer:
         payload = {
             "schema_version": 1,
             "normalized_at": datetime.now().isoformat(timespec="seconds"),
-            "model": getattr(self.llm_client, "model", "unknown"),
+            "model": (
+                self.llm_client.config.model
+                if hasattr(self.llm_client, "config")
+                else getattr(self.llm_client, "model", "unknown")
+            ),
             "chapter_mtimes_hash": self._compute_chapter_mtimes_hash(),
             "locations": [
                 {
@@ -705,7 +709,11 @@ class LocationNormalizer:
         payload = {
             "schema_version": 1,
             "normalized_at": datetime.now().isoformat(timespec="seconds"),
-            "model": getattr(self.llm_client, "model", "unknown"),
+            "model": (
+                self.llm_client.config.model
+                if hasattr(self.llm_client, "config")
+                else getattr(self.llm_client, "model", "unknown")
+            ),
             "chapter_mtimes_hash": self._compute_chapter_mtimes_hash(),
             "relationships": spatial,
         }
