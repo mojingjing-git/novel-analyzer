@@ -320,3 +320,125 @@ def parse_and_validate_spatial(
             "evidence_chapters": sorted(set(chapters_clean)),
         })
     return valid
+
+
+_CONSOLIDATION_SYSTEM_PROMPT = """你是中文地名归一化审核员。下面是若干地点的 canonical_name 与 aliases 列表。
+请识别哪些组指向**同一个真实地点**（不是同类型，是完全相同的一个地方）。
+
+## 判断规则
+
+- 字面别名通常意味着同一地点的不同写法（如 "宁安县" vs "宁安县城"）
+- 不要合并同类型但不同地方的（如 "宁安县城" 与 "宁安县城天牛坊" 不是同一地点）
+- 不要合并不同朝代/不同世界的同名地点（如两个故事里的"京城"）
+
+## 输出 JSON
+
+{"merges": [["宁安县", "宁安县城"], ["大贞", "大贞王朝"], ...]}
+merges 是字面字符串二元组列表，每个二元组是同一地点的两个 canonical 写法。
+没有需要合并的：{"merges": []}
+"""
+
+
+def build_consolidation_prompt(
+    canonical_list: List[Dict[str, Any]],
+    batch_idx: int,
+    total_batches: int,
+) -> List[Dict[str, str]]:
+    user_lines = [
+        f"## 候选 canonical 列表（batch {batch_idx}/{total_batches}，共 {len(canonical_list)} 个）",
+        "",
+    ]
+    for i, c in enumerate(canonical_list, 1):
+        aliases_str = ", ".join(c["aliases"])
+        user_lines.append(f"[{i}] canonical={c['canonical']}, aliases=[{aliases_str}]")
+    user_lines.append("")
+    user_lines.append("请按 system prompt 规则输出 JSON")
+    return [
+        {"role": "system", "content": _CONSOLIDATION_SYSTEM_PROMPT},
+        {"role": "user", "content": "\n".join(user_lines)},
+    ]
+
+
+def parse_merge_map(llm_response: str, valid_names: set) -> Dict[str, List]:
+    """解析 consolidation LLM 输出，校验每个名字必须在 valid_names 中"""
+    parsed = safe_parse_json(llm_response)
+    if not parsed or not isinstance(parsed, dict):
+        return {"merges": []}
+    raw_merges = parsed.get("merges", [])
+    if not isinstance(raw_merges, list):
+        return {"merges": []}
+
+    valid_merges: List[List[str]] = []
+    for pair in raw_merges:
+        if not isinstance(pair, list) or len(pair) != 2:
+            continue
+        a, b = pair[0], pair[1]
+        if not isinstance(a, str) or not isinstance(b, str):
+            continue
+        if a == b:
+            continue
+        if a not in valid_names or b not in valid_names:
+            logger.warning(f"丢弃幻觉 merge：{pair}（valid_names={len(valid_names)}）")
+            continue
+        valid_merges.append([a, b])
+    return {"merges": valid_merges}
+
+
+def apply_merges(
+    all_canonicals: List[Dict[str, Any]],
+    merge_map: Dict[str, List[List[str]]],
+) -> List[Dict[str, Any]]:
+    """机械应用 merge_map 到 all_canonicals
+
+    对每个 [a, b] 二元组，把 a 的字段合并到 b（aliases 取并集，type/parent 取并集去重计数，
+    description 取最长），最后删除 a。
+    chain merge：A→B + B→C 合并为单条目。
+    """
+    if not merge_map.get("merges"):
+        return all_canonicals
+
+    parent_uf: Dict[str, str] = {}
+    for c in all_canonicals:
+        parent_uf[c["canonical_name"]] = c["canonical_name"]
+
+    def _find(x):
+        while parent_uf[x] != x:
+            parent_uf[x] = parent_uf[parent_uf[x]]
+            x = parent_uf[x]
+        return x
+
+    def _union(a, b):
+        ra, rb = _find(a), _find(b)
+        if ra != rb:
+            ra_cnt = next((c.get("chapter_count", 0) for c in all_canonicals if c["canonical_name"] == ra), 0)
+            rb_cnt = next((c.get("chapter_count", 0) for c in all_canonicals if c["canonical_name"] == rb), 0)
+            if ra_cnt >= rb_cnt:
+                parent_uf[rb] = ra
+            else:
+                parent_uf[ra] = rb
+
+    for pair in merge_map["merges"]:
+        if pair[0] in parent_uf and pair[1] in parent_uf:
+            _union(pair[0], pair[1])
+
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for c in all_canonicals:
+        root = _find(c["canonical_name"])
+        groups.setdefault(root, []).append(c)
+
+    result: List[Dict[str, Any]] = []
+    for root, items in groups.items():
+        if len(items) == 1:
+            result.append(items[0])
+            continue
+        all_aliases = sorted(set(a for it in items for a in it["aliases"]))
+        merged: Dict[str, Any] = {
+            "canonical_name": root,
+            "aliases": all_aliases,
+            "parent": "",
+            "description": max((it["description"] for it in items), key=len, default=""),
+            "chapter_count": max(it.get("chapter_count", 0) for it in items),
+        }
+        result.append(merged)
+    result.sort(key=lambda c: -c.get("chapter_count", 0))
+    return result
