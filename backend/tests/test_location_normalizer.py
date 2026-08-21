@@ -428,7 +428,7 @@ class TestLocationNormalizerRun:
                 {"canonical_name": "宁安县", "aliases": ["宁安县", "宁安县城"], "parent": "大周王朝", "type": "城市", "description": "测试"}
             ]}, ensure_ascii=False),
             json.dumps({"relationships": [
-                {"from": "宁安县", "to": "德胜府", "direction": "东南", "distance_text": "约两三百里", "distance_estimate_km": 130, "relation_type": "相邻", "evidence_chapters": [1, 2, 3]}
+                {"from": "宁安县", "to": "宁安县", "direction": "东南", "distance_text": "约两三百里", "distance_estimate_km": 130, "relation_type": "相邻", "evidence_chapters": [1, 2, 3]}
             ]}, ensure_ascii=False),
         ]
         mock_llm = _make_mock_llm(responses)
@@ -444,6 +444,11 @@ class TestLocationNormalizerRun:
         # 验证落盘
         assert (tmp_path / "output" / "locations_normalized.json").exists()
         assert (tmp_path / "output" / "spatial_relationships_normalized.json").exists()
+        # 验证 spatial 路径真正被走到：白名单仅含 "宁安县"，from/to 都必须命中
+        spatial_data = json.loads((tmp_path / "output" / "spatial_relationships_normalized.json").read_text(encoding="utf-8"))
+        assert len(spatial_data["relationships"]) == 1
+        assert spatial_data["relationships"][0]["from"] == "宁安县"
+        assert spatial_data["relationships"][0]["to"] == "宁安县"
         # 验证 _normalized_ref 加到 chapter_*.json
         for ch in range(1, 4):
             data = json.loads((tmp_path / "output" / f"chapter_{ch}_result.json").read_text(encoding="utf-8"))
