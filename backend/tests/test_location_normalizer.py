@@ -30,3 +30,102 @@ class TestIsSameLocation:
     def test_short_strings_below_min_length(self):
         # 长度 ≤ 1 的字符串走不到 SequenceMatcher 分支，直接返回 False
         assert is_same_location("京", "京") is False  # 长度 1，但 normalize 后也是 1
+
+
+from backend.services.location_normalizer import (
+    aggregate_locations,
+    aggregate_spatial_pairs,
+)
+
+
+class TestAggregateLocations:
+    def test_groups_by_exact_name(self):
+        raw = [
+            {"name": "宁安县", "parent": "大周王朝", "type": "城市", "description": "县城1", "chapter": 1},
+            {"name": "宁安县", "parent": "大周王朝", "type": "城市", "description": "县城2", "chapter": 2},
+            {"name": "居安小阁", "parent": "宁安县", "type": "建筑", "description": "小屋", "chapter": 3},
+        ]
+        groups = aggregate_locations(raw)
+        assert len(groups) == 2
+        by_name = {g["aliases"][0]: g for g in groups}
+        assert by_name["宁安县"]["chapter_count"] == 2
+        assert by_name["居安小阁"]["chapter_count"] == 1
+
+    def test_groups_similar_names_via_sequence_matcher(self):
+        raw = [
+            {"name": "居安小阁", "parent": "宁安县", "type": "建筑", "description": "甲", "chapter": 1},
+            {"name": "居安小阁（主角）", "parent": "宁安县", "type": "住宅", "description": "乙", "chapter": 2},
+        ]
+        groups = aggregate_locations(raw)
+        assert len(groups) == 1
+        assert set(groups[0]["aliases"]) == {"居安小阁", "居安小阁（主角）"}
+
+    def test_aggregates_types_and_parents(self):
+        raw = [
+            {"name": "宁安县", "parent": "大周王朝", "type": "城市", "description": "", "chapter": 1},
+            {"name": "宁安县", "parent": "大贞", "type": "城池", "description": "", "chapter": 2},
+        ]
+        groups = aggregate_locations(raw)
+        assert groups[0]["types"] == {"城市": 1, "城池": 1}
+        assert groups[0]["parents"] == {"大周王朝": 1, "大贞": 1}
+
+    def test_skips_empty_names(self):
+        raw = [
+            {"name": "", "parent": "", "type": "", "description": "", "chapter": 1},
+            {"name": "居安小阁", "parent": "", "type": "建筑", "description": "", "chapter": 2},
+        ]
+        groups = aggregate_locations(raw)
+        assert len(groups) == 1
+
+    def test_sorted_by_chapter_count_desc(self):
+        raw = [
+            {"name": "低频", "parent": "", "type": "城市", "description": "", "chapter": 1},
+            {"name": "高频", "parent": "", "type": "城市", "description": "", "chapter": 1},
+            {"name": "高频", "parent": "", "type": "城市", "description": "", "chapter": 2},
+            {"name": "高频", "parent": "", "type": "城市", "description": "", "chapter": 3},
+        ]
+        groups = aggregate_locations(raw)
+        assert groups[0]["aliases"] == ["高频"]
+        assert groups[1]["aliases"] == ["低频"]
+
+
+class TestAggregateSpatialPairs:
+    def test_groups_same_pair_across_chapters(self):
+        raw = [
+            {"from": "宁安县", "to": "德胜府", "relation": "位于东南方向，约两三百里", "chapter": 1},
+            {"from": "宁安县", "to": "德胜府", "relation": "计缘带陆乘风魂魄飞行约半个时辰可达", "chapter": 2},
+        ]
+        pairs = aggregate_spatial_pairs(raw)
+        assert len(pairs) == 1
+        assert pairs[0]["from"] == "宁安县"
+        assert pairs[0]["to"] == "德胜府"
+        assert len(pairs[0]["relations"]) == 2
+        assert pairs[0]["chapters"] == [1, 2]
+
+    def test_separates_pairs_with_different_endpoints(self):
+        raw = [
+            {"from": "宁安县", "to": "德胜府", "relation": "相邻", "chapter": 1},
+            {"from": "宁安县", "to": "大贞", "relation": "从属", "chapter": 1},
+        ]
+        pairs = aggregate_spatial_pairs(raw)
+        assert len(pairs) == 2
+
+    def test_skips_empty_endpoints(self):
+        raw = [
+            {"from": "", "to": "德胜府", "relation": "相邻", "chapter": 1},
+            {"from": "宁安县", "to": "", "relation": "相邻", "chapter": 1},
+            {"from": "宁安县", "to": "大贞", "relation": "从属", "chapter": 1},
+        ]
+        pairs = aggregate_spatial_pairs(raw)
+        assert len(pairs) == 1
+        assert pairs[0]["to"] == "大贞"
+
+    def test_sorted_by_chapter_count_desc(self):
+        raw = [
+            {"from": "A", "to": "B", "relation": "", "chapter": 1},
+            {"from": "C", "to": "D", "relation": "", "chapter": 1},
+            {"from": "C", "to": "D", "relation": "", "chapter": 2},
+            {"from": "C", "to": "D", "relation": "", "chapter": 3},
+        ]
+        pairs = aggregate_spatial_pairs(raw)
+        assert pairs[0]["from"] == "C"
