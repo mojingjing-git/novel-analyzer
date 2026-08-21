@@ -359,26 +359,66 @@ def deduplicate_foreshadows(
     return catalog
 
 
-def is_same_location(n1: str, n2: str) -> bool:
-    """判断两个地名是否可能指向同一地点。
+# 2026-08-21 修复：对称剥离前后缀修饰符（替换 substring + 后缀白名单）
+# 之前 substring 规则只识别后缀（"宁安县城" 中 extra="城" 从尾部切），
+# 无法识别前缀修饰（"新大唐公司" 中 shorter="大唐公司" 在中间，extra="司" 也从尾部切）。
+# 改为：两端都剥掉已知修饰符后比核心。前缀/后缀对称处理。
+import re as _re
 
-    规则（保守）：
-    1. 归一后任一为空或长度 < 2 -> False（避免单字噪声误伤）
-    2. 归一后相等 -> True
-    3. 归一后较短串（≥4字）是较长串的子串 -> True（含角色/修饰后缀的合并，如 "居安小阁" ⊂ "居安小阁主角"）
-    4. 短名（≤3字）走严格阈值 0.95，避免被前缀同形长名误并（如 "宁安县" 误并入 "宁安县城"）
-    5. 其余按 SequenceMatcher 相似度阈值 0.85 判定
+_PREFIX_MODS = (
+    "新", "老", "旧", "原",         # 短前缀
+    "原址", "旧址",                    # 复合前缀
+)
+_SUFFIX_MODS = (
+    "主角", "身边", "附近", "一带", "境内", "内部",
+    "已废弃",
+    "新址", "原址", "旧址",   # 2026-08-21：与前缀对称，否则"宁安县原址/旧址/新址"漏判
+)
+
+
+def _strip_location_mods(name: str) -> str:
+    """从 name 两端循环剥离软修饰符（角色后缀/状态/方位等）
+
+    循环剥离直到稳定，因为前缀可能连续出现（如"旧原址X" → "原址X" → "X"）。
+    每次 strip 后 len(s) 严格减小，最多 O(|name|) 次，防死循环。
     """
-    from difflib import SequenceMatcher as _SM
+    s = name
+    while True:
+        stripped = False
+        # 前缀（一旦匹配即跳出本轮循环）
+        for p in _PREFIX_MODS:
+            if s.startswith(p) and len(s) > len(p) + 1:
+                s = s[len(p):]
+                stripped = True
+                break
+        if stripped:
+            continue
+        # 后缀
+        for x in _SUFFIX_MODS:
+            if s.endswith(x) and len(s) > len(x) + 1:
+                s = s[:-len(x)]
+                stripped = True
+                break
+        if not stripped:
+            break
+    return s
+
+
+def is_same_location(n1: str, n2: str) -> bool:
+    """判断两个地名是否指向同一地点。
+
+    规则：
+    1. 归一化后任一为空或长度 < 2 → False（避免单字噪声）
+    2. 归一化后完全相等 → True
+    3. 两端剥离已知前后缀修饰符后核心相同 → True（"新大唐公司" vs "大唐公司" → True）
+
+    注：归一化阶段（_normalize_for_dedup）已剥离停用词和标点（含括号）。
+    此处只处理语义修饰词。
+    """
     a = _normalize_for_dedup(n1)
     b = _normalize_for_dedup(n2)
     if not a or not b or len(a) < 2 or len(b) < 2:
         return False
     if a == b:
         return True
-    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
-    if len(shorter) >= 4 and shorter in longer:
-        return True
-    threshold = 0.95 if len(shorter) <= 3 else 0.85
-    ratio = _SM(None, a, b).ratio()
-    return ratio >= threshold
+    return _strip_location_mods(a) == _strip_location_mods(b)

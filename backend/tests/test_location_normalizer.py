@@ -31,6 +31,38 @@ class TestIsSameLocation:
         # 长度 ≤ 1 的字符串走不到 SequenceMatcher 分支，直接返回 False
         assert is_same_location("京", "京") is False  # 长度 1，但 normalize 后也是 1
 
+    # === 2026-08-21 修复新算法：对称剥离前后缀修饰符 ===
+
+    def test_prefix_modifier_merged(self):
+        """前缀软修饰（新/老/旧/原）应识别 → 合并"""
+        assert is_same_location("大唐公司", "新大唐公司") is True
+        assert is_same_location("大唐公司", "老大唐公司") is True
+        assert is_same_location("宁安县", "旧宁安县") is True
+        assert is_same_location("宁安县", "原宁安县") is True
+
+    def test_compound_prefix_merged(self):
+        """复合前缀（原址/旧址）应识别 → 合并"""
+        assert is_same_location("宁安县", "原宁安县原址") is True
+        assert is_same_location("宁安县", "旧宁安县旧址") is True
+
+    def test_no_entity_word_merge(self):
+        """实体词（会议室/顶层）不应合并（v1 substring 规则会误并）"""
+        # 这两个本质不同：一个是公司，一个是公司内的会议室
+        assert is_same_location("大唐公司", "大唐公司会议室") is False
+        # 一个是酒店，一个是酒店顶层
+        assert is_same_location("新罗酒店", "新罗酒店顶层") is False
+
+    def test_chained_prefix_modifier(self):
+        """链式前缀修饰应递归剥离（'旧原宁安县' → '宁安县'）→ 合并"""
+        assert is_same_location("宁安县", "旧原宁安县") is True
+
+    def test_suffix_modifier_merged(self):
+        """后缀软修饰（主角/已废弃等）应识别 → 合并（括号由 normalize 阶段剥离）"""
+        assert is_same_location("宁安县", "宁安县新址") is True   # 审查反馈补的
+        assert is_same_location("居安小阁", "居安小阁已废弃") is True
+        assert is_same_location("宁安县", "宁安县境内") is True
+        assert is_same_location("大唐公司", "大唐公司内部") is True
+
 
 from backend.services.location_normalizer import (
     aggregate_locations,
