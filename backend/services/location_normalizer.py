@@ -15,9 +15,26 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from backend.utils.text_utils import is_same_location
-from backend.utils.json_utils import safe_parse_json
+from backend.utils.json_utils import safe_parse_json, extract_json_from_text
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_llm_dict(llm_response: str) -> Optional[Dict[str, Any]]:
+    """双路径解析 LLM 响应：先直接解析，失败则剥 markdown/前缀再解析
+
+    解决 minimaxi/M2.7 等 LLM 偶尔在 JSON 前后加 markdown ```json``` 块或中文前缀
+    （"好的，以下是结果："）的问题。final_summary 已用同样的双路径策略。
+    """
+    parsed = safe_parse_json(llm_response)
+    if isinstance(parsed, dict):
+        return parsed
+    extracted = extract_json_from_text(llm_response)
+    if extracted:
+        parsed = safe_parse_json(extracted)
+        if isinstance(parsed, dict):
+            return parsed
+    return None
 
 
 def aggregate_locations(raw_locations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -190,7 +207,7 @@ def parse_and_validate_locations(
 
     返回清洗后的 canonical 列表。无效条目被丢弃。
     """
-    parsed = safe_parse_json(llm_response)
+    parsed = _parse_llm_dict(llm_response)
     if not parsed or not isinstance(parsed, dict):
         return []
     raw_locations = parsed.get("locations", [])
@@ -289,7 +306,7 @@ def parse_and_validate_spatial(
     whitelist_names: set,
 ) -> List[Dict[str, Any]]:
     """解析 LLM 输出并校验：from/to 必须字面在白名单中"""
-    parsed = safe_parse_json(llm_response)
+    parsed = _parse_llm_dict(llm_response)
     if not parsed or not isinstance(parsed, dict):
         return []
     raw_rels = parsed.get("relationships", [])
@@ -361,7 +378,7 @@ def build_consolidation_prompt(
 
 def parse_merge_map(llm_response: str, valid_names: set) -> Dict[str, List]:
     """解析 consolidation LLM 输出，校验每个名字必须在 valid_names 中"""
-    parsed = safe_parse_json(llm_response)
+    parsed = _parse_llm_dict(llm_response)
     if not parsed or not isinstance(parsed, dict):
         return {"merges": []}
     raw_merges = parsed.get("merges", [])
@@ -641,7 +658,13 @@ class LocationNormalizer:
                 if not success:
                     logger.error(f"Phase 0a batch {batch_idx} 失败: {error}")
                     return None
-                return parse_and_validate_locations(content, batch)
+                parsed = parse_and_validate_locations(content, batch)
+                if not parsed:
+                    # 解析失败：留痕便于诊断（限长避免日志爆炸）
+                    logger.warning(
+                        f"Phase 0a batch {batch_idx} 解析为空，响应前300字: {content[:300]!r}"
+                    )
+                return parsed
 
         tasks = [_process(i, b) for i, b in enumerate(batches, 1)]
         results = await asyncio.gather(*tasks, return_exceptions=False)
@@ -697,7 +720,12 @@ class LocationNormalizer:
                 if not success:
                     logger.error(f"Phase 0b batch {batch_idx} 失败: {error}")
                     return None
-                return parse_and_validate_spatial(content, whitelist_names)
+                parsed = parse_and_validate_spatial(content, whitelist_names)
+                if not parsed:
+                    logger.warning(
+                        f"Phase 0b batch {batch_idx} 解析为空，响应前300字: {content[:300]!r}"
+                    )
+                return parsed
 
         tasks = [_process(i, b) for i, b in enumerate(batches, 1)]
         results = await asyncio.gather(*tasks, return_exceptions=False)
