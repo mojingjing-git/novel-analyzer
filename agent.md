@@ -666,365 +666,75 @@ npm run build
 
 ## 10. 当前状态
 
-### 10.1 Win11 前端重做已完成主体
-- `main.css` 已重构为 Win11 Fluent 设计系统
-- `AppLayout.vue` 已实现 Win11 风格：48px 标题栏、可折叠侧边栏
-- 所有页面/组件已切换到 `--win-*` 变量
-- 旧的 `sweep.ts`、`ensure-backdrop.mjs` 已删除
+按时间倒序的变更记录。每条目 = 「何时 + 改了啥 + 为啥改」。
 
-### 10.2 已知待修复项
+### 10.1 Win11 前端重做主体（2026-08-16）
+- 2026-08-16 重构 `main.css` 为 Win11 Fluent 设计系统 + AppLayout 标题栏/侧边栏 + 所有页面/组件切换 `--win-*` 变量；删 `sweep.ts`/`ensure-backdrop.mjs`。**原因**：从 macOS 视觉迁移到 Win11。
 
-> 2026-08-18 已修复（详见 10.5）：
-> ~~`ConfirmDialog.vue` 仍有 Win11 规范偏差：~~
-> ~~```css~~
-> ~~.confirm-card { border-radius: 20px; }   /* 应改为 8px */~~
-> ~~.confirm-title { font-size: 17px; }       /* Win11 建议 20px Semibold */~~
-> ~~.confirm-mask { background: rgba(0,0,0,0.3); }  /* 建议 0.4 */~~
-> ~~```~~
+### 10.2 当前已知未修
+- H3 密钥脱敏：用户明确跳过，本地小工具可接受
+- `/analysis/logs` 无鉴权：仅绑 127.0.0.1，单用户桌面加 auth 过度设计
+- llm_client token None 统计失真、style 快照并发边界、阻塞 IO 二次读、端口锁 boot 窗口残余竞态：需精确行定位/深度重构，未泛泛猜改
 
-> 2026-08-20 审计遗留（已知、暂未修，详见 10.6）：
-> - **H3 密钥脱敏/加密**：`config.json` 明文存 `api_key`，`GET /api/settings` 原样返回（用户明确跳过，本地小工具可接受）
-> - **`/analysis/logs` 无鉴权**：仅绑 `127.0.0.1`，桌面本地危害有限，未加守卫
-> - **llm_client token None 统计失真**：异常路径 `usage`/`prompt_tokens_details` 为 None 时计数偏差
-> - **style_analyzer 快照边界**：并发乱序完成时的 `get_kb_snapshot` 子集缓存边界（部分风险）
-> - **阻塞 IO 二次读**：`memory_state._validate_block_size` 恢复时对每个文件同步读两遍
-> - **端口锁 boot 窗口残余竞态**：服务器未起、健康检查必然失败期间的极短窗口仍可能误抢锁
-
-### 10.3 2026-08-17 变更摘要
-- **复检上下文超限保护**：`RECHECK_FULLTEXT_BUDGET_CHARS=150000`、`_plan_recheck_batches()` 按伏笔埋设章砍卷
-- **复检批大小配置化**：`AnalysisConfig.foreshadow_recheck_batch_size`（默认 40），前端 SettingsPage 可调
-- **Token 统计可见性**：每本书分析/总结结束落盘 token_stats.json，新增 `GET /api/books/{book_id}/token_stats`；前端 StatsPage 按书历史卡片、SummaryPage 本次 token 行
-- **桌面端安全**：`desktop.py` 单实例锁（app.lock）+ 关闭确认（events.closing veto + Api.close 确认）
+### 10.3 2026-08-17
+- **复检上下文超限保护**：新增 `RECHECK_FULLTEXT_BUDGET_CHARS=15万` + `_plan_recheck_batches()` 按伏笔埋设章砍前面卷；超限跳过不调 LLM。**原因**：大书全书伏笔复检 prompt 溢出
+- **复检批大小配置化**：`AnalysisConfig.foreshadow_recheck_batch_size`（默认 40）暴露到 SettingsPage。**原因**：让用户调省钱 vs 质量平衡
+- **Token 统计可见性**：每本书落盘 `token_stats.json` + 新增 `GET /api/books/{id}/token_stats` + StatsPage 按书历史卡片。**原因**：之前看不到每本书花了多少 token
+- **桌面端安全**：`desktop.py` 加单实例锁 + 关闭确认 + app.lock。**原因**：防多开、误关丢数据
 - **Prompt 预览增强**：支持指定章节号输入
-- **工程卫生**：`.gitignore` 补 `app.lock`/`1/`/`.bak_*`；`run_desktop.bat` 去硬编码路径改用 py 启动器；`build_frontend.bat` 排除备份目录；回收站清理 13 项备份残留
+- **工程卫生**：`.gitignore` 补 `app.lock`/`1/`/`.bak_*`；`run_desktop.bat` 用 py 启动器；清理 13 项备份残留
 
-### 10.4 2026-08-18 变更摘要
-- **本次窗口会话 token 累计**：分析侧 `AnalysisService.token_stats()`（单例跨书累计，天然会话级）+ 总结侧 `SummaryService.session_token_stats()`（`_session_token_stats` 内存累计器，每次总结任务 finally 累加分类小计与耗时），新增 `GET /api/analysis/token_stats/session`（分析+总结两段）；前端 QueuePage 顶部卡片展示 5 项：输入 / 输出 / 命中缓存 / 命中率（仅分析侧口径：cached ÷ (input+cached)）/ 总消耗（input+cached+output），内存态重启清零
-- **侧边栏宽度**：`AppLayout.vue` `.sidebar` 展开宽度 280px → 186.67px（2/3，10.5 续调为 200px）
-- 新增测试 `test_session_token_stats.py`（3 用例：跨任务累计/空结构/端点结构）
+### 10.4 2026-08-18
+- **本次窗口会话 token 累计**：分析侧 `AnalysisService.token_stats()` 单例跨书累计 + 总结侧 `SummaryService._session_token_stats()` 内存累计；新增 `GET /api/analysis/token_stats/session`；QueuePage 顶部 5 项卡片（输入/输出/命中缓存/命中率/总消耗）；新增 `test_session_token_stats.py`（3 用例）。**原因**：每次重启都清零，看不到跨书累计成本
+- **侧边栏宽度**：280px → 186.67px → 200px（10.5 续调）。**原因**：占空间过大
 
-### 10.5 2026-08-18 GUI Win11 视觉化变更
-
-拆两次 commit 落地：
-
-**commit `645a5f9` style(GUI): 视觉贴近 Win11 Fluent（6 文件 +44/-23）**
-
-| 文件 | 改动 |
-|---|---|
-| `ConfirmDialog.vue` | macOS→Win11 ContentDialog：圆角 20→8px、黑蒙层 30%→浅色背板 `rgba(243,243,243,0.6)` + 8px backdrop-filter、title 17→20px / message 13→14px |
-| `LogConsole.vue` | 深色 `rgba(20,20,24,0.55)`→`var(--win-control-alt)`、硬编码白字全改 token（`--win-text-primary/disabled`）、SF Mono→Cascadia Code |
-| `QueuePage.vue` `.op-btn` | `padding:4px 10px`→`height:32px; padding:0 12px; font-size:13px`（Win11 标准控件高度 32） |
-| `AppLayout.vue` | 侧边栏 186.67px→**200px**（Win11 NavigationView 折中下限，仍维持折叠 48px） |
-| `Icon.vue` | stroke 1.2→1.5，贴近 Segoe Fluent 实线 |
-| `ChapterDetailPanel.vue` `.cd-chapter` | 17px→18px，对齐 Win11 Subtitle 层级 |
-
-**commit `d32c6ed` refactor(GUI): SettingsPage 收紧 button 修饰 + 去重 CSS（2 文件 +29/-22）**
-
-| 文件 | 改动 |
-|---|---|
-| `BookSelector.vue` | 删冗余 `.btn-compact`（直接用 `.glass-button`） |
-| `SettingsPage.vue` | 抽 3 个按钮修饰类：`.btn-sm`（覆盖基类 padding 0 16→12）/ `.btn-lg`（主按钮 0 20） / `.btn-danger-link`（文字红）；替换 4 处 inline padding/font-size/style；删 b6ed8af 留下的 2 处 `.category-chip` 与 2 处 `.model-option` 重复定义 |
-
-**验证**：vue-tsc 0 错；变更面 8 文件 +73/-45；属于纯前端视觉/CSS 调整，零业务逻辑变动。
-
-### 10.5.1 2026-08-18 GUI Win11 审查整改（A 档）
-
-用户提供了 11 项 Win11 规范审查清单，经全文 grep 静态核对，**5 真 6 假**：
-
-- ✅ 采纳（5）：背景 mica 偏蓝 / 未遵循 4px 网格 / 表格内边距不规范 / 状态标签用 pill 不规范 / 统计条突兀
-- ❌ 不采纳（6）：文本层级混乱（token 已 100/60/36，符合规范）/ 分割线过度（已是 #E5E5E5 极淡）/ 行高不足（已 40px）/ 表格边框过重（保留行分割线利于多列对齐）/ 下拉框样式（已 32px/4px/8px 标准）/ 文本透明度硬编码（grep 后 **0 处**硬编码）
-
-**commit `f6607a0` style(GUI): A 档 Win11 审查整改（12 文件 +81/-35）**
-
-| 类别 | 改动 |
-|---|---|
-| 背景去蓝 | `main.css --win-mica` 4 处 `rgba(0,103,192,.06~.10)` → `rgba(0,0,0,.03~.06)`（暗色主题同步改白色透明） |
-| 4px 网格归一 | 11 处非合规 padding/margin：`.glass-stat` 14→16、`.glass-table th/td` 10→12、`.cd-report` 18→16、`.cv-card` 10→12、`.arc-item/.rel-item` 10→12、`.summary-progress` 14→16、`.seg` 2→4、`.seg button` 6→8、`.cv-list/.cv-item` 2~3→4、`.ws-row` 6→8、`.confirm-message` 10→12、`.cd-mode` 2→4、`.total-badge` 3→4、`.log-row` 3→4 等 |
-| 表格交互 | 补 `.glass-table tbody tr.is-selected`（`--win-accent-soft` + 500 字重） |
-| 状态标签 | 补 `.status-tag`（4px 圆角矩形 + `--win-control-alt` 背景），`TimelinePage.vue` 伏笔分类 tag 从 `glass-badge` 切到该类 |
-| 统计条软化 | `QueuePage.vue .total-card` 去掉 `.glass-card` 强对比（白底+边框+阴影），改 `--win-control-alt` 背景 + 4px 圆角 + 无边框无阴影（融入主背景） |
-
-**验证**：vue-tsc 0 错；剩余 6 处非 4 倍数（`.log-icon` 18px、滚动条 10px、行内 badge 2px、inline-code 1px、md-table 6px 等）属于控件内嵌细节级合理例外，不影响主结构；mica 偏冷蓝调已彻底清除（`grep rgba(0, 103, 192)` 仅剩 `--win-accent-soft` / `--win-info-bg` 两个 accent 语义色 token，与 mica 背景无关）。
-
-### 10.5.2 2026-08-18 动效补全（C 档）
-
-按"先审核哪些是真的"模式，先盘点 main.css 现状（3 档时长 + Fluent 样条 + 弹窗/页面过渡已就绪）再落地。
-
-**commit `dcb3b30` feat(motion): 给所有可交互部件加 Win11 动效（8 文件 +183/-10）**
-
-| 类别 | 改动 |
-|---|---|
-| Ripple 涟漪 | 新增 `composables/useRipple.ts` 全局事件代理（mousedown 注入 `.ripple` span，600ms 扩散到 scale 2.6 + 透明）；`main.css` 加 `.ripple` keyframes；所有 `.glass-button` / `.glass-pill` / `.glass-button-primary` / `.glass-button-danger` / `.op-btn` / `.nav-item` 自动获得 ripple |
-| 卡片 hover 微上浮 | `.glass-card.is-hoverable:hover` translateY(-1px) + shadow-card → shadow-tooltip；`.cv-card`、`.arc-item`、`.rel-item` hover 背景+translateX(2px) |
-| 按钮按下反击 | glass-button / -primary / -danger / -pill 加 `transform: scale(0.97)` 80ms ease |
-| 列表 stagger | 补 `.list-enter > *` nth-child(1~10) 错开 30ms（translateY 4px→0 + opacity 0→1）；AppLayout nav-list + WorkspacePage 归档列表启用 |
-| IconButton hover | `.glass-button:hover svg` / `.glass-pill:hover svg` scale(1.08) 150ms |
-| 错误 pulse | `.input-invalid` 加 `input-error-pulse` 600ms（红色 ring 外扩 4px → 收回） |
-| 数字 tabular-nums | QueuePage 5 个 session stats 加 `.count-up` class（font-variant-numeric: tabular-nums），数字不抖动 |
-| Toggle 入场柔化 | `.switch input:checked + .slider::before` 加 `switch-knob-enter` 180ms 弹簧样条 cubic-bezier(0.3, 1.4, 0.7, 1) |
-| 进度条缓动 | `.glass-progress-fill` 改 cubic-bezier(0.22, 0.61, 0.36, 1) 600ms；新增 `.is-indeterminate` 摆动动画备用 |
-| 状态标签 hover | `.glass-badge` / `.status-tag` 加 `background: --win-control-hover` hover 反馈 |
-
-**验证**：vue-tsc 0 错；7 改文件 + 1 新增 `useRipple.ts`；纯 CSS/事件代理层，不动业务逻辑。
-
-### 10.5.3 2026-08-18 sidebar 横向滚动条 bug 修复
-
-**commit `6819b6e` fix(GUI): sidebar 出现错误横向滚动条（1 文件 +1/-0）**
-
-- **根因**：`.nav-item.is-active::before` 用 `left: -8px` 故意溢出贴 sidebar 左边缘（Win11 Selection Indicator 设计）；但 `.nav-list` 只声明 `overflow-y: auto`，flex 容器下浏览器会把 `overflow-x` 默认从 `visible` 升为 `auto`，触发横向滚动条
-- **修复**：`.nav-list` 显式加 `overflow-x: hidden`，保留 ::before 的设计意图不变
-- 用户实测反馈后修：是「GUI 改动后实测发现的新 bug」，而非静态审核能发现的问题
-
-### 10.5.4 2026-08-18 删除 TokenBadge 组件
-
-**commit `7e58091` refactor(GUI): 删除 TokenBadge 组件（2 文件 -90 行）**
-
-- **背景**：分析队列页面左侧曾有 4 个彩色统计（`32.4k Tokens` / `入 22.8k` / `出 9,607` / `章节: 32.4k`），是开始分析后忘记删除的残留 UI
-- **删除范围**：
-  - `QueuePage.vue` 第 8 行 import + 第 301 行 `<TokenBadge v-if="...">` 模板
-  - 删除 `components/TokenBadge.vue` 整个文件（80 行）
-  - 简化 total-card 外层多余的 nested flex div
-- **保留**：右侧 5 项 `total-card`（输入/输出/命中缓存/命中率/总消耗，已加 `.count-up` 修饰类），这是 8.18 session token 累计的核心展示
-- **结果**：左侧 4 个彩色统计彻底消失，UI 更克制
-
-### 10.5.5 2026-08-18 GUI 多处微调（用户本地编辑器）
-
-**commit `642fb90` style(GUI): 多处微调（4 文件 +78/-41）**
-
-- `AppLayout.vue`: `.nav-list` `overflow-x: hidden` → `clip`（不创建滚动容器）；`scrollbar-width: thin` → `none` + `::-webkit-scrollbar { display: none }`（Win11 NavigationView 同款：内容超高时滚轮可滚、不显示滚动条，避免 17px 滚动槽常驻）
-- `useRipple.ts`: ripple 关键帧 600ms → 800ms（动画更显眼）
-- `main.css`: `--win-duration-fast` 150 → 200ms（更克制的动效）
-- `main.ts`: 加 `prefers-reduced-motion: reduce` 检测并给 `<html>` 加 `.no-reduce` 类，让应用内动效跳过系统 reduce 压平
-
-### 10.5.6 2026-08-18 数字 count-up 动画
-
-**commit `e6336b3` feat(GUI): 数字 count-up 动画（1 新增 + 1 改 = 2 文件）**
-
-- **新增** `components/CountUp.vue`：接收 `:value`（number）+ `:format`（(n: number) => string）；`watch` 触发时启动 `requestAnimationFrame` 缓动（ease-out cubic：`1 - (1-t)^3`），默认 600ms
-- **实现要点**：
-  - 单 timer / 组件挂载期间动态启动/取消，避免 RAF 泄漏
-  - 差值 < 0.01 不动画（避免抖动）
-  - `onMounted` 立即显示当前值（避免首屏空白）
-  - tabular-nums 来自 `.count-up` class（main.css 已定义），数字宽度不抖动
-- **接入** `QueuePage.vue` 5 个 session stats 切换为 `<CountUp>`：
-  - 输入/输出/命中缓存/总消耗 → `fmt`（K/M 缩写）
-  - 命中率 → `fmtPercent`（保留 1 位小数%）
-- **效果**：5 秒轮询刷新时，5 个数字从旧值缓动到新值（600ms），视觉上能"看见"token 累积过程
+### 10.5 2026-08-18 GUI Win11 一系列调整
+- `645a5f9` style(GUI)：6 文件 +44/-23，ConfirmDialog/LogConsole/QueuePage/AppLayout/Icon/ChapterDetailPanel 全贴近 Win11 Fluent（圆角/字号/字体/控件高度）。**原因**：与新设计系统对齐
+- `d32c6ed` refactor(GUI)：2 文件 +29/-22，SettingsPage 抽 `.btn-sm`/`.btn-lg`/`.btn-danger-link` 按钮修饰类 + 去重冗余 CSS。**原因**：inline style 散落不一致
+- `f6607a0` A 档审查整改：12 文件 +81/-35，背景 mica 去蓝 + 11 处 4px 网格归一 + 表格交互 + 状态标签 + 统计条软化。**原因**：用户给 11 项审查清单，5 真 6 假，按真问题修
+- `dcb3b30` 动效补全：8 文件 +183/-10，新增 `useRipple.ts` 全局 ripple + 卡片 hover/按钮按下/列表 stagger/IconButton hover/错误 pulse/数字 tabular-nums/Toggle 弹簧/进度条缓动/状态标签 hover。**原因**：可交互部件补 Fluent 动效
+- `6819b6e` sidebar 横向滚动条：`.nav-list` 加 `overflow-x: hidden`。**原因**：实测发现 ::before 溢出触发浏览器自动升级 overflow-x
+- `7e58091` 删除 TokenBadge：删组件文件 + QueuePage 引用（-90 行）。**原因**：左侧 4 个彩色统计是开始分析后忘记删的残留
+- `642fb90` 多处微调：sidebar 改 `clip` 不创建滚动容器 + ripple 600→800ms + `--win-duration-fast` 150→200ms + `prefers-reduced-motion` 检测。**原因**：用户本地编辑器顺手改
+- `e6336b3` CountUp 动画：新增 `components/CountUp.vue`，QueuePage 5 个 session stats 接入（K/M 缩写 + 1 位小数%）。**原因**：5s 轮询数字跳变不直观，加缓动
 
 ### 10.6 2026-08-20 后端加固（审计 bug 修复）
+- 全量只读审计 24 确认/4 部分/1 误报，落地除 H3 外可实锤修复：
+  - H1 事件循环冻结：`_auto_scan_workspace` 同步 → 改 `app.py` lifespan `asyncio.to_thread`
+  - H2a 章节结果非原子写 → 改 `safe_save_json`
+  - H2b `os._exit(0)` 前加 `logging.shutdown()`
+  - crash.log 不轮转 → `RotatingFileHandler(10MB, 3)`
+  - 端口锁竞态 → `O_CREAT|O_EXCL` 原子抢锁
+  - config 非原子写 → `safe_save_json`
+  - `delete_book` 顺序改为「先回收站成功再改队列」
+- **原因**：后端稳定性审计
+- **未动**：H3 密钥/端口 boot 窗口/token None/style 快照/阻塞 IO 二次读（详见 10.2）
 
-> 背景：对后端做了一次全量只读审计（24 确认 / 4 部分 / 1 误报），本次落地除 H3 密钥脱敏（用户明确跳过）外的可实锤修复。
-> 备份：`F:\AI\小说分析器\.bak_8.20_fixes\`（6 文件，属已 gitignore 的 `.bak_*` 范围，不入库）。
+### 10.7 2026-08-21 角色关系图重构
+- 后端：`viz_service.graph_data()` + `routes_viz.py` 加 5 个 query 参数（`chapter_start`/`chapter_end`/`min_edge_weight`/`max_nodes`/`min_node_count`），返回加 `total_characters`/`total_edges`/`filtered`/`chapter_range`
+- 前端：`package.json` 加 `echarts` 按需引入；`client.ts` 新增 `GraphNode`/`GraphEdge` 类型 + `getGraph()` params；`GraphPage.vue` 整页重写（ECharts force 力导向 替代环形 SVG，支持缩放拖拽/邻接高亮/标签避让/节点大小映射/社区四色/章节范围 + Top-N + 边权阈值）
+- **原因**：原环形 SVG 不支持缩放、节点多时挤成一团
 
-- **H1 事件循环冻结**：`queue_service.py` 的 `AnalysisService.__init__` 不再同步调 `_auto_scan_workspace()`；改为 `app.py` 的 lifespan 启动期 `asyncio.to_thread` 跑。消除首个请求在事件循环内同步扫描（含 `ex.map` 阻塞）导致的 UI 卡死；顺带修复「扫描异常冒泡成首个请求 500」的异常泄露
-- **H2a 章节结果非原子写**：`memory_state.py` `_write_json_file`（每章结果落盘）由 `open('w')` 截断写改为复用已导入的 `safe_save_json`（临时文件 + rename 原子替换），与 rolling/failed 标记一致，写一半被杀不再留半截 `chapter_N_result.json`
-- **H2b 优雅退出**：`desktop.py` 在 `os._exit(0)` 前加 `logging.shutdown()`，窗口关闭时刷盘所有 handler（含在途日志/落盘）
-- **crash.log 不轮转**：`desktop.py` 的 crash 诊断 `FileHandler` 改为 `RotatingFileHandler(maxBytes=10MB, backupCount=3)`，与 `analyzer.log` 同策略（此前实测 45MB 不切割）
-- **端口锁竞态**：`desktop.py` 单实例锁改用 `os.open(O_CREAT|O_EXCL)` 原子抢锁、抢到即写端口；竞态窗口从「服务器就绪前数秒」缩到微秒级；服务器启动超时则清锁再退（残余 boot 窗口未根除）
-- **config 非原子写**：`settings.py` 的 `ConfigManager.save` 由 `open('w')` + `json.dump` 改为 `safe_save_json`，崩溃不再破坏 `config.json`
-- **delete_book 顺序**：`routes_analysis.py` 的 `delete_book` 改为「先 `delete_novel_to_trash` 移回收站成功、再 `remove_item` 改队列」，杜绝「队列已删但磁盘未删」的状态不一致
+### 10.8 2026-08-21 graph bug 修复（chapter_range 锁死 + 图表白屏）
+- **`chapter_range 锁死 [1,1]`**：后端 `chapter_min/max` 从全集算而非过滤后；前端用 `initialized=ref(false)` flag 替代 `[1,1]===[1,1]` 哨兵。**原因**：哨兵判首次导致用户手动输入 [1,1] 被覆盖
+- **图表白屏**：抽出 `initChart()` 幂等函数；`renderChart()` 第一行 `initChart()`；`loadData()` 赋值后 `await nextTick()`；`onMounted` 保留空钩子。**原因**：`onMounted` 时 ref 还没挂载（条件 v-else 分支），`if (chartContainer.value)` 永远 false
 
-**验证**：`python -m py_compile` 对 6 个改动文件全部通过（未跑 pytest / 运行期 import，依赖不在沙箱 venv）。
+### 10.9 2026-08-21 地点 + 空间关系归一化（Phase 0）
+- 新增 `LocationNormalizer`；`FinalSummaryRunner.run()` 最前面插 4 子阶段（0a-batches → 0a-consol → 0b-batches → 0b-dedupe）；输出 `output/locations_normalized.json` + `output/spatial_relationships_normalized.json`；每章 `chapter_*.json` 加 `_normalized_ref` 字段
+- **原因**：LLM 生成的 `locations.parent` 有 8 种值、`type` 有 9 种值、`spatial_relationships.relation` 是自由文本散文，地图渲染节点分散/无法过滤
 
-**有意未动**（说明而非偷懒，详见 10.2）：
-- H3 密钥脱敏 / 加密：用户明确跳过，本地小工具明文存 config 合理
-- `/analysis/logs` 无鉴权：仅绑 127.0.0.1，单用户桌面应用加 fake auth 属过度设计
-- 端口竞态残余 boot 窗口、token None 统计、style 快照并发、阻塞 IO 二次读：需精确行定位或深度重构，未泛泛猜改
+### 10.10 2026-08-23 归一化解耦 + 砍掉 Phase 0a consolidation
+- **改动 1 `93e1494`** 归一化从总结序列移除：`final_summary.py` 删前置检查；`viz_service.map_data()` 强制依赖归一化（无归一化返回 `needs_normalization=true`）；`MapPage.vue` 拦截展示归一化面板。**原因**：归一化失败/卡死会让"分析已完成 → 总结不能跑"成为最差体验
+- **改动 2 `2d0d621`** 砍掉 Phase 0a consolidation：删 `_CONSOL_BATCH_SIZE`/`_CONSOLIDATION_SYSTEM_PROMPT`/`build_consolidation_prompt`/`parse_merge_map`/`apply_merges`/`_run_phase_0a_consolidate` 及对应测试（11 个）；174 测试通过。**原因**：跨 batch consolidation 单批串行撞 630s 硬超时，前 5 批结果白做
+- **改动 3 `eb80654`** `run_desktop.bat` UTF-8 cmd 修复：所有 `rem 注释` 行改 ASCII；优先用 `.venv\Scripts\python.exe`。**原因**：`chcp 65001` 下 `rem` 行带中文被 cmd 误识别
+- **当前归一化架构**：MapPage "运行归一化" CTA → `LocationNormalizer.run()`（独立进程，3 子阶段：0a-batches → 0b-batches → 0b-dedupe）→ 落盘 → MapPage 读；viz_service 检测 `_normalized_ref` 缺失则 `needs_normalization=true`
 
-### 10.8 2026-08-21 角色关系图重构
-
-> 备份：`.bak_8.21_graph/`（viz_service.py, routes_viz.py, client.ts, GraphPage.vue, package.json）
-
-**后端**：
-- `viz_service.py` `graph_data()` 新增 5 个参数：`chapter_start`、`chapter_end`（章节范围过滤）、`min_edge_weight`（边权阈值）、`max_nodes`（Top-N 截断）、`min_node_count`（节点出场次数阈值）。返回结构新增 `total_characters`/`total_edges`/`filtered`/`chapter_range` 字段
-- `routes_viz.py` `GET /api/viz/graph/{book_id}` 新增 5 个 query 参数（`chapter_start`/`chapter_end`/`min_edge_weight`/`max_nodes`/`min_node_count`），使用 `Optional[int]` + `Query()` 风格
-
-**前端**：
-- `package.json` 新增 `echarts` 依赖（按需引入 `echarts/core` + `GraphChart` + `TooltipComponent` + `DataZoomComponent` + `LegendComponent` + `SVGRenderer`）
-- `client.ts` `getGraph()` 新增可选 params 参数 + query 字符串构建；新增 `GraphNode`/`GraphEdge` interface 并 export
-- `GraphPage.vue` 整页重写：ECharts force 力导向替代环形 SVG，支持缩放拖拽、邻接高亮、标签避让、节点大小按 event_count 映射、社区四色分桶、右侧关联角色面板、章节范围输入 + Top-N + 边权阈值控制
-
-**验证**：
-- vue-tsc 类型检查通过（EXIT:0）
-- py_compile viz_service.py + routes_viz.py 通过
-- vite build 因 WorkBuddy safe-delete hook 拦截 dist 清理失败（OS 层面，与代码无关）
-
-**有意未动**：`backend/utils/character_graph.py`（戴森球独立 HTML 导出）、`backend/utils/aggregate_utils.py`
-
-### 10.9 2026-08-21 graph bug 修复（chapter_range 锁死 [1,1]）
-
-**症状**：首次选择书目后，"章节范围"输入框永远显示 `1 - 1`，无法调整。
-
-**根因链**：
-1. 前端初始化 `chapterRangeSelected = [1, 1]`
-2. `loadData()` 携带 `chapter_start=1, chapter_end=1` 调后端
-3. 后端 `graph_data()` 先做章节过滤（line 112-115），再从过滤后的 `results` 计算 `chapter_min/max`（line 118-120）→ 返回 `{min:1, max:1}`
-4. 前端用 `[1,1] === [1,1]` 哨兵判首次，把 `chapterRangeSelected` 重置为后端返回的 `[1,1]`
-5. 永远锁死；UI 上 `chapterRange.value={min:1,max:1}` 让两个输入框也无法超出 [1,1]
-
-**修复**：
-- **后端 `viz_service.py`**：抽出聚合逻辑到 `_aggregate_chars_edges(results)`；`chapter_min/max` 与 `total_characters/total_edges` 都从**全集**计算（plan §2.1 注："过滤前记录"）；过滤后再跑一次聚合拿过滤后的数据
-- **前端 `GraphPage.vue`**：用独立的 `initialized = ref(false)` flag 替代 `[1,1] === [1,1]` 哨兵，避免用户手动输入 `[1,1]` 时被误覆盖回全章
-
-**验证**：py_compile OK；vue-tsc 0 错；vite build 8.45s 通过；dist 同步到共享盘。
-
-### 10.10 2026-08-21 graph bug 修复（图表白屏）
-
-**症状**：选书 → 数据加载完成（`nodes.length > 0`）→ 图表容器（560px 高度）依然空白，没有任何节点/边。
-
-**根因**：`plan §3.3.3` 的 `onMounted` 把 `echarts.init()` 放在 `if (chartContainer.value)` 守卫里：
-```typescript
-onMounted(() => {
-  if (chartContainer.value) {       // ← 这里永远 false
-    chart = echarts.init(chartContainer.value, ...)
-  }
-})
-```
-但 `<div ref="chartContainer">` 在模板的最后一个 `v-else` 分支里：
-```vue
-<div v-if="!bookId">请选择书目</div>
-<div v-else-if="loading && nodes.length === 0">加载中...</div>
-<div v-else-if="nodes.length === 0">暂无数据</div>
-<div v-else><div ref="chartContainer"></div></div>   ← 组件 mount 时不渲染
-```
-onMounted 触发时 `!bookId` 为真（首屏 `bookId=''`），第一个 `v-if` 命中，**`chartContainer` ref 尚未挂载**，`chartContainer.value` 为 `undefined`，`if` 失败 → `chart` 永远 null。
-
-之后 `renderChart()` 第一行 `if (!chart || nodes.value.length === 0) return` 早退，**图表从未初始化**。
-
-**修复**：
-- 抽出 `initChart()` 辅助函数（幂等：`if (chart || !chartContainer.value) return`）
-- `renderChart()` 第一行改为 `initChart(); if (!chart) return`
-- `loadData()` 在赋值 `nodes.value` 之后 `await nextTick()`，等 v-else 分支渲染、ref 挂载后再调 `renderChart()`
-- `onMounted` 保留为空钩子（注释说明 init 已推迟到 renderChart）
-
-**未动原则**：plan §3.3.3 的 chart.on('click') / resize 监听逻辑原样搬到 initChart。
-
-**验证**：vue-tsc 0 错；vite build 7.02s 通过（dist hash 从 `T8WHxJuJ` 变 `B_KQHSDt`）；dist 同步并清理 6 个 orphan 文件（约 1.7 MB）。
-
-### 10.11 2026-08-21 地点 + 空间关系归一化（Phase 0，初版）
-
-**症状**：`MapPage.vue` 渲染树形布局时节点分散、parent 跳转、type 颜色不一致；spatial_relationships 无法按方向/距离过滤。
-
-**根因**：LLM 生成 `chapter_*.json` 时 `locations.parent` 多达 8 种不同值（实测 130/889 地点）、`type` 多达 9 种不同值（143/889 地点）；`spatial_relationships.relation` 是自由文本散文（54 对边有多重不一致描述）。
-
-**初版修复**（spec: `docs/superpowers/specs/2026-08-21-location-spatial-normalization-design.md`，plan: `docs/superpowers/plans/2026-08-21-location-spatial-normalization.md`）：
-- 新增 `LocationNormalizer`（`backend/services/location_normalizer.py`）
-- 在 `FinalSummaryRunner.run()` 最前面插入 4 子阶段流水线（0a-batches → 0a-consol → 0b-batches → 0b-dedupe）
-- 输出 `output/locations_normalized.json` + `output/spatial_relationships_normalized.json`，非破坏性
-- 每章 `chapter_*.json` 顶部加 `_normalized_ref` 字段，`viz_service.map_data()` 检测该字段决定读归一化数据
-- 复用 `summary_model/summary_concurrency/summary_timeout/summary_thinking_mode` 配置，无 UI 改动
-- 大书（千万字）通过 1000 group/batch + 2000 canonical/consol-batch 拆分避免 context 溢出
-
-**后续演进见 10.13**：2026-08-23 归一化从最终总结中解耦，并砍掉 Phase 0a 跨 batch consolidation。
-
-### 10.13 2026-08-23 归一化解耦 + 砍掉 Phase 0a consolidation
-
-> 背景：用户用《韩娱之光影交错》512 groups / 70K 字符跑了 5 批 Phase 0a，全部成功（json_repair 修复正常），但 Phase 0a 跨 batch consolidation 单批串行撞 630s 硬超时，让前 5 批结果白做；HTTP 429 也出现过一次（22:07）。本次彻底重设计。
-
-#### 改动 1：归一化从最终总结序列移除（commit `93e1494`）
-
-**症状**：归一化强卡在总结流程前，归一化失败/卡死会让"分析已完成 → 总结不能跑"成为最差体验（用户想跳过总结只看地图都不行）。
-
-**修复**：
-- `final_summary.py` 删掉归一化前置检查（不再强制要求 `locations_normalized.json` / `spatial_relationships_normalized.json` 存在）；遗留的 `output_subdir` 局部变量清理
-- `viz_service.map_data()` 改为强制依赖归一化：检测到 chapter_*.json 缺 `_normalized_ref` 则返回 `{nodes: [], edges: [], needs_normalization: true, missing: 'locations'|'spatial'}`，不再回退到 raw locations
-- `MapPage.vue` 检测 `needs_normalization` 拦截展示归一化面板（含"运行归一化"CTA）
-- 删除一个相关旧测试（`test_runs_all_four_phases_and_writes_outputs` → `test_runs_all_phases_and_writes_outputs`）
-- 验证：后端 185 测试通过，前端 build 通过
-
-#### 改动 2：Phase 0a consolidation 直接砍掉（commit `2d0d621`）
-
-**症状**：跨 batch consolidation 单批串行，遇 630s 硬超时整批白做。
-
-**修复**：
-- `LocationNormalizer.run()` 跳过 `_run_phase_0a_consolidate`，直接用 `_run_phase_0a_batches` 输出作为 `final_locations`
-- 删除 `_CONSOL_BATCH_SIZE` 常量、`_CONSOLIDATION_SYSTEM_PROMPT` 字符串、`build_consolidation_prompt()` / `parse_merge_map()` / `apply_merges()` 三个 helper 函数、`_run_phase_0a_consolidate()` 方法
-- 删除测试 `TestBuildConsolidationPrompt` / `TestParseMergeMap` / `TestApplyMerges`（共 11 个用例）
-- 175 → 174 测试通过
-- 现在的 Phase 0 流程：**3 子阶段**（0a-batches → 0b-batches → 0b-dedupe）
-- **代价**：理论上"宁安县"和"宁安县城"分到不同 batch 时不会合并；实测极少发生（每个 batch 已按字面相似度预聚合）
-
-#### 改动 3：桌面启动器 UTF-8 cmd 修复（commit `eb80654`）
-
-**症状**：`run_desktop.bat` 在 `chcp 65001` 下 `rem` 行带中文会被 cmd 解析器误识别，导致启动顺序异常。
-
-**修复**：把所有 `rem 注释` 行改为 ASCII 英文；保留 `chcp 65001` 不变；优先使用 `.venv\Scripts\python.exe`。
-
-#### 当前归一化架构（2026-08-23 起）
-
-```
-触发：MapPage "运行归一化" CTA / POST /api/viz/locations/normalize
-  ↓
-LocationNormalizer.run()（独立进程，FinalSummaryRunner 不再调用）
-  ├─ Phase 0a-batches：locations 切片（_LOCATION_PROMPT_BUDGET_CHARS=18K） + 并发
-  ├─ Phase 0b-batches：spatial 切片 + canonical 白名单 + 并发
-  └─ Phase 0b-dedupe：机械去重同 (from, to) 对
-  ↓
-output/locations_normalized.json + spatial_relationships_normalized.json
-chapter_*.json 顶部加 _normalized_ref + _normalized_spatial_ref
-  ↓
-MapPage 直接读；viz_service.map_data() 检测 _normalized_ref 缺失则 needs_normalization=true
-```
-
-### 10.14 2026-08-23 全局 LLM 并发 Sem + 风格并行
-
-> 用户 API 上限从 4 到 20 不等（按厂商而异），之前 final_summary 的并发模型分散（阶段 1 一个 Sem、阶段 2 一个 Sem、阶段 3/4 无 Sem），风格提取用独立 LLMClient 完全不受限。本次改造统一为全局 Sem，硬上限 = `self.concurrency`。
-
-#### 改动（commit `73e998c`）
-
-**核心**：
-- `FinalSummaryRunner.__init__` 新增 `self._llm_sem = asyncio.Semaphore(self.concurrency)` + in-flight 计数器（`_inflight_count` / `_peak_inflight`）
-- 新增辅助方法 `_acquire_llm_slot()` / `_release_llm_slot()`，同时记录峰值
-- 4 个 `_call_llm_*`（summary / reconciliation / recheck / final）内部统一包 `async with self._llm_sem:`
-- `_run_style_extraction` 也包 Sem（让风格提取的 LLM 调用也走同一上限）
-
-**阶段 1 批内拆分**：
-- 原来：`process_batch_collect` 用一个局部 `asyncio.Semaphore`，每次 acquire 抱两次 LLM 调用（summary + reconciliation），checkpoint IO 也占用 Sem 槽
-- 现在：去掉局部 Sem，每次 LLM 调用独立 acquire。summary 与 reconciliation 各自占槽，checkpoint IO 不再抱死槽位
-
-**风格提取并行**：
-- `run()` 阶段 1 启动时立即 `style_task = asyncio.create_task(self._run_style_extraction())`
-- 阶段 2 完成后 `await style_task` 收集结果
-- 风格仅需 `blocks_dir`、与阶段 1/2 完全无数据依赖，自然抢同一 Sem 槽位
-- 进度事件 `phase=style` 改为按 `if not style_task.done()` 条件 emit：若风格已先完成（被阶段 1 让出槽位），不再 emit "正在提取"（避免 UI 误导）
-
-**生产可观测**：
-- `run()` 末尾日志：`final_summary 完成：peak in-flight = X / concurrency = N`
-- 超限：`logger.error(f"BUG：peak in-flight {self._peak_inflight} 超 concurrency {self.concurrency}！")`
-- 用户跑完直接看 log 数字确认未撞 API 上限
-
-#### 通用性保证
-
-- **无任何硬编码并发数**：Sem 容量直接读 `self.concurrency = max(1, concurrency if not None else config.analysis.summary_concurrency)`，用户配 4 / 9 / 20 / 任意值都生效
-- **测试覆盖**：`test_global_llm_sem.py` parametrize `concurrency=3/9` 验证 peak ≤ 配置值；同时验证 Sem 实例在 4 阶段 + 风格中复用同一个（不是各阶段新建）
-
-#### 性能影响
-
-- 阶段 1：每个 batch 的 summary 与 reconciliation 现在可交错（不同 batch 的 summary/recon 可同时进行），批内并发利用率提升
-- 风格提取（30-60s）：从"阶段 4 之前串行"改为"阶段 1 启动时并行"，总时长缩短 30-60s
-- 4 阶段总在飞 LLM 峰值 = `self.concurrency`（硬上限，与 API 限额一致）
-
-#### 当前并发架构
-
-```
-FinalSummaryRunner.run()
-  │
-  ├─ 启动: style_task = create_task(_run_style_extraction())   ← 风格并行启动
-  │
-  ├─ 阶段 1: 卷摘要 + 伏笔调和（每批 2 次 LLM，各走 self._llm_sem）
-  │    async with self._llm_sem: summary_call
-  │    async with self._llm_sem: recon_call
-  │
-  ├─ 阶段 2: 全书伏笔复检（每子批 1 次 LLM）
-  │    async with self._llm_sem: recheck_call
-  │
-  ├─ await style_task   ← 阶段 2 完成后收结果
-  │
-  └─ 阶段 4: 最终报告（1 次 LLM）
-       async with self._llm_sem: final_call
-       
-任意时刻总 in-flight ≤ self.concurrency
-```
+### 10.11 2026-08-23 全局 LLM 并发 Sem + 风格并行
+- `73e998c` `FinalSummaryRunner.__init__` 新增 `self._llm_sem = asyncio.Semaphore(self.concurrency)` + in-flight 计数器；4 个 `_call_llm_*`（summary/reconciliation/recheck/final）+ `_run_style_extraction` 统一包 `_acquire_llm_slot`/`_release_llm_slot`；阶段 1 批内 summary/reconciliation 各自独立 acquire；`run()` 阶段 1 启动时 `create_task(style_task)` 并行；末尾日志 `peak in-flight = X / concurrency = N`
+- 新增 `test_global_llm_sem.py`（3 用例，parametrize concurrency=3/9）
+- **原因**：用户 API 上限 4~20 不等，原并发模型分散（阶段 1 一个 Sem、阶段 2 一个 Sem、阶段 3/4 无 Sem），风格用独立 LLMClient 完全不受限 — 撞 API 限额
+- **保证**：硬上限 = `self.concurrency`，无任何硬编码并发数，配置多少就多少
+- **收益**：风格（30-60s）从阶段 4 之前串行 → 阶段 1 启动时并行；总时长缩短 30-60s
 
 ### 10.12 相关文档
 - Win11 重做计划：`docs/superpowers/plans/2026-08-16-win11-frontend-redesign.md`
