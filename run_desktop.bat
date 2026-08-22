@@ -12,12 +12,22 @@ set "RUN_LOG=%LOCALAPPDATA%\NovelAnalyzer\run.log"
 if not exist "%LOCALAPPDATA%\NovelAnalyzer" mkdir "%LOCALAPPDATA%\NovelAnalyzer"
 echo [%date% %time%] === run_desktop start (root=%SHARE_ROOT%) === >> "%RUN_LOG%"
 
-rem ---- 稳健定位 python（优先 PATH，回退到已知安装位置）----
+rem ---- 稳健定位 python（2026-08-22 调整：项目 .venv 优先，PATH 中的 python 次之）----
+rem 原因：run_desktop.bat 之前通过 `where python` 找到的是 WindowsApps Python（裸装），
+rem      缺 json_repair/json5/websockets 等核心依赖，导致 LLM JSON 解析链残缺、Phase 0a 硬失败。
+rem      项目自带的 .venv\Scripts\python.exe 已含所有依赖（webview/json_repair/json5/...），
+rem      优先使用它能让整个容错链恢复完整；找不到 .venv 才回退到 PATH。
 set "PYTHON="
-for /f "delims=" %%P in ('where python 2^>nul') do ( set "PYTHON=%%P" & goto :have_python )
-:have_python
-if not defined PYTHON (
-  for /f "delims=" %%P in ('py -3 -c "import sys; print(sys.executable)" 2^>nul') do set "PYTHON=%%P"
+if exist "%SHARE_ROOT%\.venv\Scripts\python.exe" (
+  set "PYTHON=%SHARE_ROOT%\.venv\Scripts\python.exe"
+  echo [%date% %time%] Using project venv python: %PYTHON% >> "%RUN_LOG%"
+) else (
+  for /f "delims=" %%P in ('where python 2^>nul') do ( set "PYTHON=%%P" & goto :have_python )
+  :have_python
+  if not defined PYTHON (
+    for /f "delims=" %%P in ('py -3 -c "import sys; print(sys.executable)" 2^>nul') do set "PYTHON=%%P"
+  )
+  echo [%date% %time%] Using python: %PYTHON% >> "%RUN_LOG%"
 )
 if not defined PYTHON (
   echo [%date% %time%] ERROR: 未找到 python >> "%RUN_LOG%"
@@ -26,7 +36,6 @@ if not defined PYTHON (
   pause
   exit /b 1
 )
-echo [%date% %time%] Using python: %PYTHON% >> "%RUN_LOG%"
 
 rem ---- 前端构建产物必须在共享盘上（由 build_frontend.bat 生成）----
 if not exist "frontend\dist\index.html" (
