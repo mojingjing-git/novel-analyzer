@@ -518,6 +518,13 @@ class FinalSummaryRunner:
         self._on_progress = on_progress
         self._on_token_stats = on_token_stats
 
+        # 全局 LLM 并发上限 Sem：阶段 1/2/3/4 全部共用，硬上限 = self.concurrency
+        # 这样无论是 4 / 9 / 20 都不会超 API 限流；阶段 3 的独立 LLMClient 也通过包装层共享此 Sem
+        self._llm_sem = asyncio.Semaphore(self.concurrency)
+        # in-flight 监控：跑完总结打印峰值，便于验证未超配置上限
+        self._inflight_count = 0
+        self._peak_inflight = 0
+
         # 分类 token 累计
         self._tokens_summary = (0, 0)        # 卷摘要 (input, output)
         self._tokens_final = (0, 0)          # 最终报告
@@ -577,15 +584,31 @@ class FinalSummaryRunner:
     def _format_batch(self, batch: List[dict]) -> str:
         return json.dumps(batch, ensure_ascii=False, indent=1)
 
+    async def _acquire_llm_slot(self) -> None:
+        """获取全局 LLM 并发槽（硬上限 = self.concurrency），同时记录 in-flight 峰值"""
+        await self._llm_sem.acquire()
+        self._inflight_count += 1
+        if self._inflight_count > self._peak_inflight:
+            self._peak_inflight = self._inflight_count
+
+    def _release_llm_slot(self) -> None:
+        """释放 LLM 并发槽"""
+        self._inflight_count -= 1
+        self._llm_sem.release()
+
     async def _call_llm_summary(self, prompt: str) -> Optional[str]:
         """第一次调用：产出 Markdown 卷摘要"""
         messages = [
             {"role": "system", "content": BATCH_SYSTEM_PROMPT},
             {"role": "user", "content": prompt}
         ]
-        success, content, error, tokens, _call_stats = await self._llm.chat_with_retry(
-            messages, max_tokens=self.config.api.max_tokens, validate_response=None
-        )
+        await self._acquire_llm_slot()
+        try:
+            success, content, error, tokens, _call_stats = await self._llm.chat_with_retry(
+                messages, max_tokens=self.config.api.max_tokens, validate_response=None
+            )
+        finally:
+            self._release_llm_slot()
         self._record_tokens("summary", tokens)
         if success:
             return content
@@ -598,9 +621,13 @@ class FinalSummaryRunner:
             {"role": "system", "content": FINAL_SYSTEM_PROMPT},
             {"role": "user", "content": prompt}
         ]
-        success, content, error, tokens, _call_stats = await self._llm.chat_with_retry(
-            messages, max_tokens=self.config.api.max_tokens, validate_response=None
-        )
+        await self._acquire_llm_slot()
+        try:
+            success, content, error, tokens, _call_stats = await self._llm.chat_with_retry(
+                messages, max_tokens=self.config.api.max_tokens, validate_response=None
+            )
+        finally:
+            self._release_llm_slot()
         self._record_tokens("final", tokens)
         if success:
             return content
@@ -613,11 +640,15 @@ class FinalSummaryRunner:
             {"role": "system", "content": RECONCILIATION_SYSTEM_PROMPT},
             {"role": "user", "content": prompt}
         ]
-        success, content, error, tokens, _call_stats = await self._llm.chat_with_retry(
-            messages, max_tokens=self.config.api.max_tokens,
-            validate_response=validate_reconciliation_json,
-            retry_messages_builder=build_reconciliation_retry_messages
-        )
+        await self._acquire_llm_slot()
+        try:
+            success, content, error, tokens, _call_stats = await self._llm.chat_with_retry(
+                messages, max_tokens=self.config.api.max_tokens,
+                validate_response=validate_reconciliation_json,
+                retry_messages_builder=build_reconciliation_retry_messages
+            )
+        finally:
+            self._release_llm_slot()
         self._record_tokens("reconciliation", tokens)
         if not success:
             logger.warning(f"伏笔 reconciliation 调用失败: {error}")
@@ -630,11 +661,15 @@ class FinalSummaryRunner:
             {"role": "system", "content": GLOBAL_RECHECK_SYSTEM_PROMPT},
             {"role": "user", "content": prompt}
         ]
-        success, content, error, tokens, _call_stats = await self._llm.chat_with_retry(
-            messages, max_tokens=self.config.api.max_tokens,
-            validate_response=validate_reconciliation_json,
-            retry_messages_builder=build_reconciliation_retry_messages
-        )
+        await self._acquire_llm_slot()
+        try:
+            success, content, error, tokens, _call_stats = await self._llm.chat_with_retry(
+                messages, max_tokens=self.config.api.max_tokens,
+                validate_response=validate_reconciliation_json,
+                retry_messages_builder=build_reconciliation_retry_messages
+            )
+        finally:
+            self._release_llm_slot()
         self._record_tokens("recheck", tokens)
         if not success:
             logger.warning(f"全书复检调用失败: {error}")
@@ -1124,7 +1159,13 @@ class FinalSummaryRunner:
         }
 
         try:
-            return await extract_style_profile(blocks_dir, self.book_name, api_config)
+            # 全局 Sem 包裹：让风格分析的 LLM 调用也参与 self.concurrency 上限
+            # （style 用独立 LLMClient，连接池隔离，但 API 配额共享，必须走同一信号量）
+            await self._acquire_llm_slot()
+            try:
+                return await extract_style_profile(blocks_dir, self.book_name, api_config)
+            finally:
+                self._release_llm_slot()
         except Exception as e:
             logger.warning(f"风格分析失败: {e}")
             return None
@@ -1427,55 +1468,64 @@ class FinalSummaryRunner:
         else:
             self._emit_progress({"type": "status", "message": f"正在并发分析{len(batch_tasks)}批（并发{self.concurrency}）..."})
 
-        semaphore = asyncio.Semaphore(min(self.concurrency, len(batch_tasks)))
-
         async def process_batch_collect(idx: int, ch_start: int, ch_end: int, prompt: str):
-            """并发采集：卷摘要 + reconciliation（断点恢复的批次跳过对应 LLM 调用）"""
-            async with semaphore:
+            """并发采集：卷摘要 + reconciliation（断点恢复的批次跳过对应 LLM 调用）
+
+            2026-08-23：去掉外层局部 Sem，改为全局 self._llm_sem（由 _call_llm_* 内部 acquire/release）。
+            这样 summary 与 reconciliation 两次 LLM 调用各自独立占槽，
+            - checkpoint 落盘 IO 不再抱死 Sem 槽
+            - 任意时刻总在飞 LLM 数 ≤ self.concurrency（与阶段 2/3/4 共享同一上限）
+            """
+            if self._stop_requested:
+                return None
+
+            # 卷摘要：优先用断点恢复值，否则调用 LLM 并立即落盘（不等 reconciliation，
+            # 防止 reconciliation 阶段停止导致已完成的卷摘要白做）
+            if idx in volume_results:
+                volume_summary = volume_results[idx]
+                elapsed = 0.0
+                restored_batch = True
+            else:
+                summary_response = await self._call_llm_summary(prompt)
                 if self._stop_requested:
                     return None
+                if summary_response is None:
+                    # 失败批次不入 volume_results（仅记失败状态），避免占位文本污染最终报告；
+                    # 否则 not volume_results 永不成立、『所有批次均失败』的 RuntimeError 变死代码。
+                    return {"status": "failed", "idx": idx, "ch_start": ch_start, "ch_end": ch_end}
+                volume_summary = extract_analysis_text(summary_response)
+                volume_results[idx] = volume_summary
+                elapsed = time.time() - t_start
+                restored_batch = False
+                await self._save_checkpoint_batch(idx, ch_start, ch_end, volume_summary, None)
 
-                # 卷摘要：优先用断点恢复值，否则调用 LLM 并立即落盘（不等 reconciliation，
-                # 防止 reconciliation 阶段停止导致已完成的卷摘要白做）
-                if idx in volume_results:
-                    volume_summary = volume_results[idx]
-                    elapsed = 0.0
-                    restored_batch = True
-                else:
-                    summary_response = await self._call_llm_summary(prompt)
-                    if self._stop_requested:
-                        return None
-                    if summary_response is None:
-                        # 失败批次不入 volume_results（仅记失败状态），避免占位文本污染最终报告；
-                        # 否则 not volume_results 永不成立、『所有批次均失败』的 RuntimeError 变死代码。
-                        return {"status": "failed", "idx": idx, "ch_start": ch_start, "ch_end": ch_end}
-                    volume_summary = extract_analysis_text(summary_response)
-                    volume_results[idx] = volume_summary
-                    elapsed = time.time() - t_start
-                    restored_batch = False
-                    await self._save_checkpoint_batch(idx, ch_start, ch_end, volume_summary, None)
-
-                # 伏笔 reconciliation：断点已存结果则跳过 LLM，否则调用并落盘
-                if idx in recon_results:
-                    foreshadow_data = recon_results[idx]
-                else:
-                    active_block = self._build_active_foreshadows_block(ch_start, ch_end, foreshadow_catalog)
-                    reconciliation_prompt = RECONCILIATION_USER_TEMPLATE.format(
-                        book_name=self.book_name, start=ch_start, end=ch_end,
-                        batch_summary=volume_summary,
-                        active_foreshadows_block=active_block
-                    )
-                    foreshadow_data = await self._call_llm_reconciliation(reconciliation_prompt)
-                    if foreshadow_data is not None:
-                        await self._save_checkpoint_batch(idx, ch_start, ch_end, None, foreshadow_data)
-                return {
-                    "status": "done", "idx": idx, "ch_start": ch_start, "ch_end": ch_end,
-                    "volume_summary": volume_summary, "elapsed": elapsed,
-                    "foreshadow_data": foreshadow_data, "restored": restored_batch,
-                }
+            # 伏笔 reconciliation：断点已存结果则跳过 LLM，否则调用并落盘
+            if idx in recon_results:
+                foreshadow_data = recon_results[idx]
+            else:
+                active_block = self._build_active_foreshadows_block(ch_start, ch_end, foreshadow_catalog)
+                reconciliation_prompt = RECONCILIATION_USER_TEMPLATE.format(
+                    book_name=self.book_name, start=ch_start, end=ch_end,
+                    batch_summary=volume_summary,
+                    active_foreshadows_block=active_block
+                )
+                foreshadow_data = await self._call_llm_reconciliation(reconciliation_prompt)
+                if foreshadow_data is not None:
+                    await self._save_checkpoint_batch(idx, ch_start, ch_end, None, foreshadow_data)
+            return {
+                "status": "done", "idx": idx, "ch_start": ch_start, "ch_end": ch_end,
+                "volume_summary": volume_summary, "elapsed": elapsed,
+                "foreshadow_data": foreshadow_data, "restored": restored_batch,
+            }
 
         tasks = [asyncio.create_task(process_batch_collect(idx, start, end, prompt))
                  for idx, start, end, prompt in batch_tasks]
+
+        # 阶段 3 风格提取：与阶段 1 同步启动（数据无依赖：仅需 blocks_dir）
+        # 与阶段 1/2/4 共用 self._llm_sem，硬上限 = self.concurrency（用户配置 4/9/20 均不超）
+        # 风格提取通常 30-60s，期间会与阶段 1 抢同一信号量槽位
+        style_task = asyncio.create_task(self._run_style_extraction())
+
         for coro in asyncio.as_completed(tasks):
             try:
                 result = await coro
@@ -1534,12 +1584,14 @@ class FinalSummaryRunner:
         self.ledger.save(self.ledger_path)
         self._emit_progress({"type": "ledger_updated", "counts": self.ledger.get_item_count()})
 
-        # 风格提取（前置步骤）
-        self._emit_progress({
-            "type": "phase", "phase": "style", "phase_label": "风格分析",
-            "message": "[阶段3/4] 正在提取写作风格特征..."
-        })
-        style_profile = await self._run_style_extraction()
+        # 风格提取：实际工作已在阶段 1 启动时同步 create_task（与阶段 1 并行），
+        # 此处只 await 收结果。emit 时机不变（复检完成后），保持 UI 阶段标签顺序。
+        if not style_task.done():
+            self._emit_progress({
+                "type": "phase", "phase": "style", "phase_label": "风格分析",
+                "message": "[阶段3/4] 正在提取写作风格特征..."
+            })
+        style_profile = await style_task
         style_text = self._format_style_for_prompt(style_profile) if style_profile else "（风格分析未完成）"
         if self._stop_requested:
             self._emit_progress({"type": "status", "message": "已停止"})
@@ -1575,6 +1627,10 @@ class FinalSummaryRunner:
         await asyncio.to_thread(audit_path.write_text, audit_text, encoding='utf-8')
 
         elapsed = time.time() - t_start
+        # 2026-08-23：4 阶段 + 风格共用 self._llm_sem，记录 peak in-flight 便于验证未超 API 上限
+        logger.info(f"final_summary 完成：peak in-flight = {self._peak_inflight} / concurrency = {self.concurrency}")
+        if self._peak_inflight > self.concurrency:
+            logger.error(f"BUG：peak in-flight {self._peak_inflight} 超 concurrency {self.concurrency}！")
         self._emit_progress({"type": "complete", "elapsed": elapsed,
                              "message": f"全书脉络报告生成完成，耗时{elapsed:.0f}秒"})
         return final_report
