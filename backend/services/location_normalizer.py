@@ -475,11 +475,11 @@ from backend.utils.json_utils import safe_load_json, safe_save_json
 
 _LOCATIONS_NORMALIZED_FILENAME = "locations_normalized.json"
 _SPATIAL_NORMALIZED_FILENAME = "spatial_relationships_normalized.json"
-# Phase 0a locations batch 控制（2026-08-21 修复）：
-# - 硬上限：单批 user prompt ≤ 35K chars（防 LLM 调用超时）
-# - 软上限：单批 ≤ 1000 groups（防御性兜底，避免 group 数爆炸）
-# 实测《韩娱》228 章产生 398 group、user prompt 53K chars → 按 35K 切分约 2 批
-_LOCATION_PROMPT_BUDGET_CHARS = 35000
+# Phase 0a locations batch 控制（2026-08-22 调整：35K → 18K）：
+# - 硬上限：单批 user prompt ≤ 18K chars（防单批 stall / 撞 timeout）
+# - 实测《韩娱》512 group、user prompt ~70K chars → 切 ~5-6 batch 并发，
+#   充分利用 config.analysis.concurrency=9；单批 stall 仅损失 ~17% group 而非 ~33%
+_LOCATION_PROMPT_BUDGET_CHARS = 18000
 _LOCATION_BATCH_MAX_GROUPS = 1000
 _SPATIAL_BATCH_SIZE = 1000
 _CONSOL_BATCH_SIZE = 2000

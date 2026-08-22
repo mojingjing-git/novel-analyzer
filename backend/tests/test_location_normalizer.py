@@ -705,7 +705,7 @@ class TestBudgetBatchSplit:
 
     def test_constants_have_expected_defaults(self):
         """防御：预算值与 max_groups 默认值与 spec 一致"""
-        assert _LOCATION_PROMPT_BUDGET_CHARS == 35000
+        assert _LOCATION_PROMPT_BUDGET_CHARS == 18000
         assert _LOCATION_BATCH_MAX_GROUPS == 1000
 
 
