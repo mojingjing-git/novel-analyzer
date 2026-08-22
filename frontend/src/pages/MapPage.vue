@@ -252,11 +252,12 @@ function typeClass(t: string): string {
       </div>
 
       <div class="flex gap-2">
-        <button v-if="!normStatus?.running" class="glass-btn-primary text-sm"
+        <button v-if="!normStatus?.running" class="glass-button glass-button-primary btn-sm"
+                v-tooltip="normResult?.exists ? '丢弃现有归一化结果，重新跑一遍' : '对当前书目所有地点和空间关系做归一化'"
                 @click="startNormalization">
           {{ normResult?.exists ? '重新归一化' : '开始归一化' }}
         </button>
-        <button v-else class="glass-btn text-sm" @click="stopNormalization">停止</button>
+        <button v-else class="glass-button glass-button-danger btn-sm" v-tooltip="'停止归一化（保留已处理的部分结果）'" @click="stopNormalization">停止</button>
       </div>
     </div>
 
@@ -267,7 +268,7 @@ function typeClass(t: string): string {
         归一化把"宁安县"、"宁安县城"等同一地点的不同写法合并为规范条目，
         并校验所有空间关系。地图基于归一化数据渲染。
       </div>
-      <button class="glass-btn-primary" @click="startNormalization">开始归一化</button>
+      <button class="glass-button glass-button-primary btn-lg" v-tooltip="'归一化把同一地点的不同写法（「宁安县」、「宁安县城」）合并为规范条目，并校验所有空间关系'" @click="startNormalization">开始归一化</button>
     </div>
     <div v-else-if="locations.length === 0" class="glass-card p-8 text-center text-sm" style="color: var(--win-text-disabled)">暂无数据</div>
     <div v-else class="flex gap-4">
