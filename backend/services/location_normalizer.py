@@ -552,6 +552,10 @@ class LocationNormalizer:
         self.spatial_batch_size = max(1, spatial_batch_size)
         self.on_progress = on_progress
 
+    def stop(self) -> None:
+        """请求停止当前 run() 调用（透传到 LLM 客户端）"""
+        self.llm_client.request_stop()
+
     async def run(self) -> bool:
         """跑完整 Phase 0；任一阶段失败抛异常或返回 False"""
         # 0. 缓存短路：若两个 normalized 文件都已存在且 chapter_mtimes_hash 一致，跳过

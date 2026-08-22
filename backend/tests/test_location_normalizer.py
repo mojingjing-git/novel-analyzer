@@ -413,9 +413,9 @@ class TestApplyMerges:
 
 import asyncio
 import shutil
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from backend.services.location_normalizer import LocationNormalizer
+from backend.services.location_normalizer import LLMClient, LocationNormalizer
 
 
 def _setup_output_dir(tmp_path: Path, chapters: int = 5):
@@ -764,3 +764,14 @@ class TestOnProgressCallback:
         result = await norm._run_phase_0a_batches(groups)
         assert result is not None
         assert len(result) > 0
+
+
+async def test_stop_propagates_to_llm_client(tmp_path):
+    """stop() 应调用 llm_client.request_stop()"""
+    with patch("backend.services.location_normalizer.LLMClient") as MockLLM:
+        mock_client = MockLLM.return_value
+        mock_client.config.model = "test-model"
+        mock_client.request_stop = MagicMock()
+        norm = LocationNormalizer(output_dir=tmp_path, llm_client=mock_client)
+        norm.stop()
+        mock_client.request_stop.assert_called_once()
