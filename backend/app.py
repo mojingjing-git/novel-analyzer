@@ -28,6 +28,7 @@ from backend.api import (
     routes_workspace,
     routes_aggregate,
     routes_foreshadow,
+    routes_location_normalization,
     ws,
 )
 from backend.progress_hub import get_hub, install_log_forwarder
@@ -130,6 +131,7 @@ def create_app() -> FastAPI:
     app.include_router(routes_books.router)
     app.include_router(routes_summary.router)
     app.include_router(routes_viz.router)
+    app.include_router(routes_location_normalization.router)
     app.include_router(routes_splitter.router)
     app.include_router(routes_workspace.router)
     app.include_router(routes_prompt.router)
