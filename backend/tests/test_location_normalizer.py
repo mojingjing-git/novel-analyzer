@@ -707,3 +707,60 @@ class TestBudgetBatchSplit:
         """防御：预算值与 max_groups 默认值与 spec 一致"""
         assert _LOCATION_PROMPT_BUDGET_CHARS == 35000
         assert _LOCATION_BATCH_MAX_GROUPS == 1000
+
+
+class TestOnProgressCallback:
+    """on_progress callback + 部分失败容忍（2026-08-22 Task 1）"""
+
+    async def test_on_progress_called_per_batch(self, tmp_path):
+        """每个 batch 完成时触发 on_progress，含正确 payload"""
+        _setup_output_dir(tmp_path, chapters=3)
+        progress_calls = []
+        def on_progress(payload):
+            progress_calls.append(payload)
+
+        responses = [
+            json.dumps({"locations": [
+                {"canonical_name": "宁安县", "aliases": ["宁安县", "宁安县城"], "parent": "大周王朝", "type": "城市", "description": "测试"}
+            ]}, ensure_ascii=False),
+            json.dumps({"relationships": [
+                {"from": "宁安县", "to": "宁安县", "direction": "东南", "distance_text": "约两三百里", "distance_estimate_km": 130, "relation_type": "相邻", "evidence_chapters": [1, 2, 3]}
+            ]}, ensure_ascii=False),
+        ]
+        mock_llm = _make_mock_llm(responses)
+
+        norm = LocationNormalizer(
+            output_dir=tmp_path, llm_client=mock_llm, concurrency=1,
+            on_progress=on_progress,
+        )
+        result = await norm.run()
+        assert result is True
+
+        phase_0a_calls = [c for c in progress_calls if c.get("phase") == "0a-batches"]
+        assert len(phase_0a_calls) >= 1
+        assert "batch_idx" in phase_0a_calls[0]
+        assert phase_0a_calls[0]["status"] == "done"
+
+    async def test_partial_batch_failure_tolerated(self, tmp_path):
+        """50% 以下 batch 失败时，其他 batch 结果被保留"""
+        call_count = 0
+        async def mock_chat(messages, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                return (False, "", "模拟 LLM 错误", (0, 0))
+            return (True, '{"locations":[{"canonical_name":"A","aliases":["A"]}]}', "", (100, 50))
+
+        mock_llm = MagicMock()
+        mock_llm.model = "mock-model"
+        mock_llm.chat = mock_chat
+
+        norm = LocationNormalizer(output_dir=tmp_path, llm_client=mock_llm, concurrency=1)
+
+        groups = [
+            {"aliases": [f"地点{i}" * 5], "types": {}, "parents": {}, "chapter_count": 1, "sample_desc": ""}
+            for i in range(2000)
+        ]
+        result = await norm._run_phase_0a_batches(groups)
+        assert result is not None
+        assert len(result) > 0

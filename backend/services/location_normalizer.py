@@ -12,7 +12,7 @@ import logging
 from collections import Counter
 from difflib import SequenceMatcher as _SM
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Callable
 
 from backend.utils.text_utils import is_same_location
 from backend.utils.json_utils import safe_parse_json, extract_json_from_text
@@ -543,12 +543,14 @@ class LocationNormalizer:
         concurrency: int = 1,
         locations_batch_size: int = _LOCATION_BATCH_MAX_GROUPS,
         spatial_batch_size: int = _SPATIAL_BATCH_SIZE,
+        on_progress: Optional[Callable[[dict], None]] = None,
     ):
         self.output_dir = Path(output_dir)
         self.llm_client = llm_client
         self.concurrency = max(1, concurrency)
         self.locations_batch_size = max(1, locations_batch_size)
         self.spatial_batch_size = max(1, spatial_batch_size)
+        self.on_progress = on_progress
 
     async def run(self) -> bool:
         """跑完整 Phase 0；任一阶段失败抛异常或返回 False"""
@@ -654,26 +656,38 @@ class LocationNormalizer:
                     success, content, error, _tokens = await self.llm_client.chat(messages)
                 except Exception as e:
                     logger.error(f"Phase 0a batch {batch_idx} 失败: {e}")
+                    if self.on_progress:
+                        self.on_progress({"phase": "0a-batches", "batch_idx": batch_idx, "status": "failed", "error": str(e)})
                     return None
                 if not success:
                     logger.error(f"Phase 0a batch {batch_idx} 失败: {error}")
+                    if self.on_progress:
+                        self.on_progress({"phase": "0a-batches", "batch_idx": batch_idx, "status": "failed", "error": error})
                     return None
                 parsed = parse_and_validate_locations(content, batch)
                 if not parsed:
-                    # 解析失败：留痕便于诊断（限长避免日志爆炸）
                     logger.warning(
                         f"Phase 0a batch {batch_idx} 解析为空，响应前300字: {content[:300]!r}"
                     )
+                if self.on_progress:
+                    self.on_progress({"phase": "0a-batches", "batch_idx": batch_idx,
+                                      "total_batches": len(batches), "status": "done",
+                                      "groups": len(parsed) if parsed else 0})
                 return parsed
 
         tasks = [_process(i, b) for i, b in enumerate(batches, 1)]
-        results = await asyncio.gather(*tasks, return_exceptions=False)
-        all_canonicals = []
-        for r in results:
-            if r is None:
-                return None
-            all_canonicals.extend(r)
-        return all_canonicals
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        valid: List[List[Dict]] = [r for r in results if isinstance(r, list)]
+        failed = len(results) - len(valid)
+        if failed > 0:
+            logger.warning(f"Phase 0a batches: {failed}/{len(results)} 失败")
+        if len(valid) < len(results) * 0.5:
+            logger.error(f"Phase 0a 失败率过高 ({failed}/{len(results)})，整体 abort")
+            if self.on_progress:
+                self.on_progress({"phase": "0a-batches", "status": "failed",
+                                  "error": f"失败率 {failed}/{len(results)}"})
+            return None
+        return [c for batch in valid for c in batch]
 
     async def _run_phase_0a_consolidate(self, all_canonicals):
         if len(all_canonicals) <= 2:
@@ -716,25 +730,38 @@ class LocationNormalizer:
                     success, content, error, _tokens = await self.llm_client.chat(messages)
                 except Exception as e:
                     logger.error(f"Phase 0b batch {batch_idx} 失败: {e}")
+                    if self.on_progress:
+                        self.on_progress({"phase": "0b-batches", "batch_idx": batch_idx, "status": "failed", "error": str(e)})
                     return None
                 if not success:
                     logger.error(f"Phase 0b batch {batch_idx} 失败: {error}")
+                    if self.on_progress:
+                        self.on_progress({"phase": "0b-batches", "batch_idx": batch_idx, "status": "failed", "error": error})
                     return None
                 parsed = parse_and_validate_spatial(content, whitelist_names)
                 if not parsed:
                     logger.warning(
                         f"Phase 0b batch {batch_idx} 解析为空，响应前300字: {content[:300]!r}"
                     )
+                if self.on_progress:
+                    self.on_progress({"phase": "0b-batches", "batch_idx": batch_idx,
+                                      "total_batches": len(batches), "status": "done",
+                                      "groups": len(parsed) if parsed else 0})
                 return parsed
 
         tasks = [_process(i, b) for i, b in enumerate(batches, 1)]
-        results = await asyncio.gather(*tasks, return_exceptions=False)
-        all_spatial = []
-        for r in results:
-            if r is None:
-                return None
-            all_spatial.extend(r)
-        return all_spatial
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        valid: List[List[Dict]] = [r for r in results if isinstance(r, list)]
+        failed = len(results) - len(valid)
+        if failed > 0:
+            logger.warning(f"Phase 0b batches: {failed}/{len(results)} 失败")
+        if len(valid) < len(results) * 0.5:
+            logger.error(f"Phase 0b 失败率过高 ({failed}/{len(results)})，整体 abort")
+            if self.on_progress:
+                self.on_progress({"phase": "0b-batches", "status": "failed",
+                                  "error": f"失败率 {failed}/{len(results)}"})
+            return None
+        return [r for batch in valid for r in batch]
 
     @staticmethod
     def _run_phase_0b_dedupe(all_spatial):
