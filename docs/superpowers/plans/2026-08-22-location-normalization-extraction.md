@@ -21,26 +21,29 @@
 
 ## File Structure
 
-### 新增文件（3 个）
+### 新增文件（4 个）
 - `backend/services/location_normalization_service.py` —— 编排层（仿 `SummaryService`）
 - `backend/api/routes_location_normalization.py` —— REST 端点
 - `backend/tests/test_location_normalization_service.py` —— 服务层单元测试
+- `backend/tests/test_location_normalization_e2e.py` —— 端到端集成测试
 
-### 修改文件（6 个）
-- `backend/services/location_normalizer.py` —— 加 `on_progress` callback + 块大小 35K→18K + 部分失败容忍 + 单批 retry
+### 修改文件（7 个）
+- `backend/services/location_normalizer.py` —— 加 `on_progress` callback + 块大小 35K→18K + 部分失败容忍 + stop()
 - `backend/services/final_summary.py` —— 删除 `_normalize_phase_0()` 与 `LocationNormalizer` 引用，run() 头部校验归一化文件
+- `backend/services/viz_service.py` —— **删除 `map_data()` 的 raw data 兜底**，返回 `needs_normalization` 标志【关键】
+- `backend/api/routes_viz.py` —— `/api/viz/map/{book_id}` 返回新结构（不变，透传 map_data 结果）
 - `backend/app.py` —— 注册新 router
-- `frontend/src/api/client.ts` —— 加 4 个 API 方法
+- `frontend/src/api/client.ts` —— 加 4 个 API 方法 + `MapDataResponse` 类型
 - `frontend/src/api/useProgressSocket.ts` —— 加 `location_normalization_progress` 类型
-- `frontend/src/pages/MapPage.vue` —— 加归一化面板
+- `frontend/src/pages/MapPage.vue` —— 加归一化面板 + "需要归一化"CTA 分支
 
 ### 文件职责边界
-- `location_normalizer.py`：**算法层**（不改），由 on_progress callback 透传进度给上层
+- `location_normalizer.py`：**算法层**，由 on_progress callback 透传进度给上层
 - `location_normalization_service.py`：**编排层**（新），持有 asyncio.Task、status 状态机、token 累计
 - `routes_location_normalization.py`：**HTTP 层**（新），薄路由转发到 service
-- `final_summary.py`：只**消费**归一化文件（通过 `viz_service.map_data()` 已经在做的事），不再**生成**
-
----
+- `viz_service.map_data()`：**严格化数据源**（改），仅在归一化文件存在时返回数据，否则返回 needs_normalization 标志
+- `final_summary.py`：只**消费**归一化文件，不再**生成**
+- `MapPage.vue`：**UI 入口**（改），根据 needs_normalization 标志切换 CTA / SVG 两种渲染分支
 
 ## Task 1: LocationNormalizer 加 on_progress callback 与部分失败容忍
 
@@ -651,6 +654,144 @@ git commit -m "feat(api): add /api/location-normalization/* endpoints"
 
 ---
 
+## Task 6.5: 删除 viz_service.map_data() 的 raw data 兜底【关键】
+
+**Files:**
+- Modify: `backend/services/viz_service.py:212-262` (`map_data` 函数)
+- Modify: `backend/api/routes_viz.py:66-74` (`/api/viz/map/{book_id}` 端点)
+- Modify: `backend/tests/test_location_normalizer.py:643-656` (`TestMapDataNormalized.test_falls_back_to_old_logic_when_no_ref`)
+
+**目标：** 严格"看地图必须先归一化"。归一化文件不存在时，API 返回 `needs_normalization: true` + 空数组（200 OK），前端 MapPage 据此展示"需要先归一化"提示。删除 `map_data` 内的 raw data 兜底逻辑。
+
+- [ ] **Step 1: 写失败测试（严格版）**
+
+```python
+# test_location_normalizer.py: TestMapDataNormalized 末尾追加
+def test_map_data_requires_normalized_files(tmp_path):
+    """未归一化时返回 needs_normalization=True + 空数据，不再走 raw 兜底"""
+    (tmp_path / "output").mkdir()
+    chapter = {
+        "chapter_number": 1,
+        "locations": [{"name": "宁安县", "parent": "", "type": "", "description": ""}],
+        "spatial_relationships": [],
+    }
+    (tmp_path / "output" / "chapter_1_result.json").write_text(
+        json.dumps(chapter, ensure_ascii=False), encoding="utf-8"
+    )
+    # 没有 locations_normalized.json / spatial_relationships_normalized.json
+
+    result = map_data(tmp_path)
+    assert result["needs_normalization"] is True
+    assert result["locations"] == []
+    assert result["relationships"] == []
+
+def test_map_data_normalized_path_unaffected(tmp_path):
+    """已有测试 verify normalized path 不受影响（确保重构不破坏 happy path）"""
+    # 完全复用 test_returns_normalized_data_when_ref_exists 的 fixture
+    # 然后断言 needs_normalization=False
+    ...  # 同 test_returns_normalized_data_when_ref_exists 的 setup
+    result = map_data(tmp_path)
+    assert result["needs_normalization"] is False
+    assert len(result["locations"]) == 1
+```
+
+- [ ] **Step 2: 跑测试，验证失败**
+
+期望：`AssertionError: KeyError 'needs_normalization'` （旧返回值没有这个键）
+
+- [ ] **Step 3: 重写 `viz_service.map_data()`**
+
+替换 `backend/services/viz_service.py:212-262`（含 use_normalized 检测 + 兜底逻辑）为：
+
+```python
+def map_data(output_dir: Path) -> Dict[str, Any]:
+    """地图数据：地点层级 + 空间关系
+
+    2026-08-22 重构：严格要求归一化文件存在。
+    - 有 normalized 文件 + 任一 chapter 含 _normalized_ref → 返回归一化数据
+    - 否则返回 needs_normalization=True + 空数组，由前端 MapPage 引导用户归一化
+    - 删除了旧版 raw chapter 聚合兜底（避免用户误以为"不归一化也能看地图"）
+    """
+    output_subdir = output_dir / "output"
+    if not output_subdir.is_dir():
+        output_subdir = output_dir
+
+    locations_normalized_path = output_subdir / "locations_normalized.json"
+    spatial_normalized_path = output_subdir / "spatial_relationships_normalized.json"
+
+    use_normalized = False
+    if locations_normalized_path.exists() and spatial_normalized_path.exists():
+        for cf in output_subdir.glob("chapter_*_result.json"):
+            try:
+                with open(cf, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if data.get("_normalized_ref") == "locations_normalized.json":
+                    use_normalized = True
+                    break
+            except Exception:
+                continue
+
+    if not use_normalized:
+        return {"locations": [], "relationships": [], "needs_normalization": True}
+
+    try:
+        with open(locations_normalized_path, "r", encoding="utf-8") as f:
+            loc_norm = json.load(f)
+        with open(spatial_normalized_path, "r", encoding="utf-8") as f:
+            rel_norm = json.load(f)
+        return {
+            "locations": [
+                {
+                    "id": loc["canonical_name"],
+                    "name": loc["canonical_name"],
+                    "aliases": loc.get("aliases", []),
+                    "parent": loc.get("parent", ""),
+                    "type": loc.get("type", ""),
+                    "description": loc.get("description", ""),
+                    "chapters": [],
+                }
+                for loc in loc_norm.get("locations", [])
+            ],
+            "relationships": rel_norm.get("relationships", []),
+            "needs_normalization": False,
+        }
+    except Exception as e:
+        logger.warning(f"读归一化数据失败: {e}")
+        return {"locations": [], "relationships": [], "needs_normalization": True}
+```
+
+- [ ] **Step 4: 跑新测试，验证通过**
+
+`cd "F:\AI\小说分析器"; & ".venv\Scripts\python.exe" -m pytest backend/tests/test_location_normalizer.py::TestMapDataNormalized -v`
+
+- [ ] **Step 5: 删除旧兜底测试**
+
+在 `backend/tests/test_location_normalizer.py` 删除 `test_falls_back_to_old_logic_when_no_ref`（line 643-656）。它的存在本身就是错误行为，被新行为取代。
+
+- [ ] **Step 6: 更新现有 normalized 测试断言 needs_normalization=False**
+
+修改 `test_returns_normalized_data_when_ref_exists`（line 591-641），在最后追加：
+```python
+        result = map_data(tmp_path)
+        assert result["needs_normalization"] is False
+        assert len(result["locations"]) == 1
+        ...
+```
+
+- [ ] **Step 7: 跑全量测试，验证 viz_service 改动无回归**
+
+`cd "F:\AI\小说分析器"; & ".venv\Scripts\python.exe" -m pytest backend/tests/ -q`
+
+- [ ] **Step 8: 提交**
+
+```bash
+cd "F:\AI\小说分析器"
+git add backend/services/viz_service.py backend/tests/test_location_normalizer.py
+git commit -m "refactor(viz): map_data requires normalized files (no raw fallback)"
+```
+
+---
+
 ## Task 6: 重构 FinalSummaryRunner 移除 _normalize_phase_0
 
 **Files:**
@@ -782,6 +923,14 @@ export interface LocationNormalizationStatus {
   finished_at: number
   token_stats: Record<string, unknown>
 }
+
+// /api/viz/map/{book_id} 返回类型（2026-08-22 增 needs_normalization 字段）
+export interface MapDataResponse {
+  book_id: string
+  locations: unknown[]
+  relationships: unknown[]
+  needs_normalization: boolean
+}
 ```
 
 - [ ] **Step 2: 在 `api` 对象内加 4 个方法（line 318 附近）**
@@ -879,10 +1028,12 @@ git commit -m "feat(ws): add location_normalization_progress type"
 
 ```typescript
 import { api } from '../api/client'
-import type { LocationNormalizationStatus } from '../api/client'
+import type { LocationNormalizationStatus, MapDataResponse } from '../api/client'
 
 const normStatus = ref<LocationNormalizationStatus | null>(null)
 const normResult = ref<{ exists: boolean; location_count?: number; spatial_count?: number } | null>(null)
+// 2026-08-22 增：地图数据是否需要归一化（决定是否显示地图）
+const needsNormalization = ref(false)
 let normPollHandle: number | null = null
 
 async function refreshNormStatus() {
@@ -907,6 +1058,7 @@ async function startNormalization() {
   try {
     await api.startLocationNormalization(bookId.value)
     refreshNormStatus()
+    needsNormalization.value = false  // 用户已触发归一化，等完成自动刷
     if (normPollHandle === null) {
       normPollHandle = window.setInterval(refreshNormStatus, 2000)
     }
@@ -923,15 +1075,38 @@ async function stopNormalization() {
   }
 }
 
-// 既有 watch(bookId, ...) 内追加（在切书时拉一次归一化结果）
+// 既有 watch(bookId, ...) 内追加（在切书时拉一次归一化结果 + 地图数据）
 watch(bookId, async () => {
-  // ... 既有逻辑保留:
-  //   selected.value = null
-  //   const res = await api.getMap(bookId.value)
-  //   locations.value = res.locations as Location[]
-  //   relationships.value = res.relationships as SpatialRel[]
-  // 新增:
+  if (!bookId.value) { locations.value = []; relationships.value = []; needsNormalization.value = false; return }
+  selected.value = null
+  try {
+    const res: MapDataResponse = await api.getMap(bookId.value)
+    locations.value = res.locations as Location[]
+    relationships.value = res.relationships as SpatialRel[]
+    needsNormalization.value = res.needs_normalization === true  // 关键：true 则不渲染地图
+  } catch (e) {
+    locations.value = []
+    relationships.value = []
+    needsNormalization.value = false
+    console.error('加载地图失败，已清空:', e)
+  }
   await refreshNormResult()
+})
+
+// 归一化完成 → 自动重新拉地图（轮询检测到 running=false + 之前 running=true 时触发）
+watch(() => normStatus.value?.running, async (running, prev) => {
+  if (prev === true && running === false && bookId.value) {
+    if (normPollHandle !== null) {
+      window.clearInterval(normPollHandle)
+      normPollHandle = null
+    }
+    // 重拉地图（API 现在应该返回 needs_normalization=false）
+    const res: MapDataResponse = await api.getMap(bookId.value)
+    locations.value = res.locations as Location[]
+    relationships.value = res.relationships as SpatialRel[]
+    needsNormalization.value = res.needs_normalization === true
+    await refreshNormResult()
+  }
 })
 
 // onMounted：归一化全局状态可独立于 bookId 拉取（用于显示运行中指示）
@@ -989,6 +1164,26 @@ onMounted(() => {
       {{ normResult?.exists ? '重新归一化' : '开始归一化' }}
     </button>
     <button v-else class="glass-btn text-sm" @click="stopNormalization">停止</button>
+  </div>
+</div>
+
+<!-- 关键：未归一化时显示 CTA，遮盖地图（2026-08-22 增） -->
+<div v-if="bookId && needsNormalization && !normStatus?.running" class="glass-card p-8 text-center space-y-4">
+  <div class="text-2xl">🗺️</div>
+  <div class="font-semibold">地图需要先归一化</div>
+  <div class="text-sm" style="color: var(--win-text-secondary)">
+    归一化把"宁安县"、"宁安县城"等同一地点的不同写法合并为规范条目，
+    并校验所有空间关系。地图基于归一化数据渲染。
+  </div>
+  <button class="glass-btn-primary" @click="startNormalization">开始归一化</button>
+</div>
+
+<!-- 地图本体：只在不需要归一化时渲染（替代原"暂无数据"提示） -->
+<div v-else-if="bookId && !needsNormalization && locations.length === 0" class="glass-card p-8 text-center text-sm" style="color: var(--win-text-disabled)">暂无数据</div>
+<div v-else-if="bookId && !needsNormalization" class="flex gap-4">
+  <!-- 原地图 SVG 代码保持不变 -->
+  <div class="flex-1 glass-card p-4 overflow-x-auto">
+    ...
   </div>
 </div>
 ```
@@ -1085,6 +1280,50 @@ def test_full_flow_creates_normalized_files(mock_book):
         # 验证落盘
         loc_norm = output_dir / "output" / "locations_normalized.json"
         assert loc_norm.exists()
+
+
+def test_map_api_returns_needs_normalization_for_unnormalized(mock_book):
+    """未归一化时 /api/viz/map/{book_id} 必须返回 needs_normalization=true（不允许 raw 兜底）"""
+    book_id, _ = mock_book
+    client = TestClient(app)
+    resp = client.get(f"/api/viz/map/{book_id}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["needs_normalization"] is True
+    assert body["locations"] == []
+    assert body["relationships"] == []
+
+
+def test_map_api_returns_data_after_normalization(mock_book):
+    """归一化完成后，/api/viz/map/{book_id} 返回真实数据 + needs_normalization=false"""
+    book_id, output_dir = mock_book
+    # 模拟已落盘归一化文件
+    (output_dir / "output" / "locations_normalized.json").write_text(json.dumps({
+        "schema_version": 1,
+        "locations": [{"canonical_name": "宁安县", "aliases": ["宁安县", "宁安县城"],
+                       "parent": "", "type": "城市", "description": "测试"}],
+        "chapter_mtimes_hash": "",
+    }, ensure_ascii=False), encoding="utf-8")
+    (output_dir / "output" / "spatial_relationships_normalized.json").write_text(json.dumps({
+        "schema_version": 1,
+        "relationships": [{"from": "宁安县", "to": "京畿府"}],
+        "chapter_mtimes_hash": "",
+    }, ensure_ascii=False), encoding="utf-8")
+    # 给 chapter_*.json 注入 _normalized_ref 以触发 normalized 分支
+    for ch in range(1, 4):
+        path = output_dir / "output" / f"chapter_{ch}_result.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["_normalized_ref"] = "locations_normalized.json"
+        data["_normalized_spatial_ref"] = "spatial_relationships_normalized.json"
+        path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    client = TestClient(app)
+    resp = client.get(f"/api/viz/map/{book_id}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["needs_normalization"] is False
+    assert len(body["locations"]) == 1
+    assert body["locations"][0]["name"] == "宁安县"
 ```
 
 - [ ] **Step 2: 跑测试**
@@ -1120,6 +1359,7 @@ git commit -m "test: add location-normalization end-to-end integration test"
 - [ ] Spec 覆盖：每个用户需求都对应一个 task：
   - ✅ 从 FinalSummaryRunner 抽离 → Task 6
   - ✅ 在地图页面暴露 → Task 9
+  - ✅ **看地图必须先归一化**（强制要求，不允许 raw 兜底）→ **Task 6.5** + Task 9 模板分支
   - ✅ 进度/状态 UI → Task 9
   - ✅ 启动/停止/重跑 → Task 5 + Task 9
   - ✅ 修复极度不成熟：块大小 → Task 2；部分容忍 → Task 1；回调 → Task 1；stop() → Task 4
@@ -1131,16 +1371,24 @@ git commit -m "test: add location-normalization end-to-end integration test"
   - `LocationNormalizer.stop()` 在 Task 4 定义，Task 3 service 层调用
   - `LocationNormalizationService.start(book_id, config)` 在 Task 3 定义，Task 5 路由调用
   - `api.startLocationNormalization(book_id)` 在 Task 7 定义，Task 9 UI 调用
+  - `viz_service.map_data()` 返回 `{..., needs_normalization: bool}` 在 Task 6.5 定义，Task 10 E2E + Task 9 模板使用
 
 - [ ] 测试覆盖：
   - Task 1：on_progress + 部分容忍
   - Task 4：stop()
   - Task 3：service 状态机
   - Task 5：路由注册
+  - **Task 6.5**：map_data 严格化（needs_normalization flag + 删除 raw 兜底测试）
   - Task 6：summary 校验归一化前置
-  - Task 10：E2E
+  - Task 10：E2E（含 `test_map_api_returns_needs_normalization_for_unnormalized` + `test_map_api_returns_data_after_normalization`）
 
 - [ ] 不破坏既有数据：归一化文件 schema 不变（`schema_version=1`），chapter_*.json 上的 `_normalized_ref` 字段保留（viz_service 既有逻辑不依赖 _normalized_ref 但保留无害）
+
+- [ ] **关键 UX 验证**：跑通 Task 10 E2E 后，手动验证场景：
+  1. 选择未归一化的书 → MapPage 应显示"🗺️ 地图需要先归一化"CTA，**不显示 SVG**
+  2. 点"开始归一化" → CTA 消失，进度条出现
+  3. 归一化完成 → 自动重新加载地图，SVG 正常渲染
+  4. 选择已归一化的书 → 直接显示 SVG
 
 ---
 
