@@ -738,10 +738,11 @@ class TestOnProgressCallback:
         result = await norm.run()
         assert result is True
 
-        phase_0a_calls = [c for c in progress_calls if c.get("phase") == "0a-batches"]
+        phase_0a_calls = [c for c in progress_calls if c.get("type") == "batch_done" and c.get("phase") == "0a-batches"]
         assert len(phase_0a_calls) >= 1
         assert "batch_idx" in phase_0a_calls[0]
-        assert phase_0a_calls[0]["status"] == "done"
+        assert "total_batches" in phase_0a_calls[0]
+        assert phase_0a_calls[0]["type"] == "batch_done"
 
     async def test_partial_batch_failure_tolerated(self, tmp_path):
         """50% 以下 batch 失败时，其他 batch 结果被保留"""
@@ -777,3 +778,42 @@ async def test_stop_propagates_to_llm_client(tmp_path):
         norm = LocationNormalizer(output_dir=tmp_path, llm_client=mock_client)
         norm.stop()
         mock_client.request_stop.assert_called_once()
+
+
+async def test_typed_payload_drives_service_state(tmp_path):
+    """typed batch_done 事件必须能驱动 service 的 _batches_done / _total_batches / _phase
+    （2026-08-22 Critical #1 集成测试）"""
+    _setup_output_dir(tmp_path, chapters=3)
+
+    state = {"phase": "starting", "total_batches": 0, "batches_done": 0}
+
+    def on_progress(payload: dict) -> None:
+        ptype = payload.get("type", "")
+        if ptype == "phase":
+            state["phase"] = payload.get("phase", state["phase"])
+            state["total_batches"] = payload.get("total_batches", state["total_batches"])
+        elif ptype == "batch_done":
+            state["batches_done"] += 1
+            state["total_batches"] = payload.get("total_batches", state["total_batches"])
+            state["phase"] = payload.get("phase", state["phase"])
+
+    responses = [
+        json.dumps({"locations": [
+            {"canonical_name": "宁安县", "aliases": ["宁安县", "宁安县城"], "parent": "大周王朝", "type": "城市", "description": "测试"}
+        ]}, ensure_ascii=False),
+        json.dumps({"relationships": [
+            {"from": "宁安县", "to": "宁安县", "direction": "东南", "distance_text": "约两三百里", "distance_estimate_km": 130, "relation_type": "相邻", "evidence_chapters": [1, 2, 3]}
+        ]}, ensure_ascii=False),
+    ]
+    mock_llm = _make_mock_llm(responses)
+
+    norm = LocationNormalizer(
+        output_dir=tmp_path, llm_client=mock_llm, concurrency=1,
+        on_progress=on_progress,
+    )
+    result = await norm.run()
+    assert result is True
+
+    assert state["batches_done"] >= 2, f"batches_done 没递增（仍为 {state['batches_done']}）— typed batch_done 未被识别"
+    assert state["total_batches"] > 0, f"total_batches 没被设置（仍为 {state['total_batches']}）— typed batch_done 未携带 total_batches"
+    assert state["phase"] in ("0a-batches", "0b-batches"), f"phase 未被 typed batch_done 更新（仍为 {state['phase']}）"

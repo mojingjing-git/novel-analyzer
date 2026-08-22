@@ -661,12 +661,14 @@ class LocationNormalizer:
                 except Exception as e:
                     logger.error(f"Phase 0a batch {batch_idx} 失败: {e}")
                     if self.on_progress:
-                        self.on_progress({"phase": "0a-batches", "batch_idx": batch_idx, "status": "failed", "error": str(e)})
+                        self.on_progress({"type": "batch_failed", "phase": "0a-batches", "batch_idx": batch_idx, "error": str(e),
+                                          "message": f"[地点归一化 {batch_idx}/{len(batches)}] LLM 异常"})
                     return None
                 if not success:
                     logger.error(f"Phase 0a batch {batch_idx} 失败: {error}")
                     if self.on_progress:
-                        self.on_progress({"phase": "0a-batches", "batch_idx": batch_idx, "status": "failed", "error": error})
+                        self.on_progress({"type": "batch_failed", "phase": "0a-batches", "batch_idx": batch_idx, "error": error,
+                                          "message": f"[地点归一化 {batch_idx}/{len(batches)}] LLM 返回失败"})
                     return None
                 parsed = parse_and_validate_locations(content, batch)
                 if not parsed:
@@ -674,9 +676,9 @@ class LocationNormalizer:
                         f"Phase 0a batch {batch_idx} 解析为空，响应前300字: {content[:300]!r}"
                     )
                 if self.on_progress:
-                    self.on_progress({"phase": "0a-batches", "batch_idx": batch_idx,
-                                      "total_batches": len(batches), "status": "done",
-                                      "groups": len(parsed) if parsed else 0})
+                    self.on_progress({"type": "batch_done", "phase": "0a-batches", "batch_idx": batch_idx,
+                                      "total_batches": len(batches), "groups": len(parsed) if parsed else 0,
+                                      "message": f"[地点归一化 {batch_idx}/{len(batches)}] 完成"})
                 return parsed
 
         tasks = [_process(i, b) for i, b in enumerate(batches, 1)]
@@ -688,8 +690,9 @@ class LocationNormalizer:
         if len(valid) < len(results) * 0.5:
             logger.error(f"Phase 0a 失败率过高 ({failed}/{len(results)})，整体 abort")
             if self.on_progress:
-                self.on_progress({"phase": "0a-batches", "status": "failed",
-                                  "error": f"失败率 {failed}/{len(results)}"})
+                self.on_progress({"type": "phase_failed", "phase": "0a-batches",
+                                  "error": f"失败率 {failed}/{len(results)}",
+                                  "message": f"[地点归一化] 失败率过高 ({failed}/{len(results)})，整体 abort"})
             return None
         return [c for batch in valid for c in batch]
 
@@ -735,12 +738,14 @@ class LocationNormalizer:
                 except Exception as e:
                     logger.error(f"Phase 0b batch {batch_idx} 失败: {e}")
                     if self.on_progress:
-                        self.on_progress({"phase": "0b-batches", "batch_idx": batch_idx, "status": "failed", "error": str(e)})
+                        self.on_progress({"type": "batch_failed", "phase": "0b-batches", "batch_idx": batch_idx, "error": str(e),
+                                          "message": f"[空间关系 {batch_idx}/{len(batches)}] LLM 异常"})
                     return None
                 if not success:
                     logger.error(f"Phase 0b batch {batch_idx} 失败: {error}")
                     if self.on_progress:
-                        self.on_progress({"phase": "0b-batches", "batch_idx": batch_idx, "status": "failed", "error": error})
+                        self.on_progress({"type": "batch_failed", "phase": "0b-batches", "batch_idx": batch_idx, "error": error,
+                                          "message": f"[空间关系 {batch_idx}/{len(batches)}] LLM 返回失败"})
                     return None
                 parsed = parse_and_validate_spatial(content, whitelist_names)
                 if not parsed:
@@ -748,9 +753,9 @@ class LocationNormalizer:
                         f"Phase 0b batch {batch_idx} 解析为空，响应前300字: {content[:300]!r}"
                     )
                 if self.on_progress:
-                    self.on_progress({"phase": "0b-batches", "batch_idx": batch_idx,
-                                      "total_batches": len(batches), "status": "done",
-                                      "groups": len(parsed) if parsed else 0})
+                    self.on_progress({"type": "batch_done", "phase": "0b-batches", "batch_idx": batch_idx,
+                                      "total_batches": len(batches), "groups": len(parsed) if parsed else 0,
+                                      "message": f"[空间关系 {batch_idx}/{len(batches)}] 完成"})
                 return parsed
 
         tasks = [_process(i, b) for i, b in enumerate(batches, 1)]
@@ -762,8 +767,9 @@ class LocationNormalizer:
         if len(valid) < len(results) * 0.5:
             logger.error(f"Phase 0b 失败率过高 ({failed}/{len(results)})，整体 abort")
             if self.on_progress:
-                self.on_progress({"phase": "0b-batches", "status": "failed",
-                                  "error": f"失败率 {failed}/{len(results)}"})
+                self.on_progress({"type": "phase_failed", "phase": "0b-batches",
+                                  "error": f"失败率 {failed}/{len(results)}",
+                                  "message": f"[空间关系] 失败率过高 ({failed}/{len(results)})，整体 abort"})
             return None
         return [r for batch in valid for r in batch]
 

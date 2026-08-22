@@ -91,6 +91,8 @@ class LocationNormalizationService:
                 self._total_batches = payload.get("total_batches", self._total_batches)
             elif ptype == "batch_done":
                 self._batches_done += 1
+                self._total_batches = payload.get("total_batches", self._total_batches)
+                self._phase = payload.get("phase", self._phase)
             message = payload.get("message", "")
             if message:
                 asyncio.create_task(hub.log(message, level="info", category="location-normalization"))
