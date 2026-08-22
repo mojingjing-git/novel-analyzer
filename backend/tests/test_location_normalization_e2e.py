@@ -65,6 +65,7 @@ def test_full_flow_creates_normalized_files(mock_book):
             (100, 50),
         ))
         mock_client.config.model = "test-model"
+        mock_client._stop_requested = False
 
         with TestClient(app) as client:
             resp = client.post("/api/location-normalization/start",

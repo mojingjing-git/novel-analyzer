@@ -119,12 +119,17 @@ class LocationNormalizationService:
     async def _run(self) -> None:
         hub = get_hub()
         await hub.state_change("location_normalization_running", f"地点归一化开始: {self._book_id}")
+        normalizer = self._normalizer
+        assert normalizer is not None
         try:
-            ok = await self._normalizer.run()
+            ok = await normalizer.run()
             self._finished_at = time.time()
-            if ok:
+            if ok is True:
                 self._phase = "complete"
                 await hub.state_change("location_normalization_done", f"地点归一化完成: {self._book_id}")
+            elif ok is None:
+                self._phase = "stopped"
+                await hub.state_change("location_normalization_stopped", f"地点归一化已停止: {self._book_id}")
             else:
                 self._phase = "failed"
                 self._error = "归一化失败（部分 batch 失败率过高）"

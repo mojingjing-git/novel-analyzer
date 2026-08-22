@@ -446,6 +446,7 @@ def _make_mock_llm(responses):
     """构造 mock LLM client，按调用顺序返回 (success, content, error, tokens)"""
     client = MagicMock()
     client.model = "mock-model"
+    client._stop_requested = False
     client.chat = AsyncMock(side_effect=[
         (True, r, "", (10, 20)) for r in responses
     ])
@@ -495,6 +496,7 @@ class TestLocationNormalizerRun:
         _setup_output_dir(tmp_path, chapters=3)
         mock_llm = MagicMock()
         mock_llm.model = "mock-model"
+        mock_llm._stop_requested = False
         mock_llm.chat = AsyncMock(side_effect=Exception("LLM 故障"))
 
         norm = LocationNormalizer(output_dir=tmp_path, llm_client=mock_llm, concurrency=1)
@@ -756,6 +758,7 @@ class TestOnProgressCallback:
 
         mock_llm = MagicMock()
         mock_llm.model = "mock-model"
+        mock_llm._stop_requested = False
         mock_llm.chat = mock_chat
 
         norm = LocationNormalizer(output_dir=tmp_path, llm_client=mock_llm, concurrency=1)
@@ -817,3 +820,21 @@ async def test_typed_payload_drives_service_state(tmp_path):
     assert state["batches_done"] >= 2, f"batches_done 没递增（仍为 {state['batches_done']}）— typed batch_done 未被识别"
     assert state["total_batches"] > 0, f"total_batches 没被设置（仍为 {state['total_batches']}）— typed batch_done 未携带 total_batches"
     assert state["phase"] in ("0a-batches", "0b-batches"), f"phase 未被 typed batch_done 更新（仍为 {state['phase']}）"
+
+
+async def test_run_returns_none_when_stop_requested_before_llm(tmp_path):
+    """run() 在 _stop_requested=True 且无 LLM 调用时应返回 None（用户停止）
+    （2026-08-22 Critical #2）"""
+    _setup_output_dir(tmp_path, chapters=3)
+
+    mock_llm = MagicMock()
+    mock_llm.model = "mock-model"
+    mock_llm._stop_requested = True
+    mock_llm.request_stop = MagicMock()
+    mock_llm.chat = AsyncMock()
+
+    norm = LocationNormalizer(output_dir=tmp_path, llm_client=mock_llm, concurrency=1)
+    result = await norm.run()
+
+    assert result is None, f"应返回 None（用户停止），实际 {result!r}"
+    mock_llm.chat.assert_not_called()

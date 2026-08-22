@@ -556,8 +556,10 @@ class LocationNormalizer:
         """请求停止当前 run() 调用（透传到 LLM 客户端）"""
         self.llm_client.request_stop()
 
-    async def run(self) -> bool:
-        """跑完整 Phase 0；任一阶段失败抛异常或返回 False"""
+    async def run(self) -> Optional[bool]:
+        """跑完整 Phase 0
+        返回：True=成功；False=失败；None=用户中途停止
+        """
         # 0. 缓存短路：若两个 normalized 文件都已存在且 chapter_mtimes_hash 一致，跳过
         existing_loc, existing_rel = self._load_existing_normalized()
         current_hash = self._compute_chapter_mtimes_hash()
@@ -568,6 +570,10 @@ class LocationNormalizer:
                 return True
         elif existing_loc or existing_rel:
             logger.warning("归一化文件部分缺失，重新运行 Phase 0")
+
+        if self.llm_client._stop_requested:
+            logger.info("Phase 0 检测到停止请求，提前退出")
+            return None
 
         # 1. 读取所有 chapter_*.json
         raw_locations, raw_spatial = self._load_all_chapter_data()
@@ -580,12 +586,12 @@ class LocationNormalizer:
         logger.info(f"Phase 0a：{len(groups)} 个 location group")
         all_canonicals = await self._run_phase_0a_batches(groups)
         if all_canonicals is None:
-            return False
+            return None if self.llm_client._stop_requested else False
 
         # 3. Phase 0a-consol：合并跨 batch 同地点
         final_locations = await self._run_phase_0a_consolidate(all_canonicals)
         if final_locations is None:
-            return False
+            return None if self.llm_client._stop_requested else False
 
         # 4. Phase 0b-batches：并发结构化 spatial
         pairs = aggregate_spatial_pairs(raw_spatial)
@@ -594,7 +600,7 @@ class LocationNormalizer:
         whitelist_names: Set[str] = {c["canonical_name"] for c in final_locations}
         all_spatial = await self._run_phase_0b_batches(pairs, whitelist, whitelist_names)
         if all_spatial is None:
-            return False
+            return None if self.llm_client._stop_requested else False
 
         # 5. Phase 0b-dedupe：机械去重
         final_spatial = self._run_phase_0b_dedupe(all_spatial)
@@ -651,10 +657,14 @@ class LocationNormalizer:
         )
         if not batches:
             return []
+        if self.llm_client._stop_requested:
+            return None
         semaphore = asyncio.Semaphore(self.concurrency)
 
         async def _process(batch_idx, batch):
             async with semaphore:
+                if self.llm_client._stop_requested:
+                    return None
                 messages = build_location_prompt(batch, batch_idx, len(batches))
                 try:
                     success, content, error, _tokens = await self.llm_client.chat(messages)
@@ -699,6 +709,8 @@ class LocationNormalizer:
     async def _run_phase_0a_consolidate(self, all_canonicals):
         if len(all_canonicals) <= 2:
             return all_canonicals
+        if self.llm_client._stop_requested:
+            return None
         canonical_list = [
             {"canonical": c["canonical_name"], "aliases": c["aliases"]}
             for c in all_canonicals
@@ -706,6 +718,8 @@ class LocationNormalizer:
         valid_names = {c["canonical"] for c in canonical_list}
         all_merges = []
         for i in range(0, len(canonical_list), _CONSOL_BATCH_SIZE):
+            if self.llm_client._stop_requested:
+                return None
             batch = canonical_list[i:i + _CONSOL_BATCH_SIZE]
             batch_idx = i // _CONSOL_BATCH_SIZE + 1
             total_batches = (len(canonical_list) + _CONSOL_BATCH_SIZE - 1) // _CONSOL_BATCH_SIZE
@@ -728,10 +742,14 @@ class LocationNormalizer:
         if not pairs:
             return []
         batches = self._split_into_batches(pairs, self.spatial_batch_size)
+        if self.llm_client._stop_requested:
+            return None
         semaphore = asyncio.Semaphore(self.concurrency)
 
         async def _process(batch_idx, batch):
             async with semaphore:
+                if self.llm_client._stop_requested:
+                    return None
                 messages = build_spatial_prompt(batch, whitelist, batch_idx, len(batches))
                 try:
                     success, content, error, _tokens = await self.llm_client.chat(messages)
