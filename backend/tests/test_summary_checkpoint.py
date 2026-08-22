@@ -108,34 +108,6 @@ def test_resume_skips_completed_llm_calls(tmp_path):
     final_mock.assert_awaited_once()
 
 
-@pytest.mark.asyncio
-async def test_run_fails_without_normalized(tmp_path):
-    """归一化文件缺失时，run() 应当在 pre-check 早退，不能进入分卷阶段。
-    旧实现会先调用 Phase 0 归一化；新实现必须只看 normalized 文件存在性。
-    """
-    from backend.services.final_summary import FinalSummaryRunner
-    (tmp_path / "output").mkdir()
-    (tmp_path / "output" / "chapter_1_result.json").write_text('{"ch":1,"data":{}}')
-    runner = FinalSummaryRunner(
-        config=AppConfig(),
-        output_dir=tmp_path,
-        start_chapter=1,
-        end_chapter=1,
-        batch_size=1,
-    )
-    normalizer_mock = MagicMock()
-    normalizer_mock.run = AsyncMock(return_value=True)
-    progress_events: list = []
-    with patch("backend.services.final_summary.LocationNormalizer", return_value=normalizer_mock, create=True), \
-         patch.object(runner, '_call_llm_summary', new=AsyncMock()) as m:
-        runner._on_progress = lambda p: progress_events.append(p)
-        result = await runner.run()
-        m.assert_not_called()
-        assert result is None
-        assert any(e.get("phase") == "prereq" for e in progress_events), \
-            f"应发 prereq 阶段失败事件，实际 {progress_events}"
-
-
 def test_resume_reconciliation_only_when_missing(tmp_path):
     """端到端：上次 reconciliation 未完成（只落盘卷摘要）时，重跑只补 reconciliation，不重跑卷摘要"""
     _write_results(tmp_path, 4)

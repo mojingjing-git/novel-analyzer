@@ -1357,20 +1357,11 @@ class FinalSummaryRunner:
         """执行完整总结流程。返回最终报告文本；用户停止返回 None；失败抛 RuntimeError"""
         t_start = time.time()
 
-        # 校验归一化前置条件（2026-08-22 重构）：Phase 0 已独立出最终总结
+        # Phase 0 归一化已独立为独立功能，不再作为总结的强制前置条件
+        # 归一化结果仅用于地图可视化 & Phase 0b 空间归一化，不影响最终总结生成
         output_subdir = self.output_dir / "output"
         if not output_subdir.is_dir():
             output_subdir = self.output_dir
-        loc_norm = output_subdir / "locations_normalized.json"
-        rel_norm = output_subdir / "spatial_relationships_normalized.json"
-        if not loc_norm.exists() or not rel_norm.exists():
-            logger.error(
-                f"归一化文件缺失（{loc_norm.name} / {rel_norm.name}），"
-                "请先在地图页面运行「地点归一化」"
-            )
-            self._emit_progress({"type": "phase_failed", "phase": "prereq",
-                                 "message": "请先在地图页面运行地点归一化"})
-            return
 
         self._emit_progress({"type": "status", "message": "正在加载章节数据..."})
         results = await asyncio.to_thread(self._load_results)
