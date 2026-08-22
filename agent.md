@@ -14,7 +14,7 @@
 - **后端**：FastAPI（异步），Python 3.11+
 - **桌面壳**：pywebview + WebView2（Windows）
 - **LLM 兼容**：任何 OpenAI 兼容 API（8+ 厂商预设），以及 Anthropic 协议
-- **测试**：101 个测试用例，17 个测试文件
+- **测试**：174 个测试用例（2026-08-23 砍掉 Phase 0a consolidation 后从 185 降到 174），17+ 个测试文件
 
 ---
 
@@ -70,7 +70,7 @@
 │   │   ├── export_utils.py       # Markdown 导出
 │   │   └── text_utils.py         # 编码检测、文本去重、伏笔去重
 │   ├── workers/                  # 后台任务
-│   └── tests/                    # pytest（101 用例，17 文件）
+│   └── tests/                    # pytest（174 用例，17 文件）
 ├── frontend/                     # Vue 3 前端
 │   ├── src/
 │   │   ├── api/
@@ -135,7 +135,7 @@
 | openpyxl | Excel 导出（懒加载） |
 | networkx + pyvis | 角色关系图（可选依赖） |
 | json5 / json_repair | JSON 容错解析 |
-| pytest | 101 个测试用例 |
+| pytest | 174 个测试用例 |
 
 ### 前端
 | 组件 | 版本/说明 |
@@ -166,7 +166,7 @@
   → output/rolling_summary.json
   → 最终保存（merge_results → 裁剪 → 写盘）
       ↓
-  → final_summary（4阶段总结）
+  → final_summary（4阶段总结，与归一化解耦）
       → batch volumes + reconciliation
       → foreshadow recheck
       → style extraction
@@ -176,6 +176,11 @@
   → style_analyzer → style.md
   → character_graph → graph.html
   → excel_export → *.xlsx
+  → 归一化（独立路径，仅服务地图；详见 §5.2 location_normalizer 与 §10.13）
+      → Phase 0a-batches（locations 并发）
+      → Phase 0b-batches（spatial 并发）
+      → Phase 0b-dedupe（机械去重）
+  → output/locations_normalized.json + spatial_relationships_normalized.json
 ```
 
 ### 4.2 三阶段分析流水线（pipeline.py）
@@ -389,18 +394,18 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
   2. `graph_data(output_dir, chapter_start?, chapter_end?, min_edge_weight=1, max_nodes=200, min_node_count=1)` — 角色节点 + 共现边，支持章节范围切片、边权阈值过滤、Top-N 截断，返回 `nodes/edges/total_characters/total_edges/filtered/chapter_range`
   3. `map_data()` — 地点 + 空间关系
 
-#### location_normalizer.py（420+行）
-- **职责**：地点与空间关系 LLM 归一化（Phase 0）
+#### location_normalizer.py（380+行）
+- **职责**：地点与空间关系 LLM 归一化（Phase 0，归一化与最终总结已解耦，仅服务地图）
 - **关键类**：`LocationNormalizer`
-- **4 子阶段**：
+- **3 子阶段**（2026-08-23 砍掉 Phase 0a consolidation，见 10.13）：
   1. `_run_phase_0a_batches`：locations 切片 + 并发 LLM 调 + 校验（canonical ∈ aliases）
-  2. `_run_phase_0a_consolidate`：1+ 次 LLM 合并跨 batch 同地点
-  3. `_run_phase_0b_batches`：spatial 切片 + canonical 白名单 + 并发 LLM
-  4. `_run_phase_0b_dedupe`：机械去重同 (from, to) 对
-- **触发**：`FinalSummaryRunner.run()` 内自动调用（`_init_progress` 之后）
+  2. `_run_phase_0b_batches`：spatial 切片 + canonical 白名单 + 并发 LLM
+  3. `_run_phase_0b_dedupe`：机械去重同 (from, to) 对
+- **触发**：由地图归一化入口（MapPage + `POST /api/viz/locations/normalize`）触发；不再在 `FinalSummaryRunner.run()` 里调用
 - **复用配置**：`summary_model` / `summary_concurrency` / `summary_timeout` / `summary_thinking_mode`
 - **输出**：`output/locations_normalized.json` + `output/spatial_relationships_normalized.json`
 - **chapter 标记**：每章 chapter_*.json 顶部加 `_normalized_ref` + `_normalized_spatial_ref` 字段
+- **地图强制依赖归一化**：`viz_service.map_data()` 检测到 `_normalized_ref` 缺失则返回 `needs_normalization: true`，MapPage 拦截展示归一化面板，不再读 raw locations
 
 ### 5.3 工具层（backend/utils/）
 
@@ -500,7 +505,7 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 | WorkspacePage | 185 | 工作区/归档：列表、归档、删除（自定义确认对话框） |
 | TimelinePage | 249 | 时间线：事件+伏笔、重要性/分类筛选 |
 | GraphPage | 361 | 角色关系图：ECharts force 力导向、章节范围切片、Top-N 截断、边权阈值过滤、邻接高亮、右侧关联面板 |
-| MapPage | 225 | 地图：SVG 树形布局、空间关系虚线 |
+| MapPage | 280+ | 地图：SVG 树形布局、空间关系虚线、归一化状态面板（强制走归一化数据，未归一化时拦截） |
 | CharacterCardPage | 259 | 角色数据库：统计、弧光、事件、状态演化、关系 |
 | StylePage | 139 | 风格分析：启停、轮询、结果展示 |
 | StatsPage | 181 | Token 统计：分类明细、每章详情、按书历史统计、5s 自动刷新 |
@@ -889,19 +894,70 @@ onMounted 触发时 `!bookId` 为真（首屏 `bookId=''`），第一个 `v-if` 
 
 **验证**：vue-tsc 0 错；vite build 7.02s 通过（dist hash 从 `T8WHxJuJ` 变 `B_KQHSDt`）；dist 同步并清理 6 个 orphan 文件（约 1.7 MB）。
 
-### 10.11 2026-08-21 地点 + 空间关系归一化（Phase 0）
+### 10.11 2026-08-21 地点 + 空间关系归一化（Phase 0，初版）
 
 **症状**：`MapPage.vue` 渲染树形布局时节点分散、parent 跳转、type 颜色不一致；spatial_relationships 无法按方向/距离过滤。
 
 **根因**：LLM 生成 `chapter_*.json` 时 `locations.parent` 多达 8 种不同值（实测 130/889 地点）、`type` 多达 9 种不同值（143/889 地点）；`spatial_relationships.relation` 是自由文本散文（54 对边有多重不一致描述）。
 
-**修复**（spec: `docs/superpowers/specs/2026-08-21-location-spatial-normalization-design.md`，plan: `docs/superpowers/plans/2026-08-21-location-spatial-normalization.md`）：
-- 新增 `LocationNormalizer`（`backend/services/location_normalizer.py`，420+ 行）
+**初版修复**（spec: `docs/superpowers/specs/2026-08-21-location-spatial-normalization-design.md`，plan: `docs/superpowers/plans/2026-08-21-location-spatial-normalization.md`）：
+- 新增 `LocationNormalizer`（`backend/services/location_normalizer.py`）
 - 在 `FinalSummaryRunner.run()` 最前面插入 4 子阶段流水线（0a-batches → 0a-consol → 0b-batches → 0b-dedupe）
 - 输出 `output/locations_normalized.json` + `output/spatial_relationships_normalized.json`，非破坏性
 - 每章 `chapter_*.json` 顶部加 `_normalized_ref` 字段，`viz_service.map_data()` 检测该字段决定读归一化数据
 - 复用 `summary_model/summary_concurrency/summary_timeout/summary_thinking_mode` 配置，无 UI 改动
 - 大书（千万字）通过 1000 group/batch + 2000 canonical/consol-batch 拆分避免 context 溢出
+
+**后续演进见 10.13**：2026-08-23 归一化从最终总结中解耦，并砍掉 Phase 0a 跨 batch consolidation。
+
+### 10.13 2026-08-23 归一化解耦 + 砍掉 Phase 0a consolidation
+
+> 背景：用户用《韩娱之光影交错》512 groups / 70K 字符跑了 5 批 Phase 0a，全部成功（json_repair 修复正常），但 Phase 0a 跨 batch consolidation 单批串行撞 630s 硬超时，让前 5 批结果白做；HTTP 429 也出现过一次（22:07）。本次彻底重设计。
+
+#### 改动 1：归一化从最终总结序列移除（commit `93e1494`）
+
+**症状**：归一化强卡在总结流程前，归一化失败/卡死会让"分析已完成 → 总结不能跑"成为最差体验（用户想跳过总结只看地图都不行）。
+
+**修复**：
+- `final_summary.py` 删掉归一化前置检查（不再强制要求 `locations_normalized.json` / `spatial_relationships_normalized.json` 存在）；遗留的 `output_subdir` 局部变量清理
+- `viz_service.map_data()` 改为强制依赖归一化：检测到 chapter_*.json 缺 `_normalized_ref` 则返回 `{nodes: [], edges: [], needs_normalization: true, missing: 'locations'|'spatial'}`，不再回退到 raw locations
+- `MapPage.vue` 检测 `needs_normalization` 拦截展示归一化面板（含"运行归一化"CTA）
+- 删除一个相关旧测试（`test_runs_all_four_phases_and_writes_outputs` → `test_runs_all_phases_and_writes_outputs`）
+- 验证：后端 185 测试通过，前端 build 通过
+
+#### 改动 2：Phase 0a consolidation 直接砍掉（commit `2d0d621`）
+
+**症状**：跨 batch consolidation 单批串行，遇 630s 硬超时整批白做。
+
+**修复**：
+- `LocationNormalizer.run()` 跳过 `_run_phase_0a_consolidate`，直接用 `_run_phase_0a_batches` 输出作为 `final_locations`
+- 删除 `_CONSOL_BATCH_SIZE` 常量、`_CONSOLIDATION_SYSTEM_PROMPT` 字符串、`build_consolidation_prompt()` / `parse_merge_map()` / `apply_merges()` 三个 helper 函数、`_run_phase_0a_consolidate()` 方法
+- 删除测试 `TestBuildConsolidationPrompt` / `TestParseMergeMap` / `TestApplyMerges`（共 11 个用例）
+- 175 → 174 测试通过
+- 现在的 Phase 0 流程：**3 子阶段**（0a-batches → 0b-batches → 0b-dedupe）
+- **代价**：理论上"宁安县"和"宁安县城"分到不同 batch 时不会合并；实测极少发生（每个 batch 已按字面相似度预聚合）
+
+#### 改动 3：桌面启动器 UTF-8 cmd 修复（commit `eb80654`）
+
+**症状**：`run_desktop.bat` 在 `chcp 65001` 下 `rem` 行带中文会被 cmd 解析器误识别，导致启动顺序异常。
+
+**修复**：把所有 `rem 注释` 行改为 ASCII 英文；保留 `chcp 65001` 不变；优先使用 `.venv\Scripts\python.exe`。
+
+#### 当前归一化架构（2026-08-23 起）
+
+```
+触发：MapPage "运行归一化" CTA / POST /api/viz/locations/normalize
+  ↓
+LocationNormalizer.run()（独立进程，FinalSummaryRunner 不再调用）
+  ├─ Phase 0a-batches：locations 切片（_LOCATION_PROMPT_BUDGET_CHARS=18K） + 并发
+  ├─ Phase 0b-batches：spatial 切片 + canonical 白名单 + 并发
+  └─ Phase 0b-dedupe：机械去重同 (from, to) 对
+  ↓
+output/locations_normalized.json + spatial_relationships_normalized.json
+chapter_*.json 顶部加 _normalized_ref + _normalized_spatial_ref
+  ↓
+MapPage 直接读；viz_service.map_data() 检测 _normalized_ref 缺失则 needs_normalization=true
+```
 
 ### 10.12 相关文档
 - Win11 重做计划：`docs/superpowers/plans/2026-08-16-win11-frontend-redesign.md`
