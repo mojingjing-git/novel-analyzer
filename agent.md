@@ -14,7 +14,7 @@
 - **后端**：FastAPI（异步），Python 3.11+
 - **桌面壳**：pywebview + WebView2（Windows）
 - **LLM 兼容**：任何 OpenAI 兼容 API（8+ 厂商预设），以及 Anthropic 协议
-- **测试**：174 个测试用例（2026-08-23 砍掉 Phase 0a consolidation 后从 185 降到 174），17+ 个测试文件
+- **测试**：177 个测试用例（2026-08-23 全局 Sem 改造后新增 3 个测试：174 → 177），18 个测试文件
 
 ---
 
@@ -70,7 +70,7 @@
 │   │   ├── export_utils.py       # Markdown 导出
 │   │   └── text_utils.py         # 编码检测、文本去重、伏笔去重
 │   ├── workers/                  # 后台任务
-│   └── tests/                    # pytest（174 用例，17 文件）
+│   └── tests/                    # pytest（177 用例，18 文件）
 ├── frontend/                     # Vue 3 前端
 │   ├── src/
 │   │   ├── api/
@@ -135,7 +135,7 @@
 | openpyxl | Excel 导出（懒加载） |
 | networkx + pyvis | 角色关系图（可选依赖） |
 | json5 / json_repair | JSON 容错解析 |
-| pytest | 174 个测试用例 |
+| pytest | 177 个测试用例 |
 
 ### 前端
 | 组件 | 版本/说明 |
@@ -277,7 +277,14 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 2. **全书伏笔复检**（剩余 active 伏笔，40个/子批）
    - **复检超限保护**：全量卷摘要超 `RECHECK_FULLTEXT_BUDGET_CHARS`（默认 15 万字符）时按伏笔埋设章砍埋设前卷（召回无损），仍超则跳过该组不调用 LLM
 3. **风格分析**：`extract_style_profile` → 注入最终报告
+   - **2026-08-23**：风格分析与阶段 1 并行启动（数据无依赖：仅需 blocks_dir），用 `asyncio.create_task` 在阶段 1 启动时立即跑，阶段 2 完成后 await 收结果
 4. **最终报告**：卷摘要 + 伏笔上下文 + 审计 + 风格 → `final_summary_report.md`
+
+**全局 LLM 并发上限 Sem（2026-08-23）：**
+- 4 阶段 + 风格提取**共用** `self._llm_sem = asyncio.Semaphore(self.concurrency)`，硬上限 = `self.concurrency`（用户配置 4/9/20 均不超）
+- 4 个 `_call_llm_*`（summary/reconciliation/recheck/final）+ `_run_style_extraction` 内部均通过 `_acquire_llm_slot()` / `_release_llm_slot()` 包裹 LLM 调用
+- in-flight 计数器 + peak 监控；`run()` 末尾日志打印 `peak in-flight = X / concurrency = N`，超限打 ERROR
+- 阶段 1 批内 summary 与 reconciliation 各自独立 acquire（checkpoint IO 不再抱死 Sem 槽）
 
 **伏笔总表构建：**
 ```
@@ -363,7 +370,7 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
   - 每本书分析完成后 token 消耗落盘 `output/token_stats.json`
 - **状态持久化**：`queue_state.json`（相对路径存储）
 
-#### final_summary.py（1140+行）
+#### final_summary.py（1640+行）
 - **职责**：全书总结执行引擎
 - **关键类**：`FinalSummaryRunner`
 - **关键方法**：`run()`、`_run_batch()`、`_reconcile_batch()`、`_recheck_remaining()`、`_write_report()`、`_plan_recheck_batches()`
@@ -957,6 +964,66 @@ output/locations_normalized.json + spatial_relationships_normalized.json
 chapter_*.json 顶部加 _normalized_ref + _normalized_spatial_ref
   ↓
 MapPage 直接读；viz_service.map_data() 检测 _normalized_ref 缺失则 needs_normalization=true
+```
+
+### 10.14 2026-08-23 全局 LLM 并发 Sem + 风格并行
+
+> 用户 API 上限从 4 到 20 不等（按厂商而异），之前 final_summary 的并发模型分散（阶段 1 一个 Sem、阶段 2 一个 Sem、阶段 3/4 无 Sem），风格提取用独立 LLMClient 完全不受限。本次改造统一为全局 Sem，硬上限 = `self.concurrency`。
+
+#### 改动（commit `73e998c`）
+
+**核心**：
+- `FinalSummaryRunner.__init__` 新增 `self._llm_sem = asyncio.Semaphore(self.concurrency)` + in-flight 计数器（`_inflight_count` / `_peak_inflight`）
+- 新增辅助方法 `_acquire_llm_slot()` / `_release_llm_slot()`，同时记录峰值
+- 4 个 `_call_llm_*`（summary / reconciliation / recheck / final）内部统一包 `async with self._llm_sem:`
+- `_run_style_extraction` 也包 Sem（让风格提取的 LLM 调用也走同一上限）
+
+**阶段 1 批内拆分**：
+- 原来：`process_batch_collect` 用一个局部 `asyncio.Semaphore`，每次 acquire 抱两次 LLM 调用（summary + reconciliation），checkpoint IO 也占用 Sem 槽
+- 现在：去掉局部 Sem，每次 LLM 调用独立 acquire。summary 与 reconciliation 各自占槽，checkpoint IO 不再抱死槽位
+
+**风格提取并行**：
+- `run()` 阶段 1 启动时立即 `style_task = asyncio.create_task(self._run_style_extraction())`
+- 阶段 2 完成后 `await style_task` 收集结果
+- 风格仅需 `blocks_dir`、与阶段 1/2 完全无数据依赖，自然抢同一 Sem 槽位
+- 进度事件 `phase=style` 改为按 `if not style_task.done()` 条件 emit：若风格已先完成（被阶段 1 让出槽位），不再 emit "正在提取"（避免 UI 误导）
+
+**生产可观测**：
+- `run()` 末尾日志：`final_summary 完成：peak in-flight = X / concurrency = N`
+- 超限：`logger.error(f"BUG：peak in-flight {self._peak_inflight} 超 concurrency {self.concurrency}！")`
+- 用户跑完直接看 log 数字确认未撞 API 上限
+
+#### 通用性保证
+
+- **无任何硬编码并发数**：Sem 容量直接读 `self.concurrency = max(1, concurrency if not None else config.analysis.summary_concurrency)`，用户配 4 / 9 / 20 / 任意值都生效
+- **测试覆盖**：`test_global_llm_sem.py` parametrize `concurrency=3/9` 验证 peak ≤ 配置值；同时验证 Sem 实例在 4 阶段 + 风格中复用同一个（不是各阶段新建）
+
+#### 性能影响
+
+- 阶段 1：每个 batch 的 summary 与 reconciliation 现在可交错（不同 batch 的 summary/recon 可同时进行），批内并发利用率提升
+- 风格提取（30-60s）：从"阶段 4 之前串行"改为"阶段 1 启动时并行"，总时长缩短 30-60s
+- 4 阶段总在飞 LLM 峰值 = `self.concurrency`（硬上限，与 API 限额一致）
+
+#### 当前并发架构
+
+```
+FinalSummaryRunner.run()
+  │
+  ├─ 启动: style_task = create_task(_run_style_extraction())   ← 风格并行启动
+  │
+  ├─ 阶段 1: 卷摘要 + 伏笔调和（每批 2 次 LLM，各走 self._llm_sem）
+  │    async with self._llm_sem: summary_call
+  │    async with self._llm_sem: recon_call
+  │
+  ├─ 阶段 2: 全书伏笔复检（每子批 1 次 LLM）
+  │    async with self._llm_sem: recheck_call
+  │
+  ├─ await style_task   ← 阶段 2 完成后收结果
+  │
+  └─ 阶段 4: 最终报告（1 次 LLM）
+       async with self._llm_sem: final_call
+       
+任意时刻总 in-flight ≤ self.concurrency
 ```
 
 ### 10.12 相关文档
