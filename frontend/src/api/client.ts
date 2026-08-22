@@ -189,6 +189,25 @@ export interface SummaryStatus {
   token_stats: Record<string, TokenCategory>
 }
 
+export interface LocationNormalizationStatus {
+  running: boolean
+  book_id: string
+  phase: string
+  batches_done: number
+  total_batches: number
+  error: string
+  started_at: number
+  finished_at: number
+  token_stats: Record<string, unknown>
+}
+
+export interface MapDataResponse {
+  book_id: string
+  locations: unknown[]
+  relationships: unknown[]
+  needs_normalization: boolean
+}
+
 export interface SplitterPreview {
   chapters: { index: number; title: string; word_count: number; volume?: string | null; num?: number | null }[]
   total_chapters: number
@@ -308,6 +327,23 @@ export const api = {
     }),
   stopSummary: () => request<{ ok: boolean }>('/api/summary/stop', { method: 'POST' }),
   summaryStatus: () => request<SummaryStatus>('/api/summary/status'),
+
+  startLocationNormalization: (book_id: string) =>
+    request<{ ok: boolean }>('/api/location-normalization/start', {
+      method: 'POST',
+      body: JSON.stringify({ book_id }),
+    }),
+  stopLocationNormalization: () =>
+    request<{ ok: boolean }>('/api/location-normalization/stop', { method: 'POST' }),
+  locationNormalizationStatus: () =>
+    request<LocationNormalizationStatus>('/api/location-normalization/status'),
+  getLocationNormalizationResult: (book_id: string) =>
+    request<{
+      exists: boolean
+      normalized_at?: string
+      location_count?: number
+      spatial_count?: number
+    }>(`/api/location-normalization/result/${book_id}`),
 
   // 风格分析
   startStyle: (book_id: string, use_llm: boolean, limit: number) =>
