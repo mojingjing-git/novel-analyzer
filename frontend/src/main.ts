@@ -2,6 +2,7 @@ import { createApp } from 'vue'
 import App from './App.vue'
 import { router } from './router'
 import { setupRipple } from './composables/useRipple'
+import { vTooltip } from './composables/vTooltip'
 import './main.css'
 
 // 强制动效豁免：系统关闭动画（prefers-reduced-motion: reduce）时，
@@ -11,7 +12,9 @@ if (typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion:
   document.documentElement.classList.add('no-reduce')
 }
 
-createApp(App).use(router).mount('#root')
+const app = createApp(App)
+app.directive('tooltip', vTooltip)
+app.use(router).mount('#root')
 
 // 全局 ripple 注入（在挂载后启动，避免拦截 setup 阶段的事件）
 setupRipple()

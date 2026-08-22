@@ -12,20 +12,20 @@ const tooltips: Record<string, string> = {
   base_url: 'LLM 服务的入口地址，例如 https://api.openai.com/v1 或厂商网关地址',
   api_key: '厂商颁发的访问密钥；本地工具明文存储，仅写入本机 config.json',
   model: '模型名。点输入框展开列表（按当前 base_url/api_key 探测），也可手填自定义模型',
-  provider: '请求协议格式：auto=按 base_url/API Key/模型名特征自动检测；openai=OpenAI 兼容 /chat/completions；anthropic=Anthropic /v1/messages',
+  provider: '请求协议格式：\nauto = 按 base_url/API Key/模型名特征自动检测\nopenai = OpenAI 兼容 /chat/completions\nanthropic = Anthropic /v1/messages',
   max_tokens: '单次 LLM 请求的最大输出 token 上限；超出将被截断',
   timeout: '单次分析请求的 API 超时（秒）；超时后会进入重试链',
   summary_timeout: '最终总结（卷摘要+最终报告+伏笔 reconciliation/复检+风格提取）使用的 API 超时，建议比分析 Timeout 长（默认 600s）',
-  json_mode: 'JSON 输出约束模式：default=通用；qwen=Qwen 系列需关 thinking；deepseek=DeepSeek V4；glm47=GLM-4.7',
-  thinking_mode: '禁用/启用模型的思考链；点「自动探测」会让系统实测哪个参数有效',
+  json_mode: 'JSON 输出约束模式：\ndefault = 通用\nqwen = Qwen 系列需关 thinking\ndeepseek = DeepSeek V4\nglm47 = GLM-4.7',
+  thinking_mode: '禁用/启用模型的思考链。\n点「自动探测」会让系统实测哪个参数有效',
   // 温度退火 & 重试
   temperature: '单次请求的初始温度；后续重试会逐步降温',
   temperature_step: '每轮退火重试时降低的温度（例：起始 0.7、步长 0.15 → 0.7 → 0.55 → 0.4 → ...）',
   temperature_max_retries: '温度退火最大重试轮数；用尽后再走退避',
   backoff_max_retries: '指数退避最大轮数；等待时长 min(2^N, 60s)；429 会额外 3 轮并尊重 Retry-After',
   // 分析配置
-  concurrency: '并行分析的章节数；越大越快但 token 峰值越高（受 API TPM/RPM 限制）',
-  block_size: '每"块"包含的章节数；块越大单次请求 context 越长、token 消耗越大，但 KB 增量更稳定',
+  concurrency: '并行分析的章节数。\n越大越快，但 token 峰值越高（受 API TPM/RPM 限制）',
+  block_size: '每"块"包含的章节数。\n块越大单次请求 context 越长、token 消耗越大，但 KB 增量更稳定',
   max_arc_length: '主线（角色弧光）最大字数；超过会在合并阶段裁剪',
   max_arcs_in_prompt: '每章 Prompt 中携带的最近弧光条数；过多会稀释注意力',
   max_summaries_in_prompt: '每章 Prompt 中携带的近期章节摘要数；影响上下文长度与连续性',
@@ -276,22 +276,22 @@ onMounted(load)
     <div class="glass-card p-4 space-y-3">
       <h3 class="font-semibold pb-2" style="border-bottom: 1px solid var(--win-stroke); letter-spacing: -0.01em">API 配置</h3>
       <div class="flex items-center gap-2">
-        <label class="w-32 text-sm" style="color: var(--win-text-secondary)" :title="tooltips.api_preset">API 预设:</label>
+        <label class="w-32 text-sm" style="color: var(--win-text-secondary)" v-tooltip="tooltips.api_preset">API 预设:</label>
         <select @change="onPreset(($event.target as HTMLSelectElement).value)" class="glass-input flex-1">
           <option value="">选择预设...</option>
           <option v-for="(_, name) in presets" :key="name" :value="name">{{ name }}</option>
         </select>
       </div>
       <div class="flex items-center gap-2">
-        <label class="w-32 text-sm" style="color: var(--win-text-secondary)" :title="tooltips.base_url">Base URL:</label>
+        <label class="w-32 text-sm" style="color: var(--win-text-secondary)" v-tooltip="tooltips.base_url">Base URL:</label>
         <input v-model="config.api.base_url" :class="errCls('base_url')" class="glass-input flex-1" />
       </div>
       <div class="flex items-center gap-2">
-        <label class="w-32 text-sm" style="color: var(--win-text-secondary)" :title="tooltips.api_key">API Key:</label>
+        <label class="w-32 text-sm" style="color: var(--win-text-secondary)" v-tooltip="tooltips.api_key">API Key:</label>
         <input v-model="config.api.api_key" :class="errCls('api_key')" type="password" class="glass-input flex-1" />
       </div>
       <div class="flex items-center gap-2">
-        <label class="w-32 text-sm shrink-0" style="color: var(--win-text-secondary)" :title="tooltips.model">模型:</label>
+        <label class="w-32 text-sm shrink-0" style="color: var(--win-text-secondary)" v-tooltip="tooltips.model">模型:</label>
         <div class="relative flex-1" ref="modelBoxRef">
           <input
             v-model="config.api.model"
@@ -324,7 +324,7 @@ onMounted(load)
         <button @click="loadModels" class="glass-button btn-sm">获取模型</button>
       </div>
       <div class="flex items-center gap-2">
-        <label class="w-32 text-sm shrink-0" style="color: var(--win-text-secondary)" :title="tooltips.provider">协议格式:</label>
+        <label class="w-32 text-sm shrink-0" style="color: var(--win-text-secondary)" v-tooltip="tooltips.provider">协议格式:</label>
         <select v-model="config.api.provider" class="glass-input flex-1">
           <option value="auto">auto（自动检测）</option>
           <option value="openai">openai（OpenAI 兼容）</option>
@@ -333,25 +333,25 @@ onMounted(load)
       </div>
       <p v-if="modelError" class="glass-tinted-red px-3 py-2 rounded text-xs">{{ modelError }}</p>
       <div class="flex items-center gap-2">
-        <label class="w-32 text-sm" style="color: var(--win-text-secondary)" :title="tooltips.max_tokens">Max Tokens:</label>
+        <label class="w-32 text-sm" style="color: var(--win-text-secondary)" v-tooltip="tooltips.max_tokens">Max Tokens:</label>
         <input v-model.number="config.api.max_tokens" :class="errCls('max_tokens')" type="number" class="glass-input" style="width: 130px" />
       </div>
       <div class="flex items-center gap-2">
-        <label class="w-32 text-sm" style="color: var(--win-text-secondary)" :title="tooltips.timeout">分析 Timeout (s):</label>
+        <label class="w-32 text-sm" style="color: var(--win-text-secondary)" v-tooltip="tooltips.timeout">分析 Timeout (s):</label>
         <input v-model.number="config.api.timeout" :class="errCls('timeout')" type="number" class="glass-input" style="width: 100px" />
       </div>
       <div class="flex items-center gap-2">
-        <label class="w-32 text-sm" style="color: var(--win-text-secondary)" :title="tooltips.summary_timeout">总结 Timeout (s):</label>
+        <label class="w-32 text-sm" style="color: var(--win-text-secondary)" v-tooltip="tooltips.summary_timeout">总结 Timeout (s):</label>
         <input v-model.number="config.api.summary_timeout" :class="errCls('summary_timeout')" type="number" class="glass-input" style="width: 100px" />
       </div>
       <div class="flex items-center gap-2">
-        <label class="w-32 text-sm" style="color: var(--win-text-secondary)" :title="tooltips.json_mode">JSON 模式:</label>
+        <label class="w-32 text-sm" style="color: var(--win-text-secondary)" v-tooltip="tooltips.json_mode">JSON 模式:</label>
         <select v-model="config.api.json_mode" class="glass-input flex-1">
           <option v-for="m in jsonModes" :key="m.value" :value="m.value">{{ m.label }}</option>
         </select>
       </div>
       <div class="flex items-center gap-2">
-        <label class="w-32 text-sm" style="color: var(--win-text-secondary)" :title="tooltips.thinking_mode">思考模式:</label>
+        <label class="w-32 text-sm" style="color: var(--win-text-secondary)" v-tooltip="tooltips.thinking_mode">思考模式:</label>
         <select :value="getThinkingMode()" @change="setThinkingMode(($event.target as HTMLSelectElement).value)" class="glass-input flex-1">
           <option v-for="m in [...thinkingModes, ...dynamicThinkingOptions]" :key="m.value" :value="m.value">{{ m.label }}</option>
         </select>
@@ -378,27 +378,27 @@ onMounted(load)
     <div class="glass-card p-4 space-y-3">
       <h3 class="font-semibold pb-2" style="border-bottom: 1px solid var(--win-stroke); letter-spacing: -0.01em">温度退火 & 重试</h3>
       <div class="grid grid-cols-2 gap-3">
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" :title="tooltips.temperature">初始温度:</label><input v-model.number="config.api.temperature" :class="errCls('temperature')" type="number" step="0.01" class="glass-input" style="width: 90px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" :title="tooltips.temperature_step">温度步长:</label><input v-model.number="config.api.temperature_step" :class="errCls('temperature_step')" type="number" step="0.01" class="glass-input" style="width: 90px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" :title="tooltips.temperature_max_retries">退火重试:</label><input v-model.number="config.api.temperature_max_retries" :class="errCls('temperature_max_retries')" type="number" min="1" class="glass-input" style="width: 90px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" :title="tooltips.backoff_max_retries">退避重试:</label><input v-model.number="config.api.backoff_max_retries" :class="errCls('backoff_max_retries')" type="number" min="0" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" v-tooltip="tooltips.temperature">初始温度:</label><input v-model.number="config.api.temperature" :class="errCls('temperature')" type="number" step="0.01" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" v-tooltip="tooltips.temperature_step">温度步长:</label><input v-model.number="config.api.temperature_step" :class="errCls('temperature_step')" type="number" step="0.01" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" v-tooltip="tooltips.temperature_max_retries">退火重试:</label><input v-model.number="config.api.temperature_max_retries" :class="errCls('temperature_max_retries')" type="number" min="1" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" v-tooltip="tooltips.backoff_max_retries">退避重试:</label><input v-model.number="config.api.backoff_max_retries" :class="errCls('backoff_max_retries')" type="number" min="0" class="glass-input" style="width: 90px" /></div>
       </div>
     </div>
 
     <div class="glass-card p-4 space-y-3">
       <h3 class="font-semibold pb-2" style="border-bottom: 1px solid var(--win-stroke); letter-spacing: -0.01em">分析配置</h3>
       <div class="grid grid-cols-2 gap-3">
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" :title="tooltips.concurrency">并发数:</label><input v-model.number="config.analysis.concurrency" type="number" min="1" max="20" class="glass-input" style="width: 90px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" :title="tooltips.block_size">块大小 (章/块):</label><input v-model.number="config.analysis.block_size" type="number" min="1" max="10" class="glass-input" style="width: 90px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" :title="tooltips.max_arc_length">主线最大字数:</label><input v-model.number="config.analysis.max_arc_length" type="number" class="glass-input" style="width: 110px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" :title="tooltips.max_arcs_in_prompt">Prompt 主线条数:</label><input v-model.number="config.analysis.max_arcs_in_prompt" type="number" class="glass-input" style="width: 90px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" :title="tooltips.max_summaries_in_prompt">Prompt 摘要数:</label><input v-model.number="config.analysis.max_summaries_in_prompt" type="number" class="glass-input" style="width: 90px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" :title="tooltips.timeline_truncate">时间线截断:</label><input v-model.number="config.analysis.timeline_truncate" type="number" class="glass-input" style="width: 110px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" :title="tooltips.max_character_states">角色状态数:</label><input v-model.number="config.analysis.max_character_states" type="number" class="glass-input" style="width: 90px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" :title="tooltips.max_world_items">世界观条数:</label><input v-model.number="config.analysis.max_world_items" type="number" class="glass-input" style="width: 90px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" :title="tooltips.max_foreshadow_entries">伏笔网络条数:</label><input v-model.number="config.analysis.max_foreshadow_entries" type="number" class="glass-input" style="width: 90px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" :title="tooltips.batch_summary_min_words">分卷摘要字数:</label><input v-model.number="config.analysis.batch_summary_min_words" type="number" class="glass-input" style="width: 110px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" :title="tooltips.final_report_min_words">最终报告字数:</label><input v-model.number="config.analysis.final_report_min_words" type="number" class="glass-input" style="width: 110px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" v-tooltip="tooltips.concurrency">并发数:</label><input v-model.number="config.analysis.concurrency" type="number" min="1" max="20" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" v-tooltip="tooltips.block_size">块大小 (章/块):</label><input v-model.number="config.analysis.block_size" type="number" min="1" max="10" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" v-tooltip="tooltips.max_arc_length">主线最大字数:</label><input v-model.number="config.analysis.max_arc_length" type="number" class="glass-input" style="width: 110px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" v-tooltip="tooltips.max_arcs_in_prompt">Prompt 主线条数:</label><input v-model.number="config.analysis.max_arcs_in_prompt" type="number" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" v-tooltip="tooltips.max_summaries_in_prompt">Prompt 摘要数:</label><input v-model.number="config.analysis.max_summaries_in_prompt" type="number" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" v-tooltip="tooltips.timeline_truncate">时间线截断:</label><input v-model.number="config.analysis.timeline_truncate" type="number" class="glass-input" style="width: 110px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" v-tooltip="tooltips.max_character_states">角色状态数:</label><input v-model.number="config.analysis.max_character_states" type="number" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" v-tooltip="tooltips.max_world_items">世界观条数:</label><input v-model.number="config.analysis.max_world_items" type="number" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" v-tooltip="tooltips.max_foreshadow_entries">伏笔网络条数:</label><input v-model.number="config.analysis.max_foreshadow_entries" type="number" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" v-tooltip="tooltips.batch_summary_min_words">分卷摘要字数:</label><input v-model.number="config.analysis.batch_summary_min_words" type="number" class="glass-input" style="width: 110px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" v-tooltip="tooltips.final_report_min_words">最终报告字数:</label><input v-model.number="config.analysis.final_report_min_words" type="number" class="glass-input" style="width: 110px" /></div>
         <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" title="卷摘要拼接总字符超过此阈值时触发分层压缩（首尾各 1 组保留全文，中间组截断到 1/2）">压缩阈值 (字符):</label><input v-model.number="config.analysis.volume_compress_threshold" type="number" min="10000" class="glass-input" style="width: 110px" /></div>
         <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" title="每 N 卷为一组（首尾各 1 组保留全文，中间组截断到 1/2）">压缩组大小 (卷):</label><input v-model.number="config.analysis.volume_compress_group" type="number" min="1" class="glass-input" style="width: 90px" /></div>
         <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" title="伏笔最低保留重要度：低/中/高；过滤阶段会丢弃低于该等级的所有伏笔">伏笔最低重要度:</label>
@@ -430,7 +430,7 @@ onMounted(load)
           :key="cat.name"
           class="category-chip flex items-start gap-2 text-sm cursor-pointer p-1.5"
           :class="{ 'is-checked': keptSet.has(cat.name) }"
-          :title="cat.description + (cat.examples.length ? '\\n\\n典型示例: ' + cat.examples.join(', ') : '')"
+          v-tooltip="cat.description + (cat.examples.length ? '\n\n典型示例: ' + cat.examples.join(', ') : '')"
         >
           <input
             type="checkbox"
@@ -446,28 +446,28 @@ onMounted(load)
     <div class="glass-card p-4 space-y-3">
       <h3 class="font-semibold pb-2" style="border-bottom: 1px solid var(--win-stroke); letter-spacing: -0.01em">滚动总结参数</h3>
       <div class="grid grid-cols-2 gap-3">
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" :title="tooltips.rolling_early_chapters">触发章数:</label><input v-model.number="config.analysis.rolling_early_chapters" type="number" class="glass-input" style="width: 90px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" :title="tooltips.rolling_max_milestones">里程碑上限:</label><input v-model.number="config.analysis.rolling_max_milestones" type="number" class="glass-input" style="width: 90px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" :title="tooltips.rolling_max_momentum">势头上限:</label><input v-model.number="config.analysis.rolling_max_momentum" type="number" class="glass-input" style="width: 90px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" :title="tooltips.rolling_momentum_window">归档跨度:</label><input v-model.number="config.analysis.rolling_momentum_window" type="number" class="glass-input" style="width: 110px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" :title="tooltips.rolling_archive_trigger_count">归档触发:</label><input v-model.number="config.analysis.rolling_archive_trigger_count" type="number" class="glass-input" style="width: 90px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" :title="tooltips.checkpoint_interval">Checkpoint:</label><input v-model.number="config.analysis.checkpoint_interval" type="number" min="0" max="100" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" v-tooltip="tooltips.rolling_early_chapters">触发章数:</label><input v-model.number="config.analysis.rolling_early_chapters" type="number" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" v-tooltip="tooltips.rolling_max_milestones">里程碑上限:</label><input v-model.number="config.analysis.rolling_max_milestones" type="number" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" v-tooltip="tooltips.rolling_max_momentum">势头上限:</label><input v-model.number="config.analysis.rolling_max_momentum" type="number" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" v-tooltip="tooltips.rolling_momentum_window">归档跨度:</label><input v-model.number="config.analysis.rolling_momentum_window" type="number" class="glass-input" style="width: 110px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" v-tooltip="tooltips.rolling_archive_trigger_count">归档触发:</label><input v-model.number="config.analysis.rolling_archive_trigger_count" type="number" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" v-tooltip="tooltips.checkpoint_interval">Checkpoint:</label><input v-model.number="config.analysis.checkpoint_interval" type="number" min="0" max="100" class="glass-input" style="width: 90px" /></div>
       </div>
-      <label class="flex items-center gap-2 text-sm cursor-pointer" :title="tooltips.auto_archive">
+      <label class="flex items-center gap-2 text-sm cursor-pointer" v-tooltip="tooltips.auto_archive">
         <input v-model="config.analysis.auto_archive" type="checkbox" />
         自动归档
       </label>
-      <label class="flex items-center gap-2 text-sm cursor-pointer" :title="tooltips.auto_summary">
+      <label class="flex items-center gap-2 text-sm cursor-pointer" v-tooltip="tooltips.auto_summary">
         <input v-model="config.analysis.auto_summary" type="checkbox" />
         队列完成后自动总结
       </label>
-      <label class="flex items-center gap-2 text-sm cursor-pointer" :title="tooltips.skip_moderation_blocked">
+      <label class="flex items-center gap-2 text-sm cursor-pointer" v-tooltip="tooltips.skip_moderation_blocked">
         <input v-model="config.analysis.skip_moderation_blocked" type="checkbox" />
         跳过内容审核拦截章节
       </label>
       <div class="grid grid-cols-2 gap-3">
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" :title="tooltips.summary_concurrency">总结并发数:</label><input v-model.number="config.analysis.summary_concurrency" type="number" min="1" max="20" class="glass-input" style="width: 90px" /></div>
-        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" :title="tooltips.summary_batch_size">总结批次大小:</label><input v-model.number="config.analysis.summary_batch_size" type="number" min="5" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" v-tooltip="tooltips.summary_concurrency">总结并发数:</label><input v-model.number="config.analysis.summary_concurrency" type="number" min="1" max="20" class="glass-input" style="width: 90px" /></div>
+        <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" v-tooltip="tooltips.summary_batch_size">总结批次大小:</label><input v-model.number="config.analysis.summary_batch_size" type="number" min="5" class="glass-input" style="width: 90px" /></div>
         <div class="flex items-center gap-2"><label class="text-sm flex-1" style="color: var(--win-text-secondary)" title="全书伏笔复检时每次 LLM 调用携带的活跃伏笔数；调大可减少调用次数省钱，单批过大可能稀释注意力降低判断质量">复检批大小:</label><input v-model.number="config.analysis.foreshadow_recheck_batch_size" type="number" min="10" max="200" class="glass-input" style="width: 90px" /></div>
       </div>
     </div>

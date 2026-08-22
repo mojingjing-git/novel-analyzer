@@ -955,3 +955,37 @@ html.dark .glass-clear {
 .md-content strong { font-weight: 600; }
 .md-content em { font-style: italic; }
 .md-content del { color: var(--win-text-secondary); text-decoration: line-through; }
+
+/* ===== v-tooltip 全局自定义 tooltip（替代原生 title） =====
+   解决原生 tooltip 不支持 \n、跨浏览器样式丑、不跟随光标的问题。
+   \n 换行通过 white-space: pre-line 渲染。 */
+.v-tooltip-bubble {
+  position: fixed;
+  z-index: 9999;
+  max-width: 280px;
+  padding: 8px 12px;
+  background: var(--win-layer);
+  color: var(--win-text-primary);
+  border: 1px solid var(--win-stroke);
+  border-radius: 6px;
+  box-shadow: var(--win-shadow-flyout);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-line;
+  word-wrap: break-word;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(2px);
+  transition: opacity var(--win-duration-fast) var(--win-ease),
+              transform var(--win-duration-fast) var(--win-ease);
+}
+.v-tooltip-bubble.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+.v-tooltip-bubble[data-placement="bottom"] {
+  transform: translateY(-2px);
+}
+.v-tooltip-bubble[data-placement="bottom"].is-visible {
+  transform: translateY(0);
+}
