@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, computed, onMounted } from 'vue'
+import { ref, watch, computed, onMounted, onUnmounted } from 'vue'
 import BookSelector from '../components/BookSelector.vue'
 import { api } from '../api/client'
 import type { LocationNormalizationStatus, MapDataResponse } from '../api/client'
@@ -76,6 +76,9 @@ watch(bookId, async () => {
   if (!bookId.value) { locations.value = []; relationships.value = []; needsNormalization.value = false; return }
   selected.value = null
   try {
+    // cast intentional: client.ts is WIP-protected (graph-redesign 在跑), getMap 的返回类型签名
+    // 暂未扩展为 MapDataResponse（含 needs_normalization 字段）。运行时后端 viz_service.map_data()
+    // 始终返回 needs_normalization，类型契约将由 graph-redesign 合入时统一修齐。
     const res = (await api.getMap(bookId.value)) as unknown as MapDataResponse
     locations.value = res.locations as Location[]
     relationships.value = res.relationships as SpatialRel[]
@@ -105,6 +108,13 @@ watch(() => normStatus.value?.running, async (running, prev) => {
 
 onMounted(() => {
   refreshNormStatus()
+})
+
+onUnmounted(() => {
+  if (normPollHandle !== null) {
+    window.clearInterval(normPollHandle)
+    normPollHandle = null
+  }
 })
 
 const tree = computed(() => {
