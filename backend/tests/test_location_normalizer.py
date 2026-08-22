@@ -321,96 +321,6 @@ class TestParseAndValidateSpatial:
         assert result == []
 
 
-from backend.services.location_normalizer import (
-    build_consolidation_prompt,
-    parse_merge_map,
-    apply_merges,
-)
-
-
-class TestBuildConsolidationPrompt:
-    def test_returns_messages_with_batch_index(self):
-        canonical_list = [{"canonical": "宁安县", "aliases": ["宁安县"]}]
-        messages = build_consolidation_prompt(canonical_list, batch_idx=2, total_batches=4)
-        assert len(messages) == 2
-        assert "batch 2/4" in messages[1]["content"]
-
-
-class TestParseMergeMap:
-    def test_accepts_valid_merges(self):
-        llm_text = json.dumps({"merges": [["宁安县", "宁安县城"]]})
-        result = parse_merge_map(llm_text, {"宁安县", "宁安县城", "大贞"})
-        assert result == {"merges": [["宁安县", "宁安县城"]]}
-
-    def test_filters_hallucinated_merges(self):
-        llm_text = json.dumps({"merges": [["宁安县", "京城市"]]})
-        result = parse_merge_map(llm_text, {"宁安县"})
-        assert result == {"merges": []}
-
-    def test_filters_self_merges(self):
-        llm_text = json.dumps({"merges": [["宁安县", "宁安县"]]})
-        result = parse_merge_map(llm_text, {"宁安县"})
-        assert result == {"merges": []}
-
-    def test_empty_merges_is_valid(self):
-        llm_text = json.dumps({"merges": []})
-        result = parse_merge_map(llm_text, {"宁安县"})
-        assert result == {"merges": []}
-
-    def test_invalid_json(self):
-        result = parse_merge_map("not json", {"宁安县"})
-        assert result == {"merges": []}
-
-
-class TestApplyMerges:
-    def test_merges_two_canonicals(self):
-        canon = [
-            {"canonical_name": "宁安县", "aliases": ["宁安县"], "parent": "大周", "type": "城市", "description": "甲"},
-            {"canonical_name": "宁安县城", "aliases": ["宁安县城"], "parent": "大周", "type": "城池", "description": "乙"},
-        ]
-        result = apply_merges(canon, {"merges": [["宁安县", "宁安县城"]]})
-        assert len(result) == 1
-        assert result[0]["canonical_name"] in ("宁安县", "宁安县城")
-        assert set(result[0]["aliases"]) == {"宁安县", "宁安县城"}
-
-    def test_no_merges_returns_unchanged(self):
-        canon = [{"canonical_name": "宁安县", "aliases": ["宁安县"], "parent": "大周", "type": "城市", "description": ""}]
-        result = apply_merges(canon, {"merges": []})
-        assert result == canon
-
-    def test_merges_multiple_targets(self):
-        canon = [
-            {"canonical_name": "A", "aliases": ["A"], "parent": "X", "type": "城", "description": ""},
-            {"canonical_name": "B", "aliases": ["B"], "parent": "X", "type": "城", "description": ""},
-            {"canonical_name": "C", "aliases": ["C"], "parent": "X", "type": "城", "description": ""},
-        ]
-        result = apply_merges(canon, {"merges": [["A", "B"], ["B", "C"]]})
-        assert len(result) == 1
-        assert set(result[0]["aliases"]) == {"A", "B", "C"}
-
-    def test_root_picks_higher_chapter_count(self):
-        canon = [
-            {"canonical_name": "低频", "aliases": ["低频"], "parent": "X", "type": "城", "description": "", "chapter_count": 2},
-            {"canonical_name": "高频", "aliases": ["高频"], "parent": "X", "type": "城", "description": "", "chapter_count": 10},
-        ]
-        result = apply_merges(canon, {"merges": [["低频", "高频"]]})
-        assert len(result) == 1
-        assert result[0]["canonical_name"] == "高频"
-        assert result[0]["chapter_count"] == 10
-        assert set(result[0]["aliases"]) == {"低频", "高频"}
-
-    def test_chained_merge_with_intermediate_root(self):
-        canon = [
-            {"canonical_name": "甲", "aliases": ["甲"], "parent": "X", "type": "城", "description": "", "chapter_count": 1},
-            {"canonical_name": "乙", "aliases": ["乙"], "parent": "X", "type": "城", "description": "", "chapter_count": 2},
-            {"canonical_name": "丙", "aliases": ["丙"], "parent": "X", "type": "城", "description": "", "chapter_count": 3},
-        ]
-        result = apply_merges(canon, {"merges": [["甲", "乙"], ["乙", "丙"]]})
-        assert len(result) == 1
-        assert set(result[0]["aliases"]) == {"甲", "乙", "丙"}
-        assert result[0]["canonical_name"] == "丙"
-
-
 import asyncio
 import shutil
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -454,11 +364,11 @@ def _make_mock_llm(responses):
 
 
 class TestLocationNormalizerRun:
-    def test_runs_all_four_phases_and_writes_outputs(self, tmp_path):
+    def test_runs_all_phases_and_writes_outputs(self, tmp_path):
         _setup_output_dir(tmp_path, chapters=3)
 
         # Phase 0a batch 返回：归一化宁安县 + 宁安县城 → "宁安县"
-        # Phase 0a consol (因为只有1个canonical，直接跳过)
+        # Phase 0a consol (2026-08-23 删除：跨 batch consolidation 不再需要)
         # Phase 0b batch 返回：宁安县→德胜府
         responses = [
             json.dumps({"locations": [
