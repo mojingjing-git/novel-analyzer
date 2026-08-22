@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, watch, computed } from 'vue'
+import { ref, watch, computed, onMounted } from 'vue'
 import BookSelector from '../components/BookSelector.vue'
 import { api } from '../api/client'
+import type { LocationNormalizationStatus, MapDataResponse } from '../api/client'
 
 interface Location {
   id: string
@@ -27,19 +28,83 @@ const locations = ref<Location[]>([])
 const relationships = ref<SpatialRel[]>([])
 const selected = ref<string | null>(null)
 
+const normStatus = ref<LocationNormalizationStatus | null>(null)
+const normResult = ref<{ exists: boolean; location_count?: number; spatial_count?: number } | null>(null)
+const needsNormalization = ref(false)
+let normPollHandle: number | null = null
+
+async function refreshNormStatus() {
+  try {
+    normStatus.value = await api.locationNormalizationStatus()
+  } catch (e) {
+    console.error('归一化状态查询失败:', e)
+  }
+}
+
+async function refreshNormResult() {
+  if (!bookId.value) return
+  try {
+    normResult.value = await api.getLocationNormalizationResult(bookId.value)
+  } catch (e) {
+    console.error('归一化结果查询失败:', e)
+  }
+}
+
+async function startNormalization() {
+  if (!bookId.value) return
+  try {
+    await api.startLocationNormalization(bookId.value)
+    refreshNormStatus()
+    needsNormalization.value = false
+    if (normPollHandle === null) {
+      normPollHandle = window.setInterval(refreshNormStatus, 2000)
+    }
+  } catch (e: any) {
+    alert('启动失败：' + (e?.message || e))
+  }
+}
+
+async function stopNormalization() {
+  try {
+    await api.stopLocationNormalization()
+  } catch (e: any) {
+    alert('停止失败：' + (e?.message || e))
+  }
+}
+
 watch(bookId, async () => {
-  if (!bookId.value) { locations.value = []; relationships.value = []; return }
+  if (!bookId.value) { locations.value = []; relationships.value = []; needsNormalization.value = false; return }
   selected.value = null
   try {
-    const res = await api.getMap(bookId.value)
+    const res = (await api.getMap(bookId.value)) as unknown as MapDataResponse
     locations.value = res.locations as Location[]
     relationships.value = res.relationships as SpatialRel[]
+    needsNormalization.value = res.needs_normalization === true
   } catch (e) {
-    // 切书失败清空：防止残留上一本书的地图数据（F-1）
     locations.value = []
     relationships.value = []
+    needsNormalization.value = false
     console.error('加载地图失败，已清空:', e)
   }
+  await refreshNormResult()
+})
+
+watch(() => normStatus.value?.running, async (running, prev) => {
+  if (prev === true && running === false && bookId.value) {
+    if (normPollHandle !== null) {
+      window.clearInterval(normPollHandle)
+      normPollHandle = null
+    }
+    const res = (await api.getMap(bookId.value)) as unknown as MapDataResponse
+    locations.value = res.locations as Location[]
+    relationships.value = res.relationships as SpatialRel[]
+    needsNormalization.value = res.needs_normalization === true
+    await refreshNormResult()
+  }
+})
+
+onMounted(() => {
+  refreshNormStatus()
 })
 
 const tree = computed(() => {
@@ -141,7 +206,59 @@ function typeClass(t: string): string {
   <div class="space-y-6">
     <h2 class="section-title">地图可视化</h2>
     <BookSelector v-model="bookId" />
+
+    <div v-if="bookId" class="glass-card p-4 space-y-3">
+      <div class="flex items-center justify-between">
+        <h3 class="font-semibold">地点归一化</h3>
+        <div class="text-xs" style="color: var(--win-text-secondary)">
+          <template v-if="normStatus?.running">
+            <span style="color: var(--win-warning)">● 运行中</span>
+            ({{ normStatus.phase }})
+          </template>
+          <template v-else-if="normResult?.exists">
+            <span style="color: var(--win-success)">✓ 已归一化</span>
+            ({{ normResult.location_count }} 地点, {{ normResult.spatial_count }} 关系)
+          </template>
+          <template v-else>
+            <span style="color: var(--win-text-disabled)">○ 未归一化</span>
+          </template>
+        </div>
+      </div>
+
+      <div v-if="normStatus?.running">
+        <div class="text-xs mb-1" style="color: var(--win-text-secondary)">
+          进度: {{ normStatus.batches_done }} / {{ normStatus.total_batches || '?' }} batches
+        </div>
+        <div class="w-full h-2 rounded" style="background: var(--win-control-alt)">
+          <div class="h-2 rounded transition-all"
+               :style="{ width: normStatus.total_batches ? `${(normStatus.batches_done / normStatus.total_batches) * 100}%` : '0%',
+                         background: 'var(--win-accent)' }"></div>
+        </div>
+      </div>
+
+      <div v-if="normStatus && !normStatus.running && normStatus.error"
+           class="text-xs" style="color: var(--win-error)">
+        上次错误: {{ normStatus.error }}
+      </div>
+
+      <div class="flex gap-2">
+        <button v-if="!normStatus?.running" class="glass-btn-primary text-sm"
+                @click="startNormalization">
+          {{ normResult?.exists ? '重新归一化' : '开始归一化' }}
+        </button>
+        <button v-else class="glass-btn text-sm" @click="stopNormalization">停止</button>
+      </div>
+    </div>
+
     <div v-if="!bookId" class="glass-card p-8 text-center text-sm" style="color: var(--win-text-disabled)">请选择书目</div>
+    <div v-else-if="needsNormalization && !normStatus?.running" class="glass-card p-8 text-center space-y-4">
+      <div class="font-semibold">地图需要先归一化</div>
+      <div class="text-sm" style="color: var(--win-text-secondary)">
+        归一化把"宁安县"、"宁安县城"等同一地点的不同写法合并为规范条目，
+        并校验所有空间关系。地图基于归一化数据渲染。
+      </div>
+      <button class="glass-btn-primary" @click="startNormalization">开始归一化</button>
+    </div>
     <div v-else-if="locations.length === 0" class="glass-card p-8 text-center text-sm" style="color: var(--win-text-disabled)">暂无数据</div>
     <div v-else class="flex gap-4">
       <div class="flex-1 glass-card p-4 overflow-x-auto">
