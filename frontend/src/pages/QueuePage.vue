@@ -177,6 +177,26 @@ const currentBlockSize = computed(() => {
   return runningItem?.block_size || 1
 })
 
+// 设置项 tooltip 字典：只覆盖"非一眼能看出"的字段；状态/操作按钮/进度文字不加
+const tooltips: Record<string, string> = {
+  // 工具栏
+  scan_workspace: '扫描 working_directory 下的 .txt 文件，自动加入队列',
+  download_logs: '新窗口打开完整运行日志（含调试信息与 Python 技术日志）',
+  // 章节输入
+  chapter_input: '0 或留空 = 自动跟踪最新章节；输入数字 = 跳到指定章节',
+  // Session token 累计 5 项
+  session_input: '本次窗口会话累计输入 tokens = 系统提示 + 用户消息总和；分析 + 总结两段',
+  session_output: '本次窗口会话累计输出 tokens = LLM 实际生成的内容',
+  session_cached: '本次窗口会话累计 KV cache 命中 tokens（prompt 重复片段命中部分不计费但占带宽）',
+  session_hit_rate: '命中率 = 命中缓存 ÷ (输入 + 命中缓存)；仅统计分析侧（总结侧未记录缓存命中）',
+  session_total: '总消耗 = 输入 + 输出 + 命中缓存；这是实际向 API 发送/接收的 token 总量',
+  // 每章统计表表头
+  col_elapsed: '这一章从发送到收到 LLM 响应的总耗时（秒），含网络 + 推理 + 重试',
+  col_input_tokens: '这一章 LLM 请求的输入 token 总数（系统提示 + 用户消息）',
+  col_output_tokens: '这一章 LLM 实际输出的 token 总数',
+  col_tps: 'tokens per second：输出 token 数 ÷ 耗时，衡量单章处理速度',
+}
+
 onMounted(() => {
   refresh()
   pollTimer = setInterval(async () => {
@@ -199,7 +219,7 @@ onUnmounted(() => {
         <p class="section-subtitle">管理待分析的小说并启动批量流水线</p>
       </div>
       <div class="flex gap-2">
-        <button @click="handleScanWorkspace" :disabled="busy || status?.running" class="glass-button">扫描工作区</button>
+        <button @click="handleScanWorkspace" :disabled="busy || status?.running" class="glass-button" v-tooltip="tooltips.scan_workspace">扫描工作区</button>
         <button v-if="!status?.running" @click="handleStart" :disabled="busy" class="glass-button glass-button-primary"><Icon name="play" :size="12" /> 开始分析</button>
         <button v-else @click="handleStop" :disabled="busy" class="glass-button glass-button-danger"><Icon name="stop" :size="12" /> 停止</button>
       </div>
@@ -299,13 +319,13 @@ onUnmounted(() => {
 
     <div class="flex items-center justify-between flex-wrap gap-3">
       <div v-if="sessionStats" class="total-card">
-        <span class="total-item">输入 <CountUp :value="sessionTotal.input" :format="fmt" /></span>
-        <span class="total-item">输出 <CountUp :value="sessionTotal.output" :format="fmt" /></span>
-        <span class="total-item">命中缓存 <CountUp :value="sessionTotal.cached" :format="fmt" /></span>
-        <span class="total-item">命中率 <CountUp :value="sessionTotal.hitRate" :format="fmtPercent" /></span>
-        <span class="total-item">总消耗 <CountUp :value="sessionTotal.total" :format="fmt" /></span>
+        <span class="total-item" v-tooltip="tooltips.session_input">输入 <CountUp :value="sessionTotal.input" :format="fmt" /></span>
+        <span class="total-item" v-tooltip="tooltips.session_output">输出 <CountUp :value="sessionTotal.output" :format="fmt" /></span>
+        <span class="total-item" v-tooltip="tooltips.session_cached">命中缓存 <CountUp :value="sessionTotal.cached" :format="fmt" /></span>
+        <span class="total-item" v-tooltip="tooltips.session_hit_rate">命中率 <CountUp :value="sessionTotal.hitRate" :format="fmtPercent" /></span>
+        <span class="total-item" v-tooltip="tooltips.session_total">总消耗 <CountUp :value="sessionTotal.total" :format="fmt" /></span>
       </div>
-      <a href="/api/analysis/logs" target="_blank" class="glass-button" style="font-size: 12px">下载日志</a>
+      <a href="/api/analysis/logs" target="_blank" class="glass-button" style="font-size: 12px" v-tooltip="tooltips.download_logs">下载日志</a>
     </div>
 
     <div class="split-grid">
@@ -324,6 +344,7 @@ onUnmounted(() => {
               min="0"
               placeholder="留空=最新"
               class="glass-input dt-input"
+              v-tooltip="tooltips.chapter_input"
             />
           </div>
         </div>
@@ -359,7 +380,7 @@ onUnmounted(() => {
       </div>
       <table class="glass-table" style="border-radius: 0; border: none">
         <thead>
-          <tr><th>章节</th><th>耗时(s)</th><th>输入 Tokens</th><th>输出 Tokens</th><th>t/s</th></tr>
+          <tr><th>章节</th><th v-tooltip="tooltips.col_elapsed">耗时(s)</th><th v-tooltip="tooltips.col_input_tokens">输入 Tokens</th><th v-tooltip="tooltips.col_output_tokens">输出 Tokens</th><th v-tooltip="tooltips.col_tps">t/s</th></tr>
         </thead>
         <tbody>
           <tr v-for="stat in tokens.chapter_stats.slice(-50)" :key="stat.chapter">
