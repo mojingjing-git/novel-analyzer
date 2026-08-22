@@ -212,15 +212,15 @@ def graph_data(
 def map_data(output_dir: Path) -> Dict[str, Any]:
     """地图数据：地点层级 + 空间关系
 
-    检测归一化文件存在性：
-    - 若任一 chapter_*.json 含 _normalized_ref → 读 normalized 文件（已归一化）
-    - 否则走老逻辑（聚合 raw chapter_*.json）
+    2026-08-22 重构：严格要求归一化文件存在。
+    - 有 normalized 文件 + 任一 chapter 含 _normalized_ref → 返回归一化数据
+    - 否则返回 needs_normalization=True + 空数组，由前端 MapPage 引导用户归一化
+    - 删除了旧版 raw chapter 聚合兜底（避免用户误以为"不归一化也能看地图"）
     """
     output_subdir = output_dir / "output"
     if not output_subdir.is_dir():
         output_subdir = output_dir
 
-    # 检测是否有归一化数据
     locations_normalized_path = output_subdir / "locations_normalized.json"
     spatial_normalized_path = output_subdir / "spatial_relationships_normalized.json"
 
@@ -236,56 +236,30 @@ def map_data(output_dir: Path) -> Dict[str, Any]:
             except Exception:
                 continue
 
-    if use_normalized:
-        try:
-            with open(locations_normalized_path, "r", encoding="utf-8") as f:
-                loc_norm = json.load(f)
-            with open(spatial_normalized_path, "r", encoding="utf-8") as f:
-                rel_norm = json.load(f)
-            return {
-                "locations": [
-                    {
-                        "id": loc["canonical_name"],
-                        "name": loc["canonical_name"],
-                        "aliases": loc.get("aliases", []),
-                        "parent": loc.get("parent", ""),
-                        "type": loc.get("type", ""),
-                        "description": loc.get("description", ""),
-                        "chapters": [],  # 归一化文件不含详细章节数组
-                    }
-                    for loc in loc_norm.get("locations", [])
-                ],
-                "relationships": rel_norm.get("relationships", []),
-            }
-        except Exception as e:
-            logger.warning(f"读归一化数据失败，回退到老逻辑: {e}")
+    if not use_normalized:
+        return {"locations": [], "relationships": [], "needs_normalization": True}
 
-    # 老逻辑（保持原实现不变）
-    results = _load_results(output_subdir)
-    locations: Dict[str, Dict[str, Any]] = {}
-    spatial_rels: List[Dict[str, str]] = []
-
-    for result in results:
-        ch = result.chapter_number
-        for loc in result.locations:
-            name = loc.name.strip()
-            if not name:
-                continue
-            if name not in locations:
-                locations[name] = {
-                    "id": name,
-                    "name": name,
-                    "parent": loc.parent,
-                    "type": loc.type,
-                    "description": loc.description,
+    try:
+        with open(locations_normalized_path, "r", encoding="utf-8") as f:
+            loc_norm = json.load(f)
+        with open(spatial_normalized_path, "r", encoding="utf-8") as f:
+            rel_norm = json.load(f)
+        return {
+            "locations": [
+                {
+                    "id": loc["canonical_name"],
+                    "name": loc["canonical_name"],
+                    "aliases": loc.get("aliases", []),
+                    "parent": loc.get("parent", ""),
+                    "type": loc.get("type", ""),
+                    "description": loc.get("description", ""),
                     "chapters": [],
                 }
-            locations[name]["chapters"].append(ch)
-        for rel in result.spatial_relationships:
-            if rel.from_ and rel.to:
-                spatial_rels.append({"from": rel.from_, "to": rel.to, "relation": rel.relation})
-
-    return {
-        "locations": list(locations.values()),
-        "relationships": spatial_rels,
-    }
+                for loc in loc_norm.get("locations", [])
+            ],
+            "relationships": rel_norm.get("relationships", []),
+            "needs_normalization": False,
+        }
+    except Exception as e:
+        logger.warning(f"读归一化数据失败: {e}")
+        return {"locations": [], "relationships": [], "needs_normalization": True}

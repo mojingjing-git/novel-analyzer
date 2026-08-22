@@ -639,8 +639,9 @@ class TestMapDataNormalized:
         assert "宁安县城" in result["locations"][0]["aliases"]
         assert len(result["relationships"]) == 1
         assert result["relationships"][0]["direction"] == "东南"
+        assert result["needs_normalization"] is False
 
-    def test_falls_back_to_old_logic_when_no_ref(self, tmp_path):
+    def test_map_data_requires_normalized_files(self, tmp_path):
         (tmp_path / "output").mkdir()
         chapter = {
             "chapter_number": 1,
@@ -652,8 +653,9 @@ class TestMapDataNormalized:
         )
 
         result = map_data(tmp_path)
-        assert len(result["locations"]) == 1
-        assert result["locations"][0]["name"] == "宁安县"
+        assert result["needs_normalization"] is True
+        assert result["locations"] == []
+        assert result["relationships"] == []
 class TestBudgetBatchSplit:
     """2026-08-21 修复：按字符预算切分 batch（防 Phase 0a 超时）"""
 
