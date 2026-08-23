@@ -134,6 +134,24 @@ def _get_failure_logger():
     return failure_logger
 
 
+def moderation_hit_from_exception(e) -> bool:
+    """从 API 异常嗅探内容审核拦截信号（纯函数，供单测）。
+
+    P1 修复（2026-08-24 审计）：OpenAI SDK 的 APIStatusError.body 是 Any 类型，
+    聚合网关可能返回字符串/数组错误体；原实现在 except 块内对非 dict body 调
+    .get("code") 抛 AttributeError 且无人捕获，导致整批章节零重试直接报废。"""
+    e_code = getattr(e, 'code', None)
+    body = getattr(e, 'body', None) or {}
+    body_msg = ""
+    body_code = None
+    if isinstance(body, dict):
+        body_code = body.get("code")
+        err_inner = body.get("error") or {}
+        body_msg = str(err_inner.get("message", "")) if isinstance(err_inner, dict) else str(body)
+    return (is_moderation_code(e_code) or is_moderation_code(body_code)
+            or is_moderation_message(body_msg) or is_moderation_message(str(e)))
+
+
 class LLMClient:
     """OpenAI兼容API客户端（异步）"""
 
@@ -602,14 +620,7 @@ class LLMClient:
             error_msg = f"API错误 (HTTP {status_code}): {str(e)}"
 
             # 内容审核拦截识别：结构化错误码 / 响应体 message / 异常文本
-            e_code = getattr(e, 'code', None)
-            body = getattr(e, 'body', None) or {}
-            body_msg = ""
-            if isinstance(body, dict):
-                err_inner = body.get("error") or {}
-                body_msg = str(err_inner.get("message", "")) if isinstance(err_inner, dict) else str(body)
-            if (is_moderation_code(e_code) or is_moderation_code(body.get("code"))
-                    or is_moderation_message(body_msg) or is_moderation_message(str(e))):
+            if moderation_hit_from_exception(e):
                 error_msg = mark_moderation(error_msg)
                 logger.warning("检测到内容审核拦截，将重试1次后跳过该章节")
 
