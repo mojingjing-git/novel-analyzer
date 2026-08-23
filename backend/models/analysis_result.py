@@ -121,7 +121,16 @@ class AnalysisResult:
 
     @staticmethod
     def _normalize_string_list(items: list) -> list:
-        """将列表中的每个元素都转为字符串（处理嵌套列表或字典的情况）"""
+        """将列表中的每个元素都转为字符串（处理嵌套列表或字典的情况）
+
+        P2 修复（2026-08-24）：LLM 类型漂移可能把整个数组字段输出为一个字符串，
+        此前直接迭代该字符串产出单字垃圾列表并持久化污染 KB/聚合/prompt；
+        现整串收编为单元素。非列表非字符串的输入一律回落空列表。"""
+        if isinstance(items, str):
+            stripped = items.strip()
+            return [stripped] if stripped else []
+        if not isinstance(items, list):
+            return []
         result = []
         for item in items:
             if isinstance(item, list):

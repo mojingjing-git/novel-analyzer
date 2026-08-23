@@ -162,6 +162,45 @@ def test_characters_list_normalization():
     print("✅ test_characters_list_normalization passed")
 
 
+def test_normalize_string_list_absorbs_whole_string():
+    """P2：LLM 把数组字段漂移成单个字符串时应整串收编，而非拆成单字垃圾"""
+    from backend.models.analysis_result import AnalysisResult
+    assert AnalysisResult._normalize_string_list("修仙世界有灵气") == ["修仙世界有灵气"]
+    assert AnalysisResult._normalize_string_list("") == []
+    assert AnalysisResult._normalize_string_list(["a", 1]) == ["a", "1"]
+    assert AnalysisResult._normalize_string_list(None) == []
+
+
+def test_from_dict_world_building_string_drift():
+    from backend.models.analysis_result import AnalysisResult
+    r = AnalysisResult.from_dict({
+        "chapter_number": 1,
+        "updated_knowledge": {"world_building": "灵气复苏的世界"},
+        "long_context_insights": {},
+    })
+    assert r.updated_knowledge.world_building == ["灵气复苏的世界"]
+
+
+def test_validate_rejects_string_nested_objects():
+    """P2：真值字符串此前绕过 validate，在 from_dict 里 .get() 崩 → 块永久丢失"""
+    from backend.core.analyzer import validate_parsed_analysis
+    ok = {"core_events": [], "cross_block": {"summary": "s"},
+          "long_context_insights": {}, "updated_knowledge": {}}
+    assert validate_parsed_analysis(ok) == (True, "")
+
+    bad = dict(ok, long_context_insights="本章无洞察")
+    is_valid, err = validate_parsed_analysis(bad)
+    assert not is_valid and "long_context_insights" in err
+
+    bad2 = dict(ok, updated_knowledge="无")
+    is_valid, err = validate_parsed_analysis(bad2)
+    assert not is_valid and "updated_knowledge" in err
+
+    # 缺 updated_knowledge 键仍应通过（保持既有宽松语义，from_dict 有默认值）
+    missing_ok = {k: v for k, v in ok.items() if k != "updated_knowledge"}
+    assert validate_parsed_analysis(missing_ok)[0] is True
+
+
 if __name__ == "__main__":
     test_basic_roundtrip()
     test_locations_spatial_rels()

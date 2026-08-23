@@ -18,6 +18,30 @@ from ..utils.json_utils import extract_json_from_text, safe_parse_json
 logger = logging.getLogger(__name__)
 
 
+def validate_parsed_analysis(data: dict) -> tuple:
+    """对已解析的 JSON dict 做必须字段/类型校验。
+
+    P2 修复（2026-08-24）：真值字符串（如 long_context_insights="本章无洞察"）
+    此前绕过键存在性检查，在 AnalysisResult.from_dict 的 `or {}` 之后 .get()
+    崩溃 → 该块被判解析失败，烧完 3 轮补跑预算后永久丢失。"""
+    required_fields = ["core_events", "cross_block", "long_context_insights"]
+    missing = [k for k in required_fields if k not in data]
+    if missing:
+        return False, f"JSON缺少必须字段: {missing}"
+    cb = data.get("cross_block", {})
+    if not isinstance(cb, dict) or not cb.get("summary"):
+        return False, "cross_block.summary 为空或类型错误"
+    ce = data.get("core_events", [])
+    if not isinstance(ce, list):
+        return False, f"core_events 应为列表，实际为 {type(ce).__name__}"
+    # 嵌套对象字段必须是 dict（缺失键保持既有宽松语义，from_dict 有默认值兜底）
+    for key in ("long_context_insights", "updated_knowledge"):
+        v = data.get(key)
+        if v is not None and not isinstance(v, dict):
+            return False, f"{key} 应为对象，实际为 {type(v).__name__}"
+    return True, ""
+
+
 class NovelAnalyzer:
     """小说分析引擎"""
 
@@ -96,19 +120,9 @@ class NovelAnalyzer:
                 data = safe_parse_json(json_str)
                 if data is None:
                     return False, "JSON解析失败"
-                # 检查必须字段是否存在且非空
-                required_fields = ["core_events", "cross_block", "long_context_insights"]
-                missing = [k for k in required_fields if k not in data]
-                if missing:
-                    return False, f"JSON缺少必须字段: {missing}"
-                # cross_block.summary 是最重要的字段，必须非空
-                cb = data.get("cross_block", {})
-                if not isinstance(cb, dict) or not cb.get("summary"):
-                    return False, "cross_block.summary 为空或类型错误"
-                # core_events 必须是列表
-                ce = data.get("core_events", [])
-                if not isinstance(ce, list):
-                    return False, f"core_events 应为列表，实际为 {type(ce).__name__}"
+                is_valid, check_err = validate_parsed_analysis(data)
+                if not is_valid:
+                    return False, check_err
                 parsed_cache[0] = data
                 logger.debug(f"响应验证通过（{len(data)}个顶层字段）")
                 return True, ""
