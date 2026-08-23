@@ -232,6 +232,19 @@ export interface SplitterOption {
   strip_whitespace?: boolean
 }
 
+export interface GraphNode {
+  id: string
+  name: string
+  event_count: number
+  chapters?: number[]
+}
+
+export interface GraphEdge {
+  source: string
+  target: string
+  weight: number
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     headers: { 'Content-Type': 'application/json' },
@@ -400,7 +413,28 @@ export const api = {
     min_importance: string
     min_confidence: string
   }>('/api/foreshadow/categories'),
-  getGraph: (book_id: string) => request<{ nodes: unknown[]; edges: unknown[] }>(`/api/viz/graph/${book_id}`),
+  getGraph: (book_id: string, params?: {
+    chapter_start?: number
+    chapter_end?: number
+    min_edge_weight?: number
+    max_nodes?: number
+    min_node_count?: number
+  }) => {
+    const query = params
+      ? '?' + Object.entries(params)
+          .filter(([, v]) => v !== undefined && v !== null)
+          .map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`)
+          .join('&')
+      : ''
+    return request<{
+      nodes: GraphNode[]
+      edges: GraphEdge[]
+      total_characters: number
+      total_edges: number
+      filtered: Record<string, unknown>
+      chapter_range: { min: number; max: number }
+    }>(`/api/viz/graph/${book_id}${query}`)
+  },
   getMap: (book_id: string) => request<{ locations: unknown[]; relationships: unknown[] }>(`/api/viz/map/${book_id}`),
 
   // 聚合
