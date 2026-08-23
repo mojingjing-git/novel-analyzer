@@ -176,14 +176,24 @@ function handleResize() {
 }
 
 function initChart() {
-  if (chart || !chartContainer.value) return
-  chart = echarts.init(chartContainer.value, null, { renderer: 'svg' })
-  chart.on('click', (params: any) => {
-    if (params.dataType === 'node') {
-      selected.value = selected.value === params.data.id ? null : params.data.id
-    }
-  })
-  window.addEventListener('resize', handleResize)
+  const el = chartContainer.value
+  if (!el) return
+  // 容器在 v-if/v-else 分支内切换时 DOM 会被销毁重建：旧实例绑定的节点已脱离
+  // 文档，setOption 写进去也不会显示（表现为图表永久空白）。因此每次先校验
+  // 实例持有的 DOM 是否仍是当前容器，不是则销毁重建（P1 2026-08-24）。
+  if (chart && chart.getDom() !== el) {
+    chart.dispose()
+    chart = null
+  }
+  if (!chart) {
+    chart = echarts.init(el, null, { renderer: 'svg' })
+    chart.on('click', (params: any) => {
+      if (params.dataType === 'node') {
+        selected.value = selected.value === params.data.id ? null : params.data.id
+      }
+    })
+    window.addEventListener('resize', handleResize)
+  }
 }
 
 onMounted(() => {
