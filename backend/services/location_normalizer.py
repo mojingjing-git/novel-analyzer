@@ -441,7 +441,11 @@ class LocationNormalizer:
         existing_loc, existing_rel = self._load_existing_normalized()
         current_hash = self._compute_chapter_mtimes_hash()
         if existing_loc and existing_rel:
-            if (existing_loc.get("chapter_mtimes_hash") == current_hash
+            loc_items = existing_loc.get("locations") or []
+            # 第三层防线：缓存短路要求已有 locations 非空——历史上落盘的空 normalized 文件
+            # 带匹配 hash 时不能秒退，必须重新归一化给地图产出数据（P1 2026-08-24）
+            if (loc_items
+                    and existing_loc.get("chapter_mtimes_hash") == current_hash
                     and existing_rel.get("chapter_mtimes_hash") == current_hash):
                 logger.info("Phase 0 跳过：归一化文件已是最新")
                 return True
@@ -467,6 +471,15 @@ class LocationNormalizer:
         all_canonicals = await self._run_phase_0a_batches(groups)
         if all_canonicals is None:
             return None if self.llm_client._stop_requested else False
+        # 第二层防线：即使 batch 汇总未拦住（如未来逻辑回退），也绝不能落盘空归一化数据——
+        # 空白名单 + 当前 hash 会永久短路缓存，地图数据恒空且零告警（P1 2026-08-24）
+        if not all_canonicals:
+            logger.error("Phase 0a 所有批次均解析为零条目，视为整体失败；不落盘空归一化数据")
+            if self.on_progress:
+                self.on_progress({"type": "phase_failed", "phase": "0a-batches",
+                                  "error": "全部批次解析为空",
+                                  "message": "[地点归一化] 所有批次解析为空，请检查模型输出质量后重试"})
+            return False
 
         # 3. 跨 batch consolidation 已删除：直接用 batch 阶段的 canonical 作为 final_locations
         final_locations = all_canonicals
@@ -572,10 +585,15 @@ class LocationNormalizer:
         tasks = [_process(i, b) for i, b in enumerate(batches, 1)]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         valid: List[List[Dict]] = [r for r in results if isinstance(r, list)]
-        failed = len(results) - len(valid)
+        # 解析成功但零条目也计入失败：HTTP 成功 + 空数组是模型违反 schema 的典型形态，
+        # 按"成功"处理会固化空白名单并永久短路（P1 2026-08-24）
+        empty_batches = sum(1 for r in valid if not r)
+        failed = len(results) - len(valid) + empty_batches
         if failed > 0:
-            logger.warning(f"Phase 0a batches: {failed}/{len(results)} 失败")
-        if len(valid) < len(results) * 0.5:
+            logger.warning(f"Phase 0a batches: 失败/空 {failed}/{len(results)}")
+        # 熔断同样按"非空批次才算成功"计算，否则全空批次绕过失败率检查直接返回 []
+        non_empty_valid = [r for r in valid if r]
+        if len(non_empty_valid) < len(results) * 0.5:
             logger.error(f"Phase 0a 失败率过高 ({failed}/{len(results)})，整体 abort")
             if self.on_progress:
                 self.on_progress({"type": "phase_failed", "phase": "0a-batches",
