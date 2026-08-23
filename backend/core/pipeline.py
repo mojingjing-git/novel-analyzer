@@ -161,6 +161,11 @@ def _find_locked_milestones(milestones: list, paradigm_layers: list) -> set:
     locked.add(0)
     # 2. 每个范式层的首条里程碑
     for layer in paradigm_layers:
+        if not isinstance(layer, dict):
+            # LLM 偶发返回字符串元素（如 ["修仙期"]）：跳过而非 AttributeError。
+            # 异步路径会让该批 rolling 永久丢失（last_chapter 冻结），
+            # 补跑后同步路径会把整场分析炸成 failed（P1 2026-08-24）。
+            continue
         chapters_str = layer.get("chapters", "")
         m = re.match(r'(\d+)', str(chapters_str))
         if not m:
@@ -521,22 +526,17 @@ class AnalysisPipeline:
                     emit_start=True,
                 )
 
-        # 补跑成功后更新 rolling summary
+        # 补跑成功后更新 rolling summary（失败只告警，绝不阻断收尾落盘）
         if not self._stop_requested:
-            rolling_last_chapter = _rolling_state["last_chapter"]
             retried_block_ids = [
                 bid for bid, _ in blocks
-                if bid in valid_block_ids and bid > rolling_last_chapter and bid in state.results
+                if bid in valid_block_ids and bid > _rolling_state["last_chapter"] and bid in state.results
             ]
             if retried_block_ids:
                 logger.info(f"补跑完成后更新 rolling summary: {len(retried_block_ids)}个块")
-                _rolling_state["last_chapter"] = await self._update_rolling_summary(
-                    rolling_client, output_dir, rolling_last_chapter, retried_block_ids, state)
-                await self._emit({
-                    "chapter": 0, "status": "rolling_updated",
-                    "progress": completed_count, "total": total,
-                    "message": "[补跑后] 全书主线摘要已更新"
-                })
+                await self._safe_post_retry_rolling_update(
+                    rolling_client, output_dir, _rolling_state,
+                    retried_block_ids, state, completed_count, total)
 
         # 8. 收集成功/失败信息（仅统计当前范围内的块）
         await state.flush_to_disk(output_dir)
@@ -917,6 +917,26 @@ class AnalysisPipeline:
                     f"因果链{len(new_json.get('active_causal_chains', []))}条，"
                     f"势头条目{len(new_json.get('recent_momentum', []))}条）")
         return max_chapter
+
+    async def _safe_post_retry_rolling_update(self, rolling_client, output_dir,
+                                              _rolling_state, retried_block_ids,
+                                              state, completed_count, total) -> None:
+        """补跑完成后的同步 rolling 更新（P1 修复 2026-08-24）。
+
+        原实现裸 await：畸形 rolling schema 的 AttributeError 直接冲出 run()，
+        最终 flush / 最终 KB 合并 / 汇总报告全部跳过，整场已成功的分析被
+        service 层标记为 failed。此处失败只告警，不影响收尾。"""
+        try:
+            _rolling_state["last_chapter"] = await self._update_rolling_summary(
+                rolling_client, output_dir, _rolling_state["last_chapter"],
+                retried_block_ids, state)
+            await self._emit({
+                "chapter": 0, "status": "rolling_updated",
+                "progress": completed_count, "total": total,
+                "message": "[补跑后] 全书主线摘要已更新"
+            })
+        except Exception as e:
+            logger.error(f"补跑后 rolling 更新失败（不影响分析收尾落盘）: {e}", exc_info=True)
 
     async def _archive_momentum_to_milestone(self, rolling_client: LLMClient,
                                              structured_data: dict, momentum: list) -> None:
