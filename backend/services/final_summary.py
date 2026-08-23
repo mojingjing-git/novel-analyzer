@@ -533,6 +533,7 @@ class FinalSummaryRunner:
         self._tokens_reconciliation = (0, 0) # 伏笔 reconciliation（批次内）
         self._tokens_recheck = (0, 0)        # 全书伏笔复检
         self._tokens_style = (0, 0)          # 风格提取
+        self._style_task: Optional[asyncio.Task] = None  # 阶段1并行启动的风格提取任务（stop 时需 cancel）
 
         # 总结专用模型/思考覆盖：summary_model 空则跟随全局 model；
         # summary_thinking_mode 空则跟随全局 thinking_mode（兼容 mimo/GLM/DeepSeek 等各厂商参数）
@@ -554,6 +555,11 @@ class FinalSummaryRunner:
     def stop(self):
         self._stop_requested = True
         self._llm.request_stop()
+        # 风格链路在 style_analyzer.call_llm_semantic 里自建独立 LLMClient，
+        # request_stop() 传不过去；只能 cancel 承载它的任务（P1 2026-08-24）
+        t = self._style_task
+        if t is not None and not t.done():
+            t.cancel()
 
     def _emit_progress(self, payload: dict) -> None:
         if self._on_progress:
@@ -1176,6 +1182,17 @@ class FinalSummaryRunner:
                         pass
         return volume_results, recon_results
 
+    async def _cancel_style_task(self, style_task) -> None:
+        """停止路径专用：cancel 并回收风格提取任务，杜绝孤儿任务继续烧 token"""
+        if style_task is None:
+            return
+        if not style_task.done():
+            style_task.cancel()
+        try:
+            await asyncio.gather(style_task, return_exceptions=True)
+        except Exception:
+            pass
+
     async def _run_style_extraction(self) -> Optional[dict]:
         """调用 style_analyzer 提取风格特征"""
         # 优先书目录下的 blocks（web 版按书目录组织），降级 working_directory
@@ -1561,6 +1578,7 @@ class FinalSummaryRunner:
         # 与阶段 1/2/4 共用 self._llm_sem，硬上限 = self.concurrency（用户配置 4/9/20 均不超）
         # 风格提取通常 30-60s，期间会与阶段 1 抢同一信号量槽位
         style_task = asyncio.create_task(self._run_style_extraction())
+        self._style_task = style_task
 
         for coro in asyncio.as_completed(tasks):
             try:
@@ -1587,6 +1605,7 @@ class FinalSummaryRunner:
                 logger.error(f"卷异常: {e}")
 
         if self._stop_requested:
+            await self._cancel_style_task(style_task)
             self._emit_progress({"type": "status", "message": "已停止"})
             return None
         if not volume_results:
@@ -1606,6 +1625,7 @@ class FinalSummaryRunner:
         if self._stop_requested:
             # 复检可能已回收伏笔，保存账本保留进度后退出
             self.ledger.save(self.ledger_path)
+            await self._cancel_style_task(style_task)
             self._emit_progress({"type": "status", "message": "已停止"})
             return None
 
