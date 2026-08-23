@@ -44,8 +44,13 @@ async function runAggregate() {
 }
 
 async function loadAggFiles() {
-  if (!bookId.value) { aggFiles.value = []; return }
-  try { const res = await api.getAggregateFiles(bookId.value); aggFiles.value = res.files } catch (e) { console.error(e) }
+  const bid = bookId.value
+  if (!bid) { aggFiles.value = []; return }
+  try {
+    const res = await api.getAggregateFiles(bid)
+    if (bid !== bookId.value) return   // 已切书：丢弃过期响应
+    aggFiles.value = res.files
+  } catch (e) { console.error(e) }
 }
 
 async function viewAggFile(name: string) {
@@ -252,8 +257,13 @@ async function startSummary() {
 async function stopSummary() { try { await api.stopSummary() } catch (e) { summaryError.value = (e as Error).message } }
 async function refreshSummaryStatus() { try { summaryStatus.value = await api.summaryStatus() } catch (e) { console.error(e) } }
 async function loadReport() {
-  if (!bookId.value) return
-  try { const res = await api.getBookReport(bookId.value); report.value = res.report } catch (e) { console.error(e) }
+  const bid = bookId.value
+  if (!bid) return
+  try {
+    const res = await api.getBookReport(bid)
+    if (bid !== bookId.value) return   // 已切书：A 书报告不得挂到 B 名下（v-html 渲染）
+    report.value = res.report
+  } catch (e) { console.error(e) }
 }
 
 // 切换书目时，自动刷新两个区块
