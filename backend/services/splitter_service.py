@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -608,30 +609,38 @@ def save_split(
     result = split_text(content, options)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # 清理旧切分残留：删除已存在的 NNNN.txt，避免重切分同一书名时旧章文件残留，
-    # 造成 blocks 目录与 chapters.json / split_report.txt 不一致
-    for stale in output_dir.glob("*.txt"):
-        stem = stale.name[:-4]
-        if stem.isdigit():
-            try:
-                stale.unlink()
-            except OSError:
-                pass
-
-    # 网络盘（UNC）下逐章同步写会被每次 open/close 的网络往返延迟拖垮，
-    # 用线程池并行写把延迟重叠掉（文件写入会释放 GIL，多线程真正并发）。
+    # P1 修复（2026-08-24）：先全部暂存到 _split_staging，全部成功后才清理旧章并交换。
+    # 原实现先删旧 txt 再并行写新文件，中途任一写入失败会留下
+    # 「旧章已删、新章残缺、chapters.json 还指向已删除文件」的不一致状态。
     chapters = result.chapters
     if chapters:
-        max_workers = min(32, (os.cpu_count() or 4) + 4)
-        with ThreadPoolExecutor(max_workers=max_workers) as ex:
-            list(
-                ex.map(
-                    lambda b: (output_dir / f"{b.index:04d}.txt").write_text(
-                        b.content, encoding="utf-8"
-                    ),
-                    chapters,
-                )
-            )
+        staging_dir = output_dir / "_split_staging"
+        if staging_dir.exists():
+            shutil.rmtree(staging_dir, ignore_errors=True)
+        staging_dir.mkdir(parents=True)
+        try:
+            max_workers = min(32, (os.cpu_count() or 4) + 4)
+
+            def _stage(b):
+                (staging_dir / f"{b.index:04d}.txt").write_text(b.content, encoding="utf-8")
+
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                list(ex.map(_stage, chapters))
+        except Exception:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            raise  # 旧 blocks 一个都没动过
+
+        # 暂存全部成功后才进入破坏性阶段：清理旧章（含网络盘延迟优化注释保留）
+        for stale in output_dir.glob("*.txt"):
+            stem = stale.name[:-4]
+            if stem.isdigit():
+                try:
+                    stale.unlink()
+                except OSError:
+                    pass
+        for staged in sorted(staging_dir.iterdir()):
+            os.replace(staged, output_dir / staged.name)
+        shutil.rmtree(staging_dir, ignore_errors=True)
 
     # 结构化章节清单
     chapters_json = [

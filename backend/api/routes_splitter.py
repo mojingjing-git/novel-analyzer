@@ -98,6 +98,10 @@ async def preview_split(req: SplitterPreviewRequest) -> dict:
 
 @router.post("/save")
 async def save_split(req: SplitterSaveRequest) -> dict:
+    # P1（2026-08-24）：切分会先清理目标 blocks 目录的旧章文件；分析运行中对同一本书
+    # 重切分会摧毁正在分析的输入（pipeline 惰性逐章读文件）。对照 routes_workspace 的护栏。
+    if get_service().is_running:
+        raise HTTPException(status_code=409, detail="分析正在进行中，请先停止后再切分保存")
     path = Path(req.file_path)
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"文件不存在: {req.file_path}")
@@ -158,6 +162,10 @@ async def batch_split(req: SplitterBatchRequest) -> dict:
     """批量切分多本小说到工作区（逐本复用 save_to_workspace）"""
     if not req.file_paths:
         raise HTTPException(status_code=422, detail="file_paths 不能为空")
+    # P1（2026-08-24）：切分会先清理目标 blocks 目录的旧章文件；分析运行中对同一本书
+    # 批量切分会摧毁正在分析的输入（pipeline 惰性逐章读文件）。对照 routes_workspace 的护栏。
+    if get_service().is_running:
+        raise HTTPException(status_code=409, detail="分析正在进行中，请先停止后再批量切分保存")
     options = splitter_service.SplitOptions(
         pattern=req.pattern,
         mode=req.mode,
