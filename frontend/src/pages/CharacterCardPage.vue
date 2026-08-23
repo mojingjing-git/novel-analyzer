@@ -27,7 +27,11 @@ const cardError = ref('')
 
 const listError = ref('')
 
+// 请求序号：角色列表与 viewCard(cardSeq) 同构，防止 A 书慢返回覆盖 B 书列表
+let listSeq = 0
+
 async function loadCharacters() {
+  const seq = ++listSeq
   characters.value = []
   card.value = null
   selectedName.value = ''
@@ -36,12 +40,14 @@ async function loadCharacters() {
   loadingChars.value = true
   try {
     const res = await api.getBookCharacters(bookId.value)
+    if (seq !== listSeq) return
     characters.value = (res.characters as CharSummary[]) || []
   } catch (e) {
+    if (seq !== listSeq) return
     console.error(e)
     listError.value = '加载角色列表失败: ' + (e as Error).message
   } finally {
-    loadingChars.value = false
+    if (seq === listSeq) loadingChars.value = false
   }
 }
 
