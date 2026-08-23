@@ -48,13 +48,19 @@ onMounted(async () => {
   } catch (e) { console.error('加载伏笔分类失败', e) }
 })
 
+// 请求序号：快速切书时丢弃过期响应，防止 A 书慢返回覆盖 B 书时间线
+let timelineSeq = 0
+
 watch(bookId, async () => {
+  const seq = ++timelineSeq
   if (!bookId.value) { events.value = []; foreshadows.value = []; return }
   try {
     const res = await api.getTimeline(bookId.value)
+    if (seq !== timelineSeq) return   // 已切到别的书：丢弃过期响应
     events.value = res.events as TimelineEvent[]
     foreshadows.value = res.foreshadows as Foreshadow[]
   } catch (e) {
+    if (seq !== timelineSeq) return
     // 切书失败必须清空：否则残留上一本书的数据被误当成当前书（F-1）
     events.value = []
     foreshadows.value = []
