@@ -174,9 +174,10 @@ async def delete_book(req: DeleteBookRequest) -> dict:
     item = service.queue.items[req.index]
     workspace_dir = item.workspace_dir
 
-    # 先把 workspace 目录移入系统回收站；失败直接报错，绝不先动队列
+    # 先把书目目录移入系统回收站；用 item.workspace_dir 显式路径——
+    # 队列项可能来自任意 base_dir 扫描，不在工作区内，按名字解析会删错/删不到
     if workspace_dir.exists():
-        result = workspace_service.delete_novel_to_trash(item.name)
+        result = workspace_service.delete_novel_to_trash(item.name, novel_path=workspace_dir)
         if not result.get("ok"):
             raise HTTPException(status_code=500, detail=result.get("error", "删除失败"))
 

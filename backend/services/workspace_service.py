@@ -344,17 +344,26 @@ def _move_to_trash(path: Path) -> None:
         raise RuntimeError("无法调用系统回收站工具（gio trash / trash-put）")
 
 
-def delete_novel_to_trash(novel_name: str) -> Dict:
-    """将 workspace 中指定小说移入系统回收站，并返回操作结果"""
+def delete_novel_to_trash(novel_name: str, novel_path: Optional[Path] = None) -> Dict:
+    """将小说目录移入系统回收站，并返回操作结果。
+
+    novel_path：显式目录路径。队列项可来自 /api/queue/scan 扫描的任意 base_dir，
+    其真实目录不在工作区之内；此时必须按显式路径删除——按名字重新解析回工作区
+    会误删工作区同名书，或在无同名时报"目录不存在"（P1 2026-08-24）。
+    缺省时保持旧行为：novel_name 解析到工作区内。"""
     ws = _get_workspace_path()
-    novel_dir = _safe_join(ws, novel_name)
-    if novel_dir is None:
-        return {"ok": False, "error": f"非法小说名（可能越界）: {novel_name}"}
+    if novel_path is not None:
+        novel_dir = Path(novel_path)
+    else:
+        resolved = _safe_join(ws, novel_name)
+        if resolved is None:
+            return {"ok": False, "error": f"非法小说名（可能越界）: {novel_name}"}
+        novel_dir = resolved
 
     if not novel_dir.exists():
-        return {"ok": False, "error": f"目录不存在: {novel_name}"}
+        return {"ok": False, "error": f"目录不存在: {novel_dir.name}"}
     if not novel_dir.is_dir():
-        return {"ok": False, "error": f"不是目录: {novel_name}"}
+        return {"ok": False, "error": f"不是目录: {novel_dir.name}"}
 
     try:
         _move_to_trash(novel_dir)
