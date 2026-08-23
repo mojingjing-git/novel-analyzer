@@ -187,6 +187,11 @@
 - **新增阶段 2/4 复检续跑**：每完成一批复检立即落盘 ledger（进 `_lock` 防并发写竞争），崩溃/停止后重启只对仍 active 的伏笔复检，已回收的不重复付费
 - 配套：README 完整文档
 
+### 08-24 ｜ 双批代码审计 + 14 个 P1 修复
+
+- 第一批 5 路并行审计报 66 条 → 第二批 5 路对抗复核（53 确认 / 12 部分成立降级 / 1 驳回），落地全部 14 个 P1：滚动总结 KB 快照注入分析 prompt、pipeline rolling 容错、llm_client APIError 嗅探防崩穿重试链、final_summary 断点 results 指纹失效 + stop 级联取消风格任务、归一化全空判败不落盘/空批熔断/缓存短路要求非空、delete_book 显式路径防同名误删、切分保存运行护栏 + 暂存-交换原子写、settings from_dict 数值强转 + 损坏 config 修复前拒绝 save 保 API Key、前端 GraphPage ECharts 死 DOM 自动重绑 + Timeline/CharacterCard/Summary 三处切书守卫
+- 逐项明细见计划文档：`docs/superpowers/plans/2026-08-24-p1-bug-fixes.md`
+
 ### 未提交清单（当前工作区）
 
 - 08-02 之后的所有里程碑（自动总结/优化批/伏笔 50 类/模型选择/复检续跑）尚未 git 提交

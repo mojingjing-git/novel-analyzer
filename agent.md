@@ -293,7 +293,7 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
   → 综合排序(imp×100 + conf×10 + evidence_count) → 分层截断(高500/中200)
 ```
 
-**断点续跑：** `final_summary_checkpoint/` 目录，`volume_{idx}.md` + `recon_{idx}.json` + `manifest.json`
+**断点续跑：** `final_summary_checkpoint/` 目录，`volume_{idx}.md` + `recon_{idx}.json` + `manifest.json` + results 指纹失效校验
 
 ### 4.8 滚动总结（pipeline.py 中的 _async_rolling）
 
@@ -384,11 +384,13 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 - **13 种章节正则**：中文数字、阿拉伯数字、"回"、"节"、卷+章组合、英文 Chapter 等
 - **核心算法**：两遍扫描（定位边界→提取内容）、评分式模式选择、MD5 去重、超长章拆分
 - **并发写入**：`ThreadPoolExecutor`（最多 32 工作者）缓解网络盘延迟
+- **运行护栏 + 原子写**：save/batch 路由有分析运行护栏；写盘暂存-交换原子化
 
 #### workspace_service.py（365行）
 - **职责**：工作区目录管理
 - **安全机制**：`_is_within()` + `_safe_join()` 路径遍历防护
 - **平台回收站**：Windows `SHFileOperationW` + macOS `osascript` + Linux `gio trash`
+- **显式路径删除**：`delete_novel_to_trash` 支持显式路径参数（按队列项 workspace_dir 删除，防同名误删）
 
 #### book_service.py（197行）
 - **职责**：书名→目录映射（catalog）
@@ -404,7 +406,7 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 #### location_normalizer.py（380+行）
 - **职责**：地点与空间关系 LLM 归一化（Phase 0，归一化与最终总结已解耦，仅服务地图）
 - **关键类**：`LocationNormalizer`
-- **3 子阶段**（2026-08-23 砍掉 Phase 0a consolidation，见 10.13）：
+- **3 子阶段**（2026-08-23 砍掉 Phase 0a consolidation，见 10.10）：
   1. `_run_phase_0a_batches`：locations 切片 + 并发 LLM 调 + 校验（canonical ∈ aliases）
   2. `_run_phase_0b_batches`：spatial 切片 + canonical 白名单 + 并发 LLM
   3. `_run_phase_0b_dedupe`：机械去重同 (from, to) 对
@@ -590,6 +592,8 @@ AppConfig:
 APIConfig 预设：8+ 厂商（OpenAI/Anthropic/DeepSeek/Qwen/GLM/MiniMax/Moonshot/...）
 ```
 
+`AppConfig.from_dict` 经 `_coerce_fields` 对数值/布尔字段做强转清洗（字符串 "4"→4 等，脏配置不再瘫痪启动）。
+
 ---
 
 ## 8. 常用命令
@@ -772,6 +776,20 @@ npm run build
 - **原因**：用户 API 上限 4~20 不等，原并发模型分散（阶段 1 一个 Sem、阶段 2 一个 Sem、阶段 3/4 无 Sem），风格用独立 LLMClient 完全不受限 — 撞 API 限额
 - **保证**：硬上限 = `self.concurrency`，无任何硬编码并发数，配置多少就多少
 - **收益**：风格（30-60s）从阶段 4 之前串行 → 阶段 1 启动时并行；总时长缩短 30-60s
+
+### 10.13 2026-08-24 双批代码审计 + 14 个 P1 修复
+- 第一批 5 路并行审计报 66 条 → 第二批 5 路对抗复核：53 确认 / 12 部分成立降级 / 1 驳回
+- 落地 P1 修复（详见 docs/superpowers/plans/2026-08-24-p1-bug-fixes.md）：
+  - memory_state：分析用 KB 快照注入 rolling_structured（滚动总结此前对 prompt 零生效）
+  - pipeline：rolling schema 元素容错 + 补跑后更新异常不再冲出 run()
+  - llm_client：APIError body 非 dict 时审核嗅探不再崩穿重试链
+  - final_summary：断点加 results 指纹失效机制 + 失效清目录 + stop 级联 cancel 风格任务
+  - location_normalizer：全空归一化判败不落盘，空批次计入熔断，缓存短路要求非空
+  - delete_book 按显式 workspace_dir 删除；切分保存加运行护栏+暂存交换
+  - settings：from_dict 数值强转 + 损坏 config 修复前拒绝 save（保 API Key）
+  - 前端：GraphPage ECharts 死 DOM 自动重绑；Timeline/CharacterCard/Summary 三处切书守卫
+- **原因**：用户发起的全库双批审计
+- **驳回记录**：「自动总结两本书之间互斥窗口」被证伪（analysis.is_running 全程封锁两个入口），勿重复上报
 
 ### 10.12 相关文档
 - Win11 重做计划：`docs/superpowers/plans/2026-08-16-win11-frontend-redesign.md`
