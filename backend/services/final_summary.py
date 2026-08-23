@@ -11,6 +11,8 @@ import re
 import asyncio
 import logging
 import time
+import hashlib
+import shutil
 from dataclasses import replace
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple, Callable
@@ -1059,6 +1061,28 @@ class FinalSummaryRunner:
     def _checkpoint_dir(self) -> Path:
         return self.output_dir / "final_summary_checkpoint"
 
+    def _compute_results_fingerprint(self) -> str:
+        """章节数据版本指纹（name:mtime_ns:size），用于断点失效判断。
+
+        与 location_normalizer 的 chapter_mtimes_hash 同思路：章节结果一旦被
+        重新分析/手工修改，旧断点的卷摘要即视为过期。"""
+        parts = []
+        for f in sorted(self.output_dir.glob("chapter_*_result.json")):
+            try:
+                st = f.stat()
+                parts.append(f"{f.name}:{st.st_mtime_ns}:{st.st_size}")
+            except OSError:
+                parts.append(f"{f.name}:missing")
+        return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
+
+    def _wipe_checkpoint_dir(self) -> None:
+        """整体清空失效的断点目录（含孤儿 volume_*.md / recon_*.json）"""
+        cp = self._checkpoint_dir
+        if not cp.exists():
+            return
+        shutil.rmtree(cp, ignore_errors=True)
+        logger.warning(f"已清空失效的总结断点目录: {cp}")
+
     async def _save_checkpoint_batch(self, idx: int, ch_start: int, ch_end: int,
                                      summary_text: Optional[str], recon_data: Optional[dict]) -> None:
         """落盘单个批次的断点（卷摘要与 reconciliation 各自独立写，两步互不阻塞）。
@@ -1072,10 +1096,14 @@ class FinalSummaryRunner:
         vf = cp / f"volume_{idx}.md"
         rf = cp / f"recon_{idx}.json"
         async with self._checkpoint_lock:
-            if summary_text is not None and not vf.exists():
+            # 本次新生成的内容无条件覆盖残留文件（原 not vf.exists() 守卫曾让
+            # batch_size 变化后新摘要写不进盘，manifest 却登记旧分卷方案的旧内容，
+            # 过期卷摘要静默毒化最终报告——P1 2026-08-24）。
+            # 恢复场景安全：已恢复批次不会重新生成，不会走到这里覆写。
+            if summary_text is not None:
                 await asyncio.to_thread(vf.write_text, summary_text, encoding="utf-8")
             # reconciliation 失败返回 None 时不落盘 → 下次重跑补 reconciliation
-            if recon_data is not None and not rf.exists():
+            if recon_data is not None:
                 await asyncio.to_thread(safe_save_json, recon_data, rf)
             # 更新 manifest（原子写；并发批次经 _checkpoint_lock 串行）
             manifest_path = cp / "manifest.json"
@@ -1083,6 +1111,7 @@ class FinalSummaryRunner:
             if not isinstance(m, dict):
                 m = {"batch_size": self.batch_size, "batches": {}}
             m["batch_size"] = self.batch_size
+            m["results_fingerprint"] = await asyncio.to_thread(self._compute_results_fingerprint)
             entry = m.setdefault("batches", {}).setdefault(str(idx), {})
             entry["start"] = ch_start
             entry["end"] = ch_end
@@ -1098,17 +1127,24 @@ class FinalSummaryRunner:
 
         Returns:
             (volume_results: {idx: 卷摘要文本}, recon_results: {idx: reconciliation dict})
-        校验失败（batch_size 变化 / 批次 ch 范围不匹配 / 文件缺失）的批次不恢复，
-        本次重新生成。
+        恢复规则：batch_size / results_fingerprint / manifest 完整性任一不符时视为无效，
+        清空旧断点目录后本次重新生成。
         """
         cp = self._checkpoint_dir
         manifest_path = cp / "manifest.json"
         if not manifest_path.exists():
             return {}, {}
         m = await asyncio.to_thread(safe_load_json, manifest_path)
-        if not isinstance(m, dict) or m.get("batch_size") != self.batch_size:
-            logger.info(f"断点 checkpoint batch_size({m.get('batch_size') if isinstance(m, dict) else '?'})"
-                        f"与当前({self.batch_size})不一致，忽略旧断点")
+        current_fp = await asyncio.to_thread(self._compute_results_fingerprint)
+        if (not isinstance(m, dict)
+                or m.get("batch_size") != self.batch_size
+                or m.get("results_fingerprint") != current_fp):
+            reason = ("manifest损坏" if not isinstance(m, dict)
+                      else f"batch_size变化({m.get('batch_size')}->{self.batch_size})"
+                      if m.get("batch_size") != self.batch_size
+                      else "章节数据已变化")
+            logger.info(f"总结断点失效（{reason}），清空旧断点目录重新生成")
+            await asyncio.to_thread(self._wipe_checkpoint_dir)
             return {}, {}
         batches = m.get("batches") or {}
         volume_results: Dict[int, str] = {}

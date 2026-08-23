@@ -7,6 +7,7 @@
 import asyncio
 import json
 import sys
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from pathlib import Path
@@ -133,3 +134,57 @@ def test_resume_reconciliation_only_when_missing(tmp_path):
         asyncio.run(runner2.run())
     summary_mock.assert_not_awaited()
     assert recon_mock.await_count == 2, f"应补跑全部批次 reconciliation，实际 {recon_mock.await_count}"
+
+
+def test_stale_volume_file_gets_overwritten(tmp_path):
+    """残留的陈旧 volume_N.md 必须被新生成内容覆盖（原 not vf.exists() 守卫导致
+    batch_size 变化后新摘要写不进盘、manifest 却登记旧文件 → 过期内容中毒报告）"""
+    runner = _make_runner(tmp_path, batch_size=2)
+    cp = tmp_path / "final_summary_checkpoint"
+    cp.mkdir(parents=True)
+    vf = cp / "volume_1.md"
+    vf.write_text("陈旧的旧分卷方案内容", encoding="utf-8")
+
+    asyncio.run(runner._save_checkpoint_batch(1, 1, 2, "全新卷摘要", None))
+
+    assert vf.read_text(encoding="utf-8") == "全新卷摘要"
+
+
+def test_checkpoint_invalidated_when_results_change(tmp_path):
+    """章节数据变化（mtime/size 变化）后旧断点整体作废，且残留 volume/recon 文件被清空"""
+    _write_results(tmp_path, 4)
+    runner = _make_runner(tmp_path, batch_size=2)
+    batch_tasks = [(1, 1, 2, "p1"), (2, 3, 4, "p2")]
+
+    asyncio.run(runner._save_checkpoint_batch(1, 1, 2, "卷一", {"reconciliation": []}))
+    asyncio.run(runner._save_checkpoint_batch(2, 3, 4, "卷二", {"reconciliation": []}))
+
+    volumes, _ = asyncio.run(runner._load_checkpoint(batch_tasks))
+    assert volumes == {1: "卷一", 2: "卷二"}
+
+    # 模拟重新分析覆盖了第 3 章结果（内容不同 → size/mtime 变化）
+    time.sleep(0.02)  # 保证 mtime_ns 变化（Windows 时钟粒度）
+    changed = json.loads((tmp_path / "chapter_3_result.json").read_text(encoding="utf-8"))
+    changed["cross_block"]["summary"] = "重写后的第三章摘要"
+    (tmp_path / "chapter_3_result.json").write_text(
+        json.dumps(changed, ensure_ascii=False), encoding="utf-8")
+
+    volumes2, recons2 = asyncio.run(runner._load_checkpoint(batch_tasks))
+    assert volumes2 == {} and recons2 == {}, "章节数据变化后断点必须整体作废"
+    cp = tmp_path / "final_summary_checkpoint"
+    assert not (cp / "volume_1.md").exists(), "作废断点的残留文件必须被清空"
+    assert not (cp / "recon_2.json").exists()
+
+
+def test_checkpoint_invalidated_when_manifest_corrupt(tmp_path):
+    """manifest.json 损坏时清空整个断点目录（原实现只忽略、残留文件继续毒化下次登记）"""
+    _write_results(tmp_path, 4)
+    runner = _make_runner(tmp_path, batch_size=2)
+    cp = tmp_path / "final_summary_checkpoint"
+    cp.mkdir(parents=True)
+    (cp / "volume_1.md").write_text("孤儿卷摘要", encoding="utf-8")
+    (cp / "manifest.json").write_text("{broken json", encoding="utf-8")
+
+    volumes, _ = asyncio.run(runner._load_checkpoint([(1, 1, 2, "p1")]))
+    assert volumes == {}
+    assert not (cp / "volume_1.md").exists(), "孤儿 volume 文件必须随 manifest 一起清掉"
