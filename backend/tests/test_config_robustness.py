@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from backend.config.settings import ConfigManager
+from backend.config.settings import ConfigManager, AppConfig
 from backend.core.llm_client import LLMClient
 
 
@@ -47,3 +47,35 @@ async def test_list_models_anthropic_empty_base_url():
     assert result == []
     fake_cls.assert_not_called()
     print("✅ test_list_models_anthropic_empty_base_url passed")
+
+
+def test_from_dict_coerces_string_numbers():
+    """P1（2026-08-24）：PUT /api/settings 的字符串数值必须被强转，
+    否则入库后 load() 的 max_tokens > 65537 比较抛 TypeError（try 外）全 API 瘫痪"""
+    cfg = AppConfig.from_dict({"api": {"max_tokens": "130000", "timeout": "30"},
+                               "analysis": {"concurrency": "4"}})
+    assert isinstance(cfg.api.max_tokens, int) and cfg.api.max_tokens == 130000
+    assert isinstance(cfg.api.timeout, int) and cfg.api.timeout == 30
+    assert isinstance(cfg.analysis.concurrency, int) and cfg.analysis.concurrency == 4
+
+
+def test_from_dict_coerces_bool_strings():
+    cfg = AppConfig.from_dict({"analysis": {"auto_archive": "true", "skip_moderation_blocked": 0}})
+    assert cfg.analysis.auto_archive is True
+    assert cfg.analysis.skip_moderation_blocked is False
+
+
+def test_from_dict_drops_garbage_numeric():
+    cfg = AppConfig.from_dict({"api": {"max_tokens": "abc"}, "gui": {"window_width": "宽"}})
+    from backend.config.constants import MAX_OUTPUT_TOKENS
+    assert cfg.api.max_tokens == MAX_OUTPUT_TOKENS      # 回落默认
+    assert cfg.gui.window_width == 1600                  # 回落默认
+
+
+def test_load_survives_string_max_tokens_on_disk(tmp_path):
+    import json
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"api": {"max_tokens": "130000"}}), encoding="utf-8")
+    from backend.config.settings import ConfigManager
+    cfg = ConfigManager(p).load()   # 此前在这里直接 TypeError
+    assert cfg.api.max_tokens == 130000

@@ -7,6 +7,7 @@
 import json
 import logging
 import os
+import re
 import dataclasses
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
@@ -55,6 +56,70 @@ def _filter_fields(cls, data: dict) -> dict:
     """过滤掉 dataclass 不认识的字段，防止旧配置含未知字段时崩溃"""
     valid = {f.name for f in dataclasses.fields(cls)}
     return {k: v for k, v in data.items() if k in valid}
+
+
+def _coerce_fields(cls, data: dict) -> dict:
+    """按 dataclass 字段声明类型清洗并强转配置值（含未知字段过滤，超集替代 _filter_fields）。
+
+    P1 修复（2026-08-24 审计）：PUT /api/settings 曾以裸 dict 直透 dataclass 构造，
+    字符串数值入库后 load() 的数值比较抛 TypeError 且位于 try 外，服务初始化失败
+    → 全部 API 永久 500。规则：
+    - int/float：接受数字或数字字符串；非法值丢弃 → 字段默认值
+    - bool：接受 true/false/on/off/0/1/yes/no 及数字
+    - List[str]/dict：类型不符整体丢弃 → 默认值
+    - str：一律 str()
+    """
+    out = {}
+    for f in dataclasses.fields(cls):
+        if f.name not in data:
+            continue
+        val = data[f.name]
+        ftype = f.type
+        try:
+            if ftype is bool:
+                if isinstance(val, bool):
+                    out[f.name] = val
+                elif isinstance(val, str):
+                    v = val.strip().lower()
+                    if v in ("true", "1", "yes", "on"):
+                        out[f.name] = True
+                    elif v in ("false", "0", "no", "off"):
+                        out[f.name] = False
+                elif isinstance(val, (int, float)):
+                    out[f.name] = bool(val)
+            elif ftype is int:
+                if isinstance(val, bool):
+                    out[f.name] = int(val)
+                elif isinstance(val, int):
+                    out[f.name] = val
+                elif isinstance(val, float) and float(val).is_integer():
+                    out[f.name] = int(val)
+                elif isinstance(val, str):
+                    s = val.strip()
+                    if re.fullmatch(r"[+-]?\d+", s):
+                        out[f.name] = int(s)
+                    elif re.fullmatch(r"[+-]?\d+\.0*", s):
+                        out[f.name] = int(float(s))
+            elif ftype is float:
+                if isinstance(val, bool):
+                    out[f.name] = float(val)
+                elif isinstance(val, (int, float)):
+                    out[f.name] = float(val)
+                elif isinstance(val, str):
+                    s = val.strip()
+                    if re.fullmatch(r"[+-]?(\d+\.?\d*|\.\d+)", s):
+                        out[f.name] = float(s)
+            elif ftype is str:
+                out[f.name] = str(val)
+            elif ftype is List[str]:
+                if isinstance(val, list) and all(isinstance(x, str) for x in val):
+                    out[f.name] = list(val)
+            elif ftype is dict:
+                if isinstance(val, dict):
+                    out[f.name] = val
+        except Exception:
+            continue  # 任何强转意外都回落字段默认值
+    return out
 
 
 @dataclass
@@ -195,9 +260,9 @@ class AppConfig:
             api_data.pop('model', None)
 
         return cls(
-            api=APIConfig(**_filter_fields(APIConfig, api_data)),
-            analysis=AnalysisConfig(**_filter_fields(AnalysisConfig, analysis_data)),
-            gui=GUIConfig(**_filter_fields(GUIConfig, gui_data)),
+            api=APIConfig(**_coerce_fields(APIConfig, api_data)),
+            analysis=AnalysisConfig(**_coerce_fields(AnalysisConfig, analysis_data)),
+            gui=GUIConfig(**_coerce_fields(GUIConfig, gui_data)),
             working_directory=data.get('working_directory'),
             knowledge_file=data.get('knowledge_file', KNOWLEDGE_FILE_NAME),
             workspace_dir=data.get('workspace_dir', 'workspace'),
