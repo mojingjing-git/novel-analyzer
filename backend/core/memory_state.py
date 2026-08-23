@@ -87,14 +87,15 @@ class MemoryState:
         # 快照 keys 避免并发修改
         keys = list(self.results.keys())
         if chapter_limit is None or not keys or chapter_limit >= max(keys):
-            return KnowledgeBase.from_dict(self.kb.to_dict())
+            return self._apply_rolling_to_snapshot(KnowledgeBase.from_dict(self.kb.to_dict()))
 
         with self._snapshot_lock:
             cached_limit = self._snapshot_cache_limit
 
             # 命中：请求与缓存 limit 精确相等
             if cached_limit is not None and chapter_limit == cached_limit:
-                return KnowledgeBase.from_dict(self._snapshot_cache_kb.to_dict())
+                return self._apply_rolling_to_snapshot(
+                    KnowledgeBase.from_dict(self._snapshot_cache_kb.to_dict()))
 
             # 命中：请求 limit 大于缓存 limit → 增量扩展（O(新增章节数)，非全量重建）
             if cached_limit is not None and chapter_limit > cached_limit:
@@ -107,7 +108,7 @@ class MemoryState:
                     self._extend_kb(kb, new_results)
                 self._snapshot_cache_limit = chapter_limit
                 self._snapshot_cache_kb = kb
-                return KnowledgeBase.from_dict(kb.to_dict())
+                return self._apply_rolling_to_snapshot(KnowledgeBase.from_dict(kb.to_dict()))
 
             # 未命中：请求 limit 小于缓存 limit（或首次构建）→ 从子集重建，
             # 保证不包含任何 > chapter_limit 的未来章节
@@ -119,7 +120,21 @@ class MemoryState:
             if cached_limit is None or chapter_limit > cached_limit:
                 self._snapshot_cache_limit = chapter_limit
                 self._snapshot_cache_kb = kb
-            return KnowledgeBase.from_dict(kb.to_dict())
+            return self._apply_rolling_to_snapshot(KnowledgeBase.from_dict(kb.to_dict()))
+
+    def _apply_rolling_to_snapshot(self, kb: KnowledgeBase) -> KnowledgeBase:
+        """把滚动总结数据注入快照副本（只改传入副本，绝不写回 self.kb / 缓存对象）。
+
+        P1 修复（2026-08-24 审计）：此前 rolling_structured 只经 knowledge_base.
+        build_temp_knowledge 注入导出/预览路径，分析主链路 get_kb_snapshot 的
+        快照里恒为空 {} —— 后台 rolling 任务产出的主线概要对 prompt 零生效。
+        说明：dict.get 在 GIL 下原子，最坏读到略旧的一版 rolling，可接受；
+        不取 _rolling_lock 是因为那是 asyncio.Lock，本方法为同步上下文。
+        """
+        rs = self.rolling.get("rolling_structured") if isinstance(self.rolling, dict) else None
+        if isinstance(rs, dict):
+            kb.rolling_structured = rs
+        return kb
 
     async def flush_to_disk(self, output_dir: Path) -> int:
         """
