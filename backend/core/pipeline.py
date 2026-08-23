@@ -351,7 +351,7 @@ class AnalysisPipeline:
                 except Exception as e:
                     logger.warning(f"生成汇总报告失败: {e}")
             result_count = len([ch for ch in state.results if ch in valid_block_ids])
-            failed_chapters = list(state._failed_chapters.keys())
+            failed_chapters = state.failed_chapters_in(valid_block_ids)
             skipped_chapters = [f"{c}({r})" for c, r in state._skipped_chapters.items()]
             return {
                 "stopped": False, "total_analyzed": result_count,
@@ -542,7 +542,7 @@ class AnalysisPipeline:
         await state.flush_to_disk(output_dir)
 
         result_count = len([ch for ch in state.results if ch in valid_block_ids])
-        failed_chapters = list(state._failed_chapters.keys())
+        failed_chapters = state.failed_chapters_in(valid_block_ids)
         skipped_chapters = [f"{c}({r})" for c, r in state._skipped_chapters.items()]
         total_analyzed = result_count
 
@@ -609,7 +609,9 @@ class AnalysisPipeline:
             state.add_failed(block_id, "读取失败")
             return False, 0.0, (0, 0), None, {"retries": 0, "failed_tokens": 0}
 
-        temp_kb = state.get_kb_snapshot(chapter_limit=block_id)
+        # P2 修复：快照构建是 CPU 密集深拷贝，事件循环内裸调会让并发 worker/
+        # WS 广播整体冻结；内部 _snapshot_lock 是 threading.Lock，to_thread 安全。
+        temp_kb = await asyncio.to_thread(state.get_kb_snapshot, chapter_limit=block_id)
         t_start = time.time()
         result, ch_tokens, retry_info = await analyzer.analyze_chapter(
             block_id, content, temp_kb, block_size=block_size)
@@ -942,8 +944,8 @@ class AnalysisPipeline:
                                              structured_data: dict, momentum: list) -> None:
         """将近期势头条目压缩为一条里程碑，追加到 global_milestones，清空 recent_momentum"""
         existing_milestones = structured_data.get("global_milestones", [])
-        momentum_text = "\n".join(momentum)
-        existing_text = "\n".join(existing_milestones[-3:]) if existing_milestones else "（无）"
+        momentum_text = "\n".join(str(m) for m in momentum)
+        existing_text = "\n".join(str(m) for m in existing_milestones[-3:]) if existing_milestones else "（无）"
 
         messages = [
             {"role": "system", "content": "你是一个文本压缩器。将以下近期事件压缩为一条 ≤30 字的里程碑描述。格式：ch{起始}-{结束}: 概括。只输出这一行，不要其他内容。"},

@@ -74,6 +74,11 @@ class MemoryState:
         """记录被内容审核拦截跳过的章节（不进失败集，补跑不重试）"""
         self._skipped_chapters[chapter_number] = reason
 
+    def failed_chapters_in(self, valid_block_ids: set) -> List[int]:
+        """当前分析范围内的失败章号（P2 修复：restore 会加载历史场次的失败标记，
+        最终报告必须按本次 valid_block_ids 过滤，否则重跑小区间会误报旧场失败）。"""
+        return [c for c in self._failed_chapters if c in valid_block_ids]
+
     def get_kb_snapshot(self, chapter_limit: Optional[int] = None) -> KnowledgeBase:
         """
         获取 KB 快照（调用方拥有独立副本）。
