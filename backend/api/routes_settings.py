@@ -101,5 +101,9 @@ async def put_settings(data: dict) -> dict:
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"配置格式无效: {e}")
     if not service.config_manager.save(config):
-        raise HTTPException(status_code=500, detail="配置保存失败")
+        # save() 拒绝通常意味着 config.json 解析失败待手工修复（_load_failed 置位），
+        # 用 409 + 可操作文案替代笼统的 500，避免用户反复重试无效
+        raise HTTPException(status_code=409,
+                            detail="配置未能写入：config.json 可能解析失败待修复，"
+                                   "请手工修复该文件后重试（详见日志）")
     return config.to_dict()

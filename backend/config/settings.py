@@ -277,6 +277,9 @@ class ConfigManager:
             config_path = Path(CONFIG_FILE_NAME)
         self.config_path = config_path
         self.config = AppConfig()
+        # config.json 解析失败标志：置位期间 save() 拒绝写入，
+        # 防止内存默认配置（空 api_key）原子覆盖掉仍可手工修复的原文件（P1 2026-08-24）
+        self._load_failed = False
         # 标记当前 api_key 是否来自环境变量：True 时 save() 不回写磁盘（防明文落盘）
         self._api_key_from_env = False
 
@@ -290,9 +293,12 @@ class ConfigManager:
             with open(self.config_path, 'r', encoding='utf-8-sig') as f:
                 data = json.load(f)
             self.config = AppConfig.from_dict(data)
+            # 成功解析即解除拒绝状态：修复后的文件在下次 load()/重启后可正常保存
+            self._load_failed = False
         except Exception as e:
             # 配置损坏必须显式告警：静默回退默认配置会导致 API Key/模型全部丢失，
             # 用户只会看到"认证失败"等误导性错误（曾踩：PowerShell 写文件引入 BOM）
+            self._load_failed = True
             logger.error(f"配置加载失败（{self.config_path}）: {e}，已回退默认配置。"
                          f"请检查 config.json 是否为合法 JSON（注意 UTF-8 BOM/尾逗号），"
                          f"修复后重启即可恢复。")
@@ -324,6 +330,11 @@ class ConfigManager:
 
     def save(self, config: Optional[AppConfig] = None) -> bool:
         """保存配置到文件"""
+        if self._load_failed:
+            logger.error("config.json 解析失败尚未修复，拒绝保存以免默认配置覆盖真实数据"
+                         "（含 API Key）。请手工修复或删除 config.json 后重试。")
+            return False
+
         if config is not None:
             self.config = config
 

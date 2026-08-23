@@ -79,3 +79,34 @@ def test_load_survives_string_max_tokens_on_disk(tmp_path):
     from backend.config.settings import ConfigManager
     cfg = ConfigManager(p).load()   # 此前在这里直接 TypeError
     assert cfg.api.max_tokens == 130000
+
+
+def test_corrupt_config_blocks_save(tmp_path):
+    """P1（2026-08-24）：config.json 解析失败未修复前，save() 必须拒绝写入，
+    防止默认配置（空 api_key）原子覆盖掉仍可手工修复的原文件"""
+    p = tmp_path / "config.json"
+    broken = '{"api": BROKEN'
+    p.write_text(broken, encoding="utf-8")
+
+    from backend.config.settings import AppConfig, ConfigManager
+    cm = ConfigManager(p)
+    cm.load()
+    assert cm._load_failed is True
+
+    assert cm.save(AppConfig()) is False
+    assert p.read_text(encoding="utf-8") == broken, "磁盘上的坏文件必须原样保留（等待手工修复）"
+
+
+def test_healthy_config_still_saves(tmp_path):
+    import json
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"api": {"model": "gpt-x"}}), encoding="utf-8")
+
+    from backend.config.settings import AppConfig, ConfigManager
+    cm = ConfigManager(p)
+    cm.load()
+    assert cm._load_failed is False
+    assert cm.save(AppConfig()) is True
+    # 正常覆盖：磁盘内容已变为序列化后的默认配置（DEFAULT_MODEL 为空串，
+    # 故不能断言 model 为真值，改为整体比对确认覆盖确实发生）
+    assert json.loads(p.read_text(encoding="utf-8")) == AppConfig().to_dict()
