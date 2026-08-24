@@ -431,7 +431,7 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 - **职责**：逐章 JSON 结果聚合为 11 种输出格式
 - **关键类**：`JSONAggregator`
 - **去重机制**：角色名归一化（剥离角色后缀）、哈希去重、模糊主题去重
-- **主文件原子写**：11 种输出经 `safe_save_json()` 原子落盘（唯一 tmp 名 + replace）
+- **主文件原子写**：主聚合文件 novel_analysis_aggregated.json 经 `safe_save_json()` 原子落盘（唯一 tmp 名 + replace）；其余子聚合适用一次性生成场景，仍为直写
 
 #### character_card_generator.py（721行）
 - **职责**：生成角色详细档案卡片
@@ -509,13 +509,13 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 
 | 页面 | 行数 | 职责 |
 |---|---|---|
-| QueuePage | 507 | 主页：队列表、启停控制、实时进度（WS+轮询）、章节详情、日志 |
-| SettingsPage | 509 | 配置：API 预设、模型选择器、思维探测、伏笔分类网格、滚动总结参数、复检批大小 |
+| QueuePage | 555 | 主页：队列表、启停控制、实时进度（WS+轮询）、章节详情、日志 |
+| SettingsPage | 558 | 配置：API 预设、模型选择器、思维探测、伏笔分类网格、滚动总结参数、复检批大小 |
 | SummaryPage | 498 | 聚合+总结：4阶段加权进度、模型覆盖、日志抽屉、报告查看器 |
 | SplitterPage | 419 | 批量切章：文件选择、预览、自定义正则、卷识别、pywebview 文件对话框 |
 | WorkspacePage | 185 | 工作区/归档：列表、归档、删除（自定义确认对话框） |
 | TimelinePage | 249 | 时间线：事件+伏笔、重要性/分类筛选 |
-| GraphPage | 362 | 角色关系图：ECharts force 力导向、章节范围切片、Top-N 截断、边权阈值过滤、邻接高亮、右侧关联面板 |
+| GraphPage | 385 | 角色关系图：ECharts force 力导向、章节范围切片、Top-N 截断、边权阈值过滤、邻接高亮、右侧关联面板 |
 | MapPage | 280+ | 地图：SVG 树形布局、空间关系虚线、归一化状态面板（强制走归一化数据，未归一化时拦截） |
 | CharacterCardPage | 259 | 角色数据库：统计、弧光、事件、状态演化、关系 |
 | StylePage | 139 | 风格分析：启停、轮询、结果展示 |
