@@ -8,6 +8,7 @@ GET /api/books 时刷新；其余接口按 id 惰性解析。
 import json
 import logging
 import re
+import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
@@ -20,6 +21,12 @@ _books: Dict[str, Path] = {}
 
 # 手动注册的书目（通过 register_scan_dir 添加），refresh 时保留
 _manual_books: Dict[str, Path] = {}
+
+# P2 修复（2026-08-24）：miss 后的事件循环内同步全量扫描会把网络盘延迟放大成
+# 秒级 UI/WS 冻结（同类问题项目已在 H1 定性必修）。策略：
+# 冷启动（映射空）保留一次阻塞刷新；此后 miss 仅后台单飞刷新 + 立即返回 None。
+_refreshing = False
+_refresh_lock = threading.Lock()
 
 
 def _is_book_dir(d: Path) -> bool:
@@ -101,11 +108,33 @@ def refresh_books() -> Dict[str, Path]:
 
 
 def get_book_path(book_id: str) -> Optional[Path]:
-    """按书名解析书目录（映射缺失时刷新一次）"""
+    """按书名解析书目录。
+
+    映射缺失时：冷启动（_books 空）阻塞刷一次保证可用；此后仅触发后台单飞
+    刷新并立即返回 None（调用方本次 404，刷新完成后下次查询即命中）。"""
+    global _refreshing
     path = _books.get(book_id)
-    if path is None or not path.exists():
+    if path is not None and path.exists():
+        return path
+
+    if not _books:
+        # 冷启动：一次阻塞刷新（此时通常还没有用户请求在等）
         refresh_books()
-        path = _books.get(book_id)
+    else:
+        with _refresh_lock:
+            should_spawn = not _refreshing
+            _refreshing = True
+        if should_spawn:
+            def _bg():
+                global _refreshing
+                try:
+                    refresh_books()
+                finally:
+                    with _refresh_lock:
+                        _refreshing = False
+            threading.Thread(target=_bg, daemon=True, name="book-refresh").start()
+
+    path = _books.get(book_id)
     if path is not None and path.exists():
         return path
     return None
