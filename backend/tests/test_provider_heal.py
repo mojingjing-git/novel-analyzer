@@ -64,3 +64,32 @@ def test_both_protocols_fail_returns_false(monkeypatch):
     ok = asyncio.run(_svc().check_api(cfg))
     assert ok is False
     assert cfg.api.provider in ("auto", "anthropic"), "全败时不得盲目改写 provider"
+
+
+def test_models_ok_with_claude_prefix_heals_to_openai(monkeypatch):
+    """终审 M1：/models 可用的聚合网关（OpenAI 面）+ claude-* 模型
+    ——此前 models 早退绕过纠正，整书仍会 404"""
+    async def fake_list_models(base_url, api_key, provider):
+        # auto 解析走 OpenAI /models 分支：成功
+        return ["claude-3-5-sonnet"]
+
+    monkeypatch.setattr(
+        "backend.services.queue_service.LLMClient.list_models", fake_list_models)
+
+    cfg = _cfg()   # 文件内既有 helper：model=claude-*、provider=auto
+    ok = asyncio.run(QueueManager.__new__(QueueManager).check_api(cfg))
+    assert ok is True
+    assert cfg.api.provider == "openai"
+
+
+def test_non_claude_model_not_touched(monkeypatch):
+    async def fake_list_models(base_url, api_key, provider):
+        return ["gpt-4o"]
+    monkeypatch.setattr(
+        "backend.services.queue_service.LLMClient.list_models", fake_list_models)
+
+    cfg = _cfg()
+    cfg.api.model = "gpt-4o"
+    ok = asyncio.run(QueueManager.__new__(QueueManager).check_api(cfg))
+    assert ok is True
+    assert cfg.api.provider == "auto", "非 claude 模型不得改写 provider"

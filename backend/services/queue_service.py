@@ -315,6 +315,16 @@ class QueueManager:
 
         # ① 原生协议 models → ② 原生 chat 探针
         if await models_ok(native):
+            # 终审 M1 收口：/models 在 OpenAI 面成功且模型为 claude-* 时，
+            # 即网关以 OpenAI 协议暴露 claude 系列——detect_provider 的前缀规则
+            # 会把运行期请求误导向 /v1/messages（整书 404）。就地纠正并指引持久化。
+            if (native == "auto"
+                    and str(config.api.model or "").lower().startswith("claude-")):
+                config.api.provider = "openai"
+                logger.warning(
+                    "检测到 OpenAI 兼容网关以 claude-* 模型提供服务：已就地纠正 "
+                    "provider=openai（本次运行生效）。请在设置页保存配置以持久化，"
+                    "避免运行期请求被前缀规则误导向 /v1/messages。")
             return True
         logger.debug("models 健康检查不可用或为空，回退 chat 探针")
         if await chat_ok(native):
