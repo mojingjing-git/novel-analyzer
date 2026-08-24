@@ -337,6 +337,7 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 - **关键类**：`PromptBuilder`
 - **50类伏笔表**：`FORESHADOW_CATEGORY_TEXT` 恒定追加在 system prompt 后
 - **结构化滚动总结渲染**：`_render_structured_rolling()` — 五层渲染
+- **正文超限截断**：章节正文超 30000 字符时尾部保序截断（保留后段，丢弃开头字数显式告知模型，防超窗确定性失败）
 
 #### knowledge_base.py（464行）
 - **职责**：磁盘 KB 的加载/保存/合并/增量更新
@@ -420,7 +421,7 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 
 #### json_utils.py（297行）
 - **8级修复链**：直接解析 → 截尾 → 去注释 → 漏引号修复(两轮) → json5 → ast.literal_eval → json_repair → 单引号替换
-- **原子写**：`safe_save_json()` 先写 `.tmp` 再 `replace`
+- **原子写**：`safe_save_json()` 先写进程内唯一 tmp 名（pid + uuid 后缀，防并发同目标互踩）再 `replace`
 
 #### foreshadow_ledger.py（189行）
 - **状态机**：`active → resolved / dormant`
@@ -430,6 +431,7 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 - **职责**：逐章 JSON 结果聚合为 11 种输出格式
 - **关键类**：`JSONAggregator`
 - **去重机制**：角色名归一化（剥离角色后缀）、哈希去重、模糊主题去重
+- **主文件原子写**：11 种输出经 `safe_save_json()` 原子落盘（唯一 tmp 名 + replace）
 
 #### character_card_generator.py（721行）
 - **职责**：生成角色详细档案卡片
@@ -507,13 +509,13 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 
 | 页面 | 行数 | 职责 |
 |---|---|---|
-| QueuePage | 453 | 主页：队列表、启停控制、实时进度（WS+轮询）、章节详情、日志 |
-| SettingsPage | 489 | 配置：API 预设、模型选择器、思维探测、伏笔分类网格、滚动总结参数、复检批大小 |
+| QueuePage | 507 | 主页：队列表、启停控制、实时进度（WS+轮询）、章节详情、日志 |
+| SettingsPage | 509 | 配置：API 预设、模型选择器、思维探测、伏笔分类网格、滚动总结参数、复检批大小 |
 | SummaryPage | 498 | 聚合+总结：4阶段加权进度、模型覆盖、日志抽屉、报告查看器 |
 | SplitterPage | 419 | 批量切章：文件选择、预览、自定义正则、卷识别、pywebview 文件对话框 |
 | WorkspacePage | 185 | 工作区/归档：列表、归档、删除（自定义确认对话框） |
 | TimelinePage | 249 | 时间线：事件+伏笔、重要性/分类筛选 |
-| GraphPage | 361 | 角色关系图：ECharts force 力导向、章节范围切片、Top-N 截断、边权阈值过滤、邻接高亮、右侧关联面板 |
+| GraphPage | 362 | 角色关系图：ECharts force 力导向、章节范围切片、Top-N 截断、边权阈值过滤、邻接高亮、右侧关联面板 |
 | MapPage | 280+ | 地图：SVG 树形布局、空间关系虚线、归一化状态面板（强制走归一化数据，未归一化时拦截） |
 | CharacterCardPage | 259 | 角色数据库：统计、弧光、事件、状态演化、关系 |
 | StylePage | 139 | 风格分析：启停、轮询、结果展示 |
@@ -790,6 +792,11 @@ npm run build
   - 前端：GraphPage ECharts 死 DOM 自动重绑；Timeline/CharacterCard/Summary 三处切书守卫
 - **原因**：用户发起的全库双批审计
 - **驳回记录**：「自动总结两本书之间互斥窗口」被证伪（analysis.is_running 全程封锁两个入口），勿重复上报
+
+### 10.15 2026-08-24 P2/P3 划算项批量修复（第二批）
+- S+A 两档共 19 项：pipeline 快照线程池化/failed 范围过滤/join 容错、解析健壮性双修、json 修复链 dict 守卫+tmp 唯一名、聚合原子写、put_queue 校验、假 done 广播、style_task 异常兜底、workspace 双修、excel 消毒、前端六页守卫/转义/定时器收口、moderation 阈值放宽、markdown 链接保护、client 编码、正文截断、设置页剪枝
+- **原因**：P1 修复后对剩余 P2/P3 做性价比筛选落地
+- **未动**：KB 近邻指纹、切分窄化算法、协议探测回退等高成本项（详见计划文档排除清单）
 
 ### 10.12 相关文档
 - Win11 重做计划：`docs/superpowers/plans/2026-08-16-win11-frontend-redesign.md`

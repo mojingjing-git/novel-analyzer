@@ -192,6 +192,13 @@
 - 第一批 5 路并行审计报 66 条 → 第二批 5 路对抗复核（53 确认 / 12 部分成立降级 / 1 驳回），落地全部 14 个 P1：滚动总结 KB 快照注入分析 prompt、pipeline rolling 容错、llm_client APIError 嗅探防崩穿重试链、final_summary 断点 results 指纹失效 + stop 级联取消风格任务、归一化全空判败不落盘/空批熔断/缓存短路要求非空、delete_book 显式路径防同名误删、切分保存运行护栏 + 暂存-交换原子写、settings from_dict 数值强转 + 损坏 config 修复前拒绝 save 保 API Key、前端 GraphPage ECharts 死 DOM 自动重绑 + Timeline/CharacterCard/Summary 三处切书守卫
 - 逐项明细见计划文档：`docs/superpowers/plans/2026-08-24-p1-bug-fixes.md`
 
+### 08-24 ｜ P2/P3 划算项批量修复（S+A 两档 19 项）
+
+- 后端 10 处：pipeline 快照构建线程池化 + failed 按章号范围过滤 + 势头 join 容错；models 字符串数组字段整串收编 + validate 嵌套对象类型检查；json 修复链全策略 dict 守卫 + safe_save_json 进程内唯一 tmp 名；聚合主文件改 safe_save_json 原子写；queue put_queue 畸形条目跳过 + 停止后不再广播假 done；final_summary run() 阶段段 try-finally 兜底回收 style_task；workspace 回收站 aborted 视为失败 + 归档回滚失败记录滞留路径；excel 零 sheet 明确报错 + 单元格公式注入消毒；moderation 瞬时误判多给一轮温度尝试；prompt_builder 章节正文超限尾部保序截断
+- 前端 9 处：graph tooltip 转义 + loadData 切书快照守卫；summary viewAggFile 切书快照守卫；chapter loadChapter 早退分支失效在飞响应；map 归一化结束沿 getMap 补 try-catch；pywebviewready 监听 + rAF 卸载取消 + 日志 id 过滤；queue-page 定时器分键清理 + 删除确认改名称快照；api client 路径参数统一 encodeURIComponent；markdown 链接占位保护防强调正则污染 href；settings 提交前剪除空字符串数值字段
+- 验证：后端全量 pytest 226 passed（本批新增约 15 用例），前端 vue-tsc + vite build 通过
+- **未动**：KB 近邻指纹、切分窄化算法、协议探测回退等高成本项；逐项明细见计划文档：`docs/superpowers/plans/2026-08-24-p2p3-batch-fixes.md`
+
 ### 未提交清单（当前工作区）
 
 - 08-02 之后的所有里程碑（自动总结/优化批/伏笔 50 类/模型选择/复检续跑）尚未 git 提交
