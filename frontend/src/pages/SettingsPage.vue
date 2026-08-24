@@ -169,6 +169,18 @@ async function save() {
   fieldErrors.value = {}
   saveError.value = ''
   try {
+    // P2：数值输入清空后 v-model.number 保留 ''；后端虽能兜底回落默认，
+    // 但静默改值不可预期——提交前剪除空字符串字段，语义即“恢复该项默认”
+    const pruneEmptyStrings = (obj: Record<string, unknown>) => {
+      for (const k of Object.keys(obj)) {
+        const v = obj[k]
+        if (v === '') { delete obj[k]; continue }
+        if (v && typeof v === 'object' && !Array.isArray(v)) {
+          pruneEmptyStrings(v as Record<string, unknown>)
+        }
+      }
+    }
+    pruneEmptyStrings(config.value as unknown as Record<string, unknown>)
     await api.putSettings(config.value)
     saved.value = true
     setTimeout(() => saved.value = false, 2000)
