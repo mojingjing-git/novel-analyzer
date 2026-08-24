@@ -276,6 +276,11 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return (data ?? {}) as T
 }
 
+/** 路径段编码：书名/文件名含 # ? % 等时不至于把 URL 截断到错误资源（P2 审计） */
+function seg(s: string | number): string {
+  return encodeURIComponent(String(s))
+}
+
 export const api = {
   // 基础
   health: () => request<{ status: string }>('/api/health'),
@@ -297,7 +302,7 @@ export const api = {
   analysisStatus: () => request<AnalysisStatus>('/api/analysis/status'),
   getTokenStats: () => request<TokenStatsResponse>('/api/analysis/token_stats'),
   getSessionTokenStats: () => request<SessionTokenStatsResponse>('/api/analysis/token_stats/session'),
-  getBookTokenStats: (book_id: string) => request<{ book_id: string; analysis?: Record<string, unknown>; summary?: Record<string, unknown> }>(`/api/books/${book_id}/token_stats`),
+  getBookTokenStats: (book_id: string) => request<{ book_id: string; analysis?: Record<string, unknown>; summary?: Record<string, unknown> }>(`/api/books/${seg(book_id)}/token_stats`),
 
   // 队列
   getQueue: () => request<AnalysisStatus>('/api/queue'),
@@ -320,17 +325,17 @@ export const api = {
 
   // 书目
   listBooks: () => request<BookInfo[]>('/api/books'),
-  getBookResults: (book_id: string) => request<{ book_id: string; data: Record<string, unknown> }>(`/api/books/${book_id}/results`),
+  getBookResults: (book_id: string) => request<{ book_id: string; data: Record<string, unknown> }>(`/api/books/${seg(book_id)}/results`),
   getChapterResult: (book_id: string, chapter: number) =>
-    request<{ book_id: string; chapter: number; data: Record<string, unknown> }>(`/api/books/${book_id}/chapter/${chapter}`),
+    request<{ book_id: string; chapter: number; data: Record<string, unknown> }>(`/api/books/${seg(book_id)}/chapter/${seg(chapter)}`),
   getLatestChapter: (book_id: string) =>
-    request<{ book_id: string; latest: number }>(`/api/books/${book_id}/latest_chapter`),
-  getBookReport: (book_id: string) => request<{ book_id: string; report: string }>(`/api/books/${book_id}/report`),
-  getBookLedger: (book_id: string) => request<{ book_id: string; ledger: Record<string, unknown> }>(`/api/books/${book_id}/ledger`),
+    request<{ book_id: string; latest: number }>(`/api/books/${seg(book_id)}/latest_chapter`),
+  getBookReport: (book_id: string) => request<{ book_id: string; report: string }>(`/api/books/${seg(book_id)}/report`),
+  getBookLedger: (book_id: string) => request<{ book_id: string; ledger: Record<string, unknown> }>(`/api/books/${seg(book_id)}/ledger`),
   getBookCharacters: (book_id: string) =>
-    request<{ book_id: string; characters: unknown[] }>(`/api/books/${book_id}/characters`),
+    request<{ book_id: string; characters: unknown[] }>(`/api/books/${seg(book_id)}/characters`),
   getCharacterCard: (book_id: string, name: string) =>
-    request<{ book_id: string; character: unknown }>(`/api/books/${book_id}/characters/${encodeURIComponent(name)}`),
+    request<{ book_id: string; character: unknown }>(`/api/books/${seg(book_id)}/characters/${seg(name)}`),
 
   // 最终总结
   startSummary: (book_id: string, start_chapter: number, end_chapter: number, batch_size: number, concurrency: number) =>
@@ -356,7 +361,7 @@ export const api = {
       normalized_at?: string
       location_count?: number
       spatial_count?: number
-    }>(`/api/location-normalization/result/${book_id}`),
+    }>(`/api/location-normalization/result/${seg(book_id)}`),
 
   // 风格分析
   startStyle: (book_id: string, use_llm: boolean, limit: number) =>
@@ -364,7 +369,7 @@ export const api = {
   styleStatus: () => request<{ running: boolean; phase: string; error: string }>('/api/style/status'),
   stopStyle: () => request<{ ok: boolean }>('/api/style/stop', { method: 'POST' }),
   getStyleResult: (book_id: string) =>
-    request<{ book_id: string; content: string }>(`/api/style/result/${book_id}`),
+    request<{ book_id: string; content: string }>(`/api/style/result/${seg(book_id)}`),
 
   // 切分
   previewSplit: (body: Record<string, unknown>) =>
@@ -404,7 +409,7 @@ export const api = {
     request<{ book_id: string; chapter: number; chapter_label: string; chapter_total_chars: number; chapter_truncated: boolean; system_prompt: string; user_prompt: string; system_len: number; user_len: number; total_len: number; params: Record<string, unknown> }>('/api/prompt/preview', { method: 'POST', body: JSON.stringify({ book_id, max_chars, chapter }) }),
 
   // 可视化
-  getTimeline: (book_id: string) => request<{ events: unknown[]; foreshadows: unknown[]; category_map_loaded?: boolean }>(`/api/viz/timeline/${book_id}`),
+  getTimeline: (book_id: string) => request<{ events: unknown[]; foreshadows: unknown[]; category_map_loaded?: boolean }>(`/api/viz/timeline/${seg(book_id)}`),
   getForeshadowCategories: () => request<{
     schema_version: number
     fallback: string
@@ -433,17 +438,17 @@ export const api = {
       total_edges: number
       filtered: Record<string, unknown>
       chapter_range: { min: number; max: number }
-    }>(`/api/viz/graph/${book_id}${query}`)
+    }>(`/api/viz/graph/${seg(book_id)}${query}`)
   },
-  getMap: (book_id: string) => request<{ locations: unknown[]; relationships: unknown[] }>(`/api/viz/map/${book_id}`),
+  getMap: (book_id: string) => request<{ locations: unknown[]; relationships: unknown[] }>(`/api/viz/map/${seg(book_id)}`),
 
   // 聚合
   runAggregate: (book_id: string, include_raw: boolean) =>
     request<{ ok: boolean; files: Record<string, string> }>('/api/aggregate/run', { method: 'POST', body: JSON.stringify({ book_id, include_raw }) }),
   getAggregateFiles: (book_id: string) =>
-    request<{ files: { name: string; size_kb: number }[] }>(`/api/aggregate/${book_id}/files`),
+    request<{ files: { name: string; size_kb: number }[] }>(`/api/aggregate/${seg(book_id)}/files`),
   getAggregateFile: (book_id: string, name: string) =>
-    request<{ content: unknown; is_json: boolean }>(`/api/aggregate/${book_id}/file/${name}`),
+    request<{ content: unknown; is_json: boolean }>(`/api/aggregate/${seg(book_id)}/file/${seg(name)}`),
   exportAggregateExcel: (book_id: string) =>
-    request<{ ok: boolean; path: string }>(`/api/aggregate/${book_id}/excel`, { method: 'POST' }),
+    request<{ ok: boolean; path: string }>(`/api/aggregate/${seg(book_id)}/excel`, { method: 'POST' }),
 }
