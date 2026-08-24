@@ -64,6 +64,9 @@ function onTitlebarUp() {
 
 onMounted(() => {
   isDesktop.value = !!wvApi()
+  // P2：WebView2/pywebview 可能晚于挂载注入（官方要求监听 pywebviewready）；
+  // AppLayout 为常驻布局，采样失败则窗口控制整个会话缺失。
+  window.addEventListener('pywebviewready', () => { isDesktop.value = !!wvApi() })
   if (new URLSearchParams(window.location.search).get('collapsed') === '1') {
     collapsed.value = true
   }

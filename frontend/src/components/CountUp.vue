@@ -8,7 +8,7 @@
  * 缓动：ease-out cubic（曲线 1 - (1-t)^3），起始快、收尾慢，符合 Win11 Fluent 节奏
  * 性能：单 timer / 组件挂载期间动态启动/取消，避免泄漏
  */
-import { ref, watch, onMounted } from 'vue'
+import { ref, watch, onMounted, onUnmounted } from 'vue'
 
 const props = withDefaults(defineProps<{
   value: number
@@ -62,6 +62,10 @@ onMounted(() => {
   // 首屏直接显示当前值（避免空白），不动画
   display.value = props.value
 })
+
+// P2：卸载后终止动画循环（与文件头“无泄漏”承诺对齐；影响有界但应兑现）
+onUnmounted(() => { if (rafId !== null) cancelAnimationFrame(rafId) })
+
 </script>
 
 <template>

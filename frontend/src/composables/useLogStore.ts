@@ -30,7 +30,8 @@ function loadFromStorage(): LogEntry[] {
       if (Array.isArray(parsed)) {
         // 过滤掉无效条目 + 旧数据来源迁移
         return parsed
-          .filter(x => x && typeof x.text === 'string')
+          .filter(x => x && typeof x.text === 'string'
+            && typeof x.id === 'number' && Number.isFinite(x.id))
           .map(migrateSource)
       }
     }
