@@ -462,6 +462,9 @@ async def analyze_book(blocks_dir: Path, book_name: str, use_llm: bool = True,
             "base_url": cfg.api.base_url,
             "api_key": cfg.api.api_key,
             "model": cfg.api.model,
+            # 与 base_url/api_key/model 同源透传：网关以 OpenAI 协议暴露 claude-*
+            # 时，缺省 auto 会被前缀规则误导向 /v1/messages（复审遗漏构造点）
+            "provider": cfg.api.provider,
         }
         profile = await extract_style_profile(blocks_dir, book_name, api_config)
         if profile:
