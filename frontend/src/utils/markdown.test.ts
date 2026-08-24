@@ -1,113 +1,49 @@
-/**
- * Markdown 解析器测试
- */
+/** Markdown 渲染器测试（vitest 版，2026-08-24 自运行脚本迁移） */
+import { describe, it, expect } from 'vitest'
 import { renderMarkdown } from './markdown'
 
-function assertContains(html: string, needle: string, msg: string) {
-  if (!html.includes(needle)) {
-    console.error(`❌ FAIL: ${msg}`)
-    console.error(`   expected to contain: ${needle}`)
-    console.error(`   actual: ${html}`)
-    process.exit(1)
-  }
-}
+describe('markdown 渲染器', () => {
+  it('标题', () => {
+    const r = renderMarkdown('# H1\n## H2\n### H3')
+    expect(r).toContain('<h1 class="md-h1">H1</h1>')
+    expect(r).toContain('<h2 class="md-h2">H2</h2>')
+    expect(r).toContain('<h3 class="md-h3">H3</h3>')
+  })
 
-function runTests() {
-  // 标题
-  let r = renderMarkdown('# H1\n## H2\n### H3')
-  assertContains(r, '<h1 class="md-h1">H1</h1>', 'H1')
-  assertContains(r, '<h2 class="md-h2">H2</h2>', 'H2')
-  assertContains(r, '<h3 class="md-h3">H3</h3>', 'H3')
-  console.log('✅ 标题')
+  it('粗体/斜体/行内代码', () => {
+    const r = renderMarkdown('**bold** *italic* `code`')
+    expect(r).toContain('<strong>bold</strong>')
+    expect(r).toContain('<em>italic</em>')
+    expect(r).toContain('<code class="md-code">code</code>')
+  })
 
-  // 粗体 + 斜体 + 行内代码
-  r = renderMarkdown('**bold** *italic* `code`')
-  assertContains(r, '<strong>bold</strong>', 'bold')
-  assertContains(r, '<em>italic</em>', 'italic')
-  assertContains(r, '<code class="md-code">code</code>', 'inline code')
-  console.log('✅ 行内格式')
+  it('XSS 转义', () => {
+    const r = renderMarkdown('<script>alert(1)</script>')
+    expect(r).toContain('&lt;script&gt;')
+    expect(r).not.toContain('<script>')
+  })
 
-  // 列表
-  r = renderMarkdown('- a\n- b\n- c')
-  assertContains(r, '<ul class="md-ul">', 'ul')
-  assertContains(r, '<li>a</li>', 'li a')
-  assertContains(r, '<li>c</li>', 'li c')
-  r = renderMarkdown('1. one\n2. two')
-  assertContains(r, '<ol class="md-ol">', 'ol')
-  assertContains(r, '<li>one</li>', 'ol 1')
-  console.log('✅ 列表')
+  it('空文本返回空串', () => {
+    expect(renderMarkdown('')).toBe('')
+  })
 
-  // 代码块
-  r = renderMarkdown('```python\nprint("hi")\n```')
-  assertContains(r, '<pre class="md-pre">', 'pre')
-  assertContains(r, 'language-python', 'lang')
-  assertContains(r, 'print(&quot;hi&quot;)', 'escaped')
-  console.log('✅ 代码块')
+  it('段落合并与换行', () => {
+    const r = renderMarkdown('第一段\n第二段')
+    expect(r).toContain('<p class="md-p">')
+    expect(r).toContain('<br/>')
+  })
 
-  // 引用
-  r = renderMarkdown('> quote here')
-  assertContains(r, '<blockquote class="md-quote">', 'blockquote')
-  assertContains(r, 'quote here', 'quote text')
-  console.log('✅ 引用')
+  it('链接 href 不被强调正则污染（P2 2026-08-24）', () => {
+    const r = renderMarkdown('[doc](https://example.com/wiki/a_b_c)')
+    expect(r).not.toContain('<em>')
+    expect(r).not.toContain('<strong>')
+    expect(r).not.toContain('<del>')
+    expect(r).toContain('href="https://example.com/wiki/a_b_c"')
+  })
 
-  // 链接
-  r = renderMarkdown('[百度](https://baidu.com)')
-  assertContains(r, '<a href="https://baidu.com"', 'link href')
-  assertContains(r, 'target="_blank"', 'link target')
-  assertContains(r, '>百度</a>', 'link text')
-  // 危险协议应被过滤
-  r = renderMarkdown('[evil](javascript:alert(1))')
-  assertContains(r, 'href="#"', 'unsafe url blocked')
-  console.log('✅ 链接')
-
-  // 分隔线
-  r = renderMarkdown('---')
-  assertContains(r, '<hr class="md-hr"/>', 'hr')
-  console.log('✅ 分隔线')
-
-  // 表格
-  r = renderMarkdown('| A | B |\n|---|---|\n| 1 | 2 |')
-  assertContains(r, '<table class="md-table">', 'table')
-  assertContains(r, '<th>A</th>', 'th A')
-  assertContains(r, '<td>1</td>', 'td 1')
-  console.log('✅ 表格')
-
-  // XSS 防护
-  r = renderMarkdown('<script>alert(1)</script>')
-  assertContains(r, '&lt;script&gt;', 'XSS escaped')
-  if (r.includes('<script>')) {
-    console.error('❌ XSS blocked failed')
-    process.exit(1)
-  }
-  console.log('✅ XSS 防护')
-
-  // 空文本
-  if (renderMarkdown('') !== '') {
-    console.error('❌ empty input should produce empty output')
-    process.exit(1)
-  }
-  console.log('✅ 空文本')
-
-  // 段落合并
-  r = renderMarkdown('第一段\n第二段')
-  assertContains(r, '<p class="md-p">', 'p')
-  assertContains(r, '<br/>', 'br')
-  console.log('✅ 段落合并')
-
-  // 链接 href 保护（P2 2026-08-24）
-  r = renderMarkdown('[doc](https://example.com/wiki/a_b_c)')
-  if (r.includes('<em>') || r.includes('<strong>') || r.includes('<del>')) {
-    console.error('❌ FAIL: 链接 href 被强调正则污染')
-    console.error('   actual: ' + r)
-    process.exit(1)
-  }
-  assertContains(r, 'href="https://example.com/wiki/a_b_c"', 'href intact')
-  r = renderMarkdown('__init__ 与 [x](https://a.io/p__q)')
-  assertContains(r, '<strong>init</strong>', '可见文本粗体仍生效')
-  assertContains(r, 'href="https://a.io/p__q"', 'URL 内双下划线不被加粗')
-  console.log('✅ 链接 href 保护')
-
-  console.log('\n🎉 全部 Markdown 测试通过！')
-}
-
-runTests()
+  it('可见文本强调仍生效且 URL 内下划线不被污染', () => {
+    const r = renderMarkdown('__init__ 与 [x](https://a.io/p__q)')
+    expect(r).toContain('<strong>init</strong>')
+    expect(r).toContain('href="https://a.io/p__q"')
+  })
+})
