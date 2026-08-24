@@ -93,3 +93,43 @@ def test_non_claude_model_not_touched(monkeypatch):
     ok = asyncio.run(QueueManager.__new__(QueueManager).check_api(cfg))
     assert ok is True
     assert cfg.api.provider == "auto", "非 claude 模型不得改写 provider"
+
+
+def test_official_anthropic_direct_not_healed(monkeypatch):
+    """复审 Critical：官方 Anthropic 直连（auto + anthropic URL）不得被改写为 openai"""
+    async def fake_list_models(base_url, api_key, provider):
+        return ["claude-3-5-sonnet"]   # Anthropic 面 /models 成功
+    monkeypatch.setattr(
+        "backend.services.queue_service.LLMClient.list_models", fake_list_models)
+
+    cfg = _cfg()
+    cfg.api.base_url = "https://api.anthropic.com"
+    ok = asyncio.run(QueueManager.__new__(QueueManager).check_api(cfg))
+    assert ok is True
+    assert cfg.api.provider == "auto", "官方直连不得被纠正"
+
+
+def test_heal_persists_via_config_manager(monkeypatch, tmp_path):
+    """复审 Important：纠正值必须写入 config_manager 并落盘，
+    否则总结链路 config_manager.load() 重读磁盘后丢失"""
+    saved = {}
+    class FakeCM:
+        def __init__(self):
+            from backend.config.settings import AppConfig
+            self.config = AppConfig()
+            self.config.api.model = "claude-3-5-sonnet"
+        def save(self):
+            saved["provider"] = self.config.api.provider
+            return True
+    svc = QueueManager.__new__(QueueManager)
+    svc.config_manager = FakeCM()  # type: ignore[assignment]
+
+    async def fake_list_models(base_url, api_key, provider):
+        return ["claude-3-5-sonnet"]
+    monkeypatch.setattr(
+        "backend.services.queue_service.LLMClient.list_models", fake_list_models)
+
+    cfg = svc.config_manager.config  # type: ignore[union-attr]
+    ok = asyncio.run(svc.check_api(cfg))
+    assert ok and cfg.api.provider == "openai"
+    assert saved.get("provider") == "openai", "纠正值必须经 config_manager.save() 落盘"

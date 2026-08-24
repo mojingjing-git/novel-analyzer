@@ -114,6 +114,9 @@ class QueueManager:
     def __init__(self):
         self._items: List[QueueItem] = []
         self._current_index: int = -1
+        # check_api 的 heal 纠正值经此落盘持久化；由 AnalysisService 注入，
+        # 独立构造的实例保持 None（跳过持久化，仅就地纠正）
+        self.config_manager: Optional[ConfigManager] = None
 
     @property
     def items(self) -> List[QueueItem]:
@@ -318,12 +321,27 @@ class QueueManager:
             # 终审 M1 收口：/models 在 OpenAI 面成功且模型为 claude-* 时，
             # 即网关以 OpenAI 协议暴露 claude 系列——detect_provider 的前缀规则
             # 会把运行期请求误导向 /v1/messages（整书 404）。就地纠正并指引持久化。
+            # 复审 Critical 护栏：官方 Anthropic 直连（base_url 含 anthropic）时
+            # auto 解析本就命中 Anthropic 面 /models，探针成功≠协议误判，
+            # 不得改写为 openai。仅聚合网关（URL 无 anthropic 特征）才纠正。
             if (native == "auto"
-                    and str(config.api.model or "").lower().startswith("claude-")):
+                    and str(config.api.model or "").lower().startswith("claude-")
+                    and "anthropic" not in (config.api.base_url or "").lower()):
                 config.api.provider = "openai"
+                # 权威传播：config_manager 的内存单例 + 磁盘落盘。
+                # 否则自动总结/手动总结经 config_manager.load() 重读磁盘时，
+                # 纠正值丢失（复审 Important #2）。探针已验证该值可用，落盘安全；
+                # save 内置 env-key 不回写保护，不会泄露密钥。
+                try:
+                    cm = getattr(self, "config_manager", None)
+                    if cm is not None:
+                        cm.config.api.provider = "openai"
+                        cm.save()
+                except Exception as e:
+                    logger.warning(f"provider 纠正值持久化失败（本次运行仍生效）: {e}")
                 logger.warning(
                     "检测到 OpenAI 兼容网关以 claude-* 模型提供服务：已就地纠正 "
-                    "provider=openai（本次运行生效）。请在设置页保存配置以持久化，"
+                    "provider=openai 并写入配置持久化，"
                     "避免运行期请求被前缀规则误导向 /v1/messages。")
             return True
         logger.debug("models 健康检查不可用或为空，回退 chat 探针")
@@ -405,6 +423,10 @@ class AnalysisService:
         self.config_manager = ConfigManager(CONFIG_FILE)
         self.config_manager.load()
         self.queue = QueueManager()
+        # 复审 Important #2：check_api 的 heal 纠正值需经 config_manager 落盘
+        # 持久化（check_api 以 self.queue 身份执行，getattr(self, "config_manager")
+        # 取的就是这里挂上的引用）
+        self.queue.config_manager = self.config_manager
         self.queue.load_state(QUEUE_STATE_FILE)
         self._runner_task: Optional[asyncio.Task] = None
         self._pipeline: Optional[AnalysisPipeline] = None
