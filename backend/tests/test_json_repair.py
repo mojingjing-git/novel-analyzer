@@ -202,3 +202,39 @@ class TestParseJsonRobustWithFullwidth:
         assert data["locations"][0]["canonical_name"] == "宁安县"
         assert data["locations"][0]["aliases"] == ["宁安县城"]
         assert data["locations"][0]["description"] == "谢怜故国"
+
+
+# === P2 增补：全策略 dict 守卫 + safe_save_json 唯一 tmp 名 ===
+
+
+def test_parse_robust_never_returns_non_dict():
+    """P2：契约是仅返回 dict——顶层数组/字符串必须判失败而不是带病返回"""
+    for bad in ('[1,2,3]', '"hello"', "['a','b']", 'null', '123'):
+        result, err = parse_json_robust(bad)
+        assert result is None, f"{bad!r} 不应返回 {result!r}"
+
+def test_strategy8_single_quoted_array_rejected():
+    """策略8 此前把单引号数组修复成功后当 dict 返回"""
+    result, _ = parse_json_robust("['a','b']")
+    assert result is None
+
+
+def test_safe_save_json_unique_tmp_concurrent(tmp_path):
+    """P2：固定 .tmp 名并发写同一目标会交错/PermissionError；唯一名下应全部成功"""
+    import threading
+    from backend.utils.json_utils import safe_save_json
+    target = tmp_path / "t.json"
+    errors = []
+
+    def worker(i):
+        if not safe_save_json({"i": i}, target):
+            errors.append(i)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(16)]
+    for t in threads: t.start()
+    for t in threads: t.join()
+
+    assert errors == []
+    import json as _json
+    data = _json.loads(target.read_text(encoding="utf-8"))
+    assert set(data.keys()) == {"i"} and isinstance(data["i"], int)

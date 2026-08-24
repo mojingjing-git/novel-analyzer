@@ -6,7 +6,10 @@ JSON工具函数
 
 import json
 import logging
+import os
 import re
+import time
+import uuid
 from pathlib import Path
 from typing import Any, Optional
 
@@ -199,9 +202,14 @@ def parse_json_robust(text: str):
     first_error: Optional[str] = None
     text_len = len(text)
 
-    # 策略1: 直接解析
+    # 策略1: 直接解析（顶层必须是对象；数组/标量判失败进入后续策略）
     try:
-        return json.loads(text), None
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed, None
+        # P2 修复：顶层数组/标量此前会带病返回，下游 .get() AttributeError；
+        # 保留首次真实 JSONDecodeError 为诊断主因（若前面没失败过才记录类型错误）
+        first_error = first_error or f"顶层类型为 {type(parsed).__name__}（需为对象）"
     except json.JSONDecodeError as e:
         first_error = str(e)
 
@@ -211,7 +219,9 @@ def parse_json_robust(text: str):
     if last_brace != -1:
         trimmed = text[:last_brace + 1]
         try:
-            return json.loads(trimmed), None
+            parsed = json.loads(trimmed)
+            if isinstance(parsed, dict):
+                return parsed, None
         except json.JSONDecodeError:
             pass
 
@@ -222,7 +232,9 @@ def parse_json_robust(text: str):
     if comment_match:
         cleaned = base[:comment_match.start()].strip()
         try:
-            return json.loads(cleaned), None
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, dict):
+                return parsed, None
         except json.JSONDecodeError:
             pass
 
@@ -234,7 +246,10 @@ def parse_json_robust(text: str):
             break
         repaired = next_repaired
         try:
-            return json.loads(repaired), "已自动修复JSON（漏引号）后解析成功"
+            # P2 修复：repaired 可能是顶层数组（漏引号数组同样存在），守卫后落入后续策略
+            parsed = json.loads(repaired)
+            if isinstance(parsed, dict):
+                return parsed, "已自动修复JSON（漏引号）后解析成功"
         except json.JSONDecodeError:
             pass
         try:
@@ -291,7 +306,9 @@ def parse_json_robust(text: str):
     try:
         fixed = _replace_single_quoted_values(repaired)
         if fixed != repaired:
-            return json.loads(fixed), None
+            parsed = json.loads(fixed)
+            if isinstance(parsed, dict):
+                return parsed, None
     except json.JSONDecodeError:
         pass
 
@@ -311,14 +328,27 @@ def safe_save_json(data: Any, file_path: Path, ensure_ascii: bool = False) -> bo
         是否成功
     """
     try:
-        temp_path = file_path.with_suffix('.tmp')
+        # P2 修复：固定 .tmp 名在两线程同存同一目标时共用一个临时文件，
+        # 内容交错或 Windows 下 replace 撞句柄 PermissionError；进程内唯一名消除该类竞态。
+        # （代价：进程硬崩可能残留随机名 tmp，属可接受权衡）
+        temp_path = file_path.with_suffix(f'.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp')
 
         with open(temp_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=ensure_ascii, indent=2, default=str)
 
         # 原子替换
-        temp_path.replace(file_path)
-        return True
+        # P2 补充：唯一 tmp 名消除了临时文件互踩，但 Windows 下多线程同刻对同一目标
+        # replace 时，目标文件可能正处于另一线程的 delete-pending 窗口而报 PermissionError
+        # （实测 WinError 5）；短退避重试是该竞态的标准缓解。
+        # 重试耗尽则抛最后一次异常，交由外层统一记录日志并清理临时文件。
+        for attempt in range(8):
+            try:
+                temp_path.replace(file_path)
+                return True
+            except PermissionError:
+                if attempt == 7:
+                    raise
+                time.sleep(0.005 * (attempt + 1))
 
     except Exception as e:
         logger.error(f"保存JSON失败: {e}")
