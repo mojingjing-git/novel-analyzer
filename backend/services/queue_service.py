@@ -13,7 +13,7 @@ import re
 import shutil
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional, Dict, Any
@@ -280,30 +280,59 @@ class QueueManager:
 
     async def check_api(self, config: AppConfig) -> bool:
         """轻量 API 预检查：优先用 /models 健康检查端点（不消耗对话 token、不污染日志），
-        仅在 /models 不可用或返回空时回退到一次极短 chat 探针。"""
+        仅在 /models 不可用或返回空时回退到一次极短 chat 探针。
+        原生协议两种探针均失败时，再以翻转 provider 各探一次（P2 2026-08-24：
+        聚合网关常以 OpenAI 协议暴露 claude-* 模型，detect_provider 会误判为
+        anthropic → /v1/messages 404 → auto 模式下整本书无提示全量失败）。"""
         # 空模型名直接拦截：带着空 model 发起请求只会得到晦涩的 API 报错
         if not str(config.api.model or '').strip():
             logger.warning("API 预检查失败：未配置模型（api.model 为空），请在设置页填写模型名")
             return False
-        try:
-            models = await LLMClient.list_models(config.api.base_url, config.api.api_key, config.api.provider)
-            if models:
-                return True
-        except Exception as e:
-            logger.debug(f"models 健康检查异常: {e}")
-        # 回退探针：仅一次、内容极短。
-        # 注意 chat() 不会为 API 错误抛异常（所有失败路径都返回 (False, ...)，见 llm_client.py），
-        # 所以必须检查返回值，不能无条件 return True，否则预检查形同虚设。
-        try:
-            client = LLMClient(config.api)
-            ok, _content, err, _tokens = await client.chat([{"role": "user", "content": "hi"}])
-            if ok:
-                return True
-            logger.warning(f"API 预检查（chat 探针）返回失败: {err}")
-            return False
-        except Exception as e:
-            logger.warning(f"API 预检查失败: {e}")
-            return False
+
+        flipped = "openai" if (config.api.provider or "auto") in ("auto", "anthropic") else "anthropic"
+
+        async def models_ok(provider: str) -> bool:
+            try:
+                models = await LLMClient.list_models(config.api.base_url, config.api.api_key, provider)
+                return bool(models)
+            except Exception as e:
+                logger.debug(f"models 健康检查异常({provider}): {e}")
+                return False
+
+        async def chat_ok(provider: str) -> bool:
+            try:
+                client = LLMClient(replace(config.api, provider=provider))
+                ok, _c, err, _t = await client.chat([{"role": "user", "content": "hi"}])
+                if ok:
+                    return True
+                logger.debug(f"chat 探针失败({provider}): {err}")
+                return False
+            except Exception as e:
+                logger.debug(f"chat 探针异常({provider}): {e}")
+                return False
+
+        native = (config.api.provider or "auto")
+
+        # ① 原生协议 models → ② 原生 chat 探针
+        if await models_ok(native):
+            return True
+        logger.debug("models 健康检查不可用或为空，回退 chat 探针")
+        if await chat_ok(native):
+            return True
+
+        # ③ 跨协议探针：翻转 provider 各试一次 models + chat，
+        # 任一成功即认定协议误判——就地纠正（运行期对象，随后所有服务共用此
+        # 配置对象即自动生效），并指引持久化；全败不改写。
+        logger.warning(f"原生协议({native})探针均失败，尝试跨协议({flipped})探针…")
+        if await models_ok(flipped) or await chat_ok(flipped):
+            config.api.provider = flipped
+            logger.warning(
+                f"检测到协议误判：已就地纠正 provider={flipped}（本次运行生效）。"
+                f"请在设置页保存配置以持久化，避免每次启动重复探测。")
+            return True
+
+        logger.warning("API 预检查失败：原生与跨协议探针均失败")
+        return False
 
     def save_state(self, path: Path) -> None:
         """持久化队列状态（原子写，避免断电损坏 queue_state.json 丢失队列）"""
