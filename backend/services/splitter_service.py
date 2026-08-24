@@ -288,14 +288,28 @@ def _chapter_regex_for_mode(options: SplitOptions, lines: List[str]) -> tuple:
     special_patterns = [pat for name, pat in CHAPTER_PATTERNS if name.startswith("特章")]
     special_alt = "|".join(special_patterns)
 
-    # P2-11：主导格式得分足够（>=5 次命中）时，用"主导正则 + 特章正则"作为实际
-    # 切分正则——原实现把所有候选正则 OR 合并成"大网"，含"1. 2. 3."式列表或
-    # 数字编号行文的小说会被误切成碎片章；打分选出的主导格式才是该书真实的章节形态。
+    # P2-11 + G6 收口（2026-08-24）：主导格式足够强时收窄为
+    # 「主导 + 特章 + 达标次级」。次级入选双门槛：绝对得分 ≥ 2（排掉孤例噪声）
+    # 且得分 ≥ 主导的 15%（排掉数量远超主导的高频噪声列表——那正是 P2-11 要防的
+    # 过度切分场景）。合法卷章混排与主导同量级，必然入选。
     if best_name and scores[best_name] >= 5 and not best_name.startswith("特章"):
         _pat_by_name = {name: pat for name, pat in CHAPTER_PATTERNS}
+        best_score = scores[best_name]
         combined = f"(?:{_pat_by_name[best_name]})"
         if special_alt:
             combined += f"|(?:{special_alt})"
+        included_secondary = 0
+        threshold = max(2, int(best_score * 0.15))
+        for name, pat in CHAPTER_PATTERNS:
+            if name == best_name or name.startswith("特章"):
+                continue
+            sc = scores.get(name, 0)
+            if sc >= threshold:
+                combined += f"|(?:{pat})"
+                included_secondary += 1
+        if included_secondary:
+            logger.info(f"次级章节格式并入切分: {included_secondary} 种 "
+                        f"(阈值≥{threshold})")
         return re.compile(combined, re.MULTILINE | re.IGNORECASE), pattern_name
 
     # 兜底：主导格式得分不足（前 N 行样本太少/无主导格式）时回退全量合并大网
