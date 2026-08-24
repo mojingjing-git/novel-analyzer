@@ -224,12 +224,15 @@ def archive_novel(novel_name: str, mode: str = "rename") -> Dict:
     try:
         shutil.move(str(temp_path), str(archive_dest))
     except Exception as e:
-        # 移动失败，回滚
+        # 移动失败，回滚；回滚自身失败必须暴露滞留路径（P2：此前静默吞掉，
+        # 目录滞留时间戳临时名，用户按原名重试报“不存在”，看似书丢了）
+        roll_err = ""
         try:
             temp_path.rename(novel_dir)
-        except Exception:
-            pass
-        return {"ok": False, "error": f"移动失败: {e}"}
+        except Exception as re_err:
+            roll_err = f"；回滚亦失败，目录滞留为工作区内「{temp_path.name}」，请手工改名恢复"
+            logger.error("归档回滚失败: %s -> %s: %s", temp_path, novel_dir, re_err)
+        return {"ok": False, "error": f"移动失败: {e}{roll_err}"}
 
     logger.info("已归档《%s》 → %s", book_name, archive_dest)
     return {"ok": True, "archive_name": archive_name}
@@ -327,7 +330,11 @@ def _move_to_trash(path: Path) -> None:
         op.lpszProgressTitle = None
 
         result = shell32.SHFileOperationW(ctypes.byref(op))
-        if result != 0 and not op.fAnyOperationsAborted:
+        # P2：aborted 也算失败——用户/系统中止时目标仍在原处，若当成功放行，
+        # 队列已删而磁盘未删（delete_book 出现幽灵条目）
+        if result != 0 or op.fAnyOperationsAborted:
+            if op.fAnyOperationsAborted:
+                logger.error("SHFileOperationW 被中止（fAnyOperationsAborted=TRUE），目标未移入回收站")
             raise RuntimeError(f"SHFileOperationW 失败，错误码 {result}")
     elif system == "Darwin":
         subprocess.run(
