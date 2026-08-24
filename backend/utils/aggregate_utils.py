@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 
 from ..models.analysis_result import AnalysisResult
+from ..utils.json_utils import safe_save_json
 from ..utils.text_utils import is_text_duplicate
 
 logger = logging.getLogger(__name__)
@@ -173,8 +174,9 @@ class JSONAggregator:
 
             aggregated["chapters"][str(result.chapter_number)] = chapter_data
 
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(aggregated, f, ensure_ascii=False, indent=2)
+        # P2 修复（2026-08-24）：open('w') 截断直写在并发 GET 触发实时聚合时
+        # 会产出交错/截断 JSON，后续读取全部 500；统一走仓库标准原子原语。
+        safe_save_json(aggregated, output_path, ensure_ascii=False)
 
         logger.info(f"聚合JSON已生成: {output_path}")
         logger.info(f"文件大小: {output_path.stat().st_size / 1024:.1f} KB")
