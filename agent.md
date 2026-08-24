@@ -14,7 +14,7 @@
 - **后端**：FastAPI（异步），Python 3.11+
 - **桌面壳**：pywebview + WebView2（Windows）
 - **LLM 兼容**：任何 OpenAI 兼容 API（8+ 厂商预设），以及 Anthropic 协议
-- **测试**：177 个测试用例（2026-08-23 全局 Sem 改造后新增 3 个测试：174 → 177），18 个测试文件
+- **测试**：255 个测试用例，43 个测试文件
 
 ---
 
@@ -41,9 +41,10 @@
 │   │   ├── book_service.py       # 书名目录映射
 │   │   ├── summary_service.py    # 总结任务生命周期
 │   │   ├── style_service.py      # 风格分析任务生命周期
-│   │   └── viz_service.py        # 可视化数据聚合
+│   │   ├── viz_service.py        # 可视化数据聚合
+│   │   └── location_normalization_service.py  # 地点归一化任务编排（单例；start/stop/status，进度经 ProgressHub 广播）
 │   ├── api/                      # REST 路由 + WebSocket
-│   │   ├── routes_analysis.py    # 分析控制 + 队列管理（17端点；delete_book 先移回收站成功再改队列）
+│   │   ├── routes_analysis.py    # 分析控制 + 队列管理（20端点；delete_book 先移回收站成功再改队列）
 │   │   ├── routes_summary.py     # 总结控制（3端点）
 │   │   ├── routes_books.py       # 书籍数据（10端点）
 │   │   ├── routes_viz.py         # 可视化数据（3端点）
@@ -51,6 +52,7 @@
 │   │   ├── routes_splitter.py    # 切章（4端点）
 │   │   ├── routes_aggregate.py   # 聚合 + Excel 导出（4端点）
 │   │   ├── routes_foreshadow.py  # 伏笔分类（1端点）
+│   │   ├── routes_location_normalization.py  # 地点归一化任务控制（4端点；start/stop/status/result）
 │   │   ├── routes_prompt.py      # Prompt 预览（1端点）
 │   │   ├── routes_settings.py    # 配置管理（6端点）
 │   │   └── ws.py                 # WebSocket /ws/progress
@@ -70,11 +72,11 @@
 │   │   ├── export_utils.py       # Markdown 导出
 │   │   └── text_utils.py         # 编码检测、文本去重、伏笔去重
 │   ├── workers/                  # 后台任务
-│   └── tests/                    # pytest（177 用例，18 文件）
+│   └── tests/                    # pytest（255 用例，43 文件）
 ├── frontend/                     # Vue 3 前端
 │   ├── src/
 │   │   ├── api/
-│   │   │   ├── client.ts         # 53 个 API 方法 + TypeScript DTO
+│   │   │   ├── client.ts         # 60 个 API 方法 + TypeScript DTO
 │   │   │   └── useProgressSocket.ts  # 单例 WebSocket + pub/sub
 │   │   ├── components/
 │   │   │   ├── AppLayout.vue     # 根布局（标题栏 + 侧边栏 + pywebview 窗口控制）
@@ -83,7 +85,7 @@
 │   │   │   ├── ChapterValue.vue  # 递归数据渲染组件
 │   │   │   ├── LogConsole.vue    # 日志控制台
 │   │   │   ├── ProgressBar.vue   # 进度条（含块→章转换）
-│   │   │   ├── TokenBadge.vue    # Token 用量徽章
+│   │   │   ├── CountUp.vue       # 数字缓动组件（QueuePage session stats）
 │   │   │   ├── ConfirmDialog.vue # 玻璃材质确认对话框
 │   │   │   └── Icon.vue          # 30+ SVG 图标
 │   │   ├── composables/
@@ -135,7 +137,7 @@
 | openpyxl | Excel 导出（懒加载） |
 | networkx + pyvis | 角色关系图（可选依赖） |
 | json5 / json_repair | JSON 容错解析 |
-| pytest | 177 个测试用例 |
+| pytest | 255 个测试用例 |
 
 ### 前端
 | 组件 | 版本/说明 |
@@ -319,20 +321,21 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 - **进度广播**：通过 `ProgressHub` WebSocket 推送 log/progress/block_done/state_change/token_stats
 - **停止机制**：`self._stop_requested` + `self.analyzer.stop()` + `self.rolling_client.request_stop()`
 
-#### llm_client.py（1003行）
+#### llm_client.py（1020行）
 - **职责**：统一封装 OpenAI/Anthropic 双协议 LLM 调用
 - **关键类**：`LLMClient`
 - **关键方法**：`chat()`、`chat_with_retry()`、`list_models()`、`probe_thinking_params()`、`detect_provider()`
 - **KV Cache 统计**：读取 `prompt_tokens_details.cached_tokens`
-- **FailureLogger**：线程安全，24h 滚动日志，记录温度/错误类型/等待时长
+- **审核识别**：`moderation_hit_from_exception()` 统一判定；审核拦截需连续 3 次命中才短路退出重试链（瞬时误判多给一轮温度尝试）
+- **FailureLogger**：线程安全，24h 滚动日志，记录温度/错误类型/等待时长；重试等待统一经 `_sleep()` 封装
 
-#### analyzer.py（209行）
+#### analyzer.py（223行）
 - **职责**：单章分析引擎
 - **关键类**：`ChapterAnalyzer`
 - **流程**：`prompt_builder.build_messages()` → `llm_client.chat_with_retry(validate=validate_json_response)` → `_parse_response()` → `AnalysisResult.from_dict()`
-- **JSON 验证**：检查必须字段（core_events/cross_block/long_context_insights）
+- **JSON 验证**：检查必须字段（core_events/cross_block/long_context_insights）；`validate_parsed_analysis` 另做嵌套字段类型检查（嵌套字段非 dict 视为缺失，防 `from_dict` 默认值掩盖）
 
-#### prompt_builder.py（307行）
+#### prompt_builder.py（320行）
 - **职责**：构建 system + user 两条消息
 - **关键类**：`PromptBuilder`
 - **50类伏笔表**：`FORESHADOW_CATEGORY_TEXT` 恒定追加在 system prompt 后
@@ -349,8 +352,11 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 - **职责**：全内存 IO，持有所有 AnalysisResult + 增量 KB
 - **关键类**：`MemoryState`
 - **关键方法**：`merge_one()`、`get_kb_snapshot()`、`flush_to_disk()`、`restore_from_disk()`
+- **skipped 标记持久化**：审核拦截章写 `chapter_N_skipped.json`（重启续跑不再重付 LLM 费用），对应章节成功后清除；恢复时重新载入标记
+- **失败范围过滤**：`failed_chapters_in(valid_block_ids)` 只返回本轮有效范围内的失败块，补跑不误扫旧账
+- **快照锁**：KB 快照读写全程持 `_snapshot_lock`（含 `add_result`，收口 to_thread 化后的跨线程竞态）；分析用 KB 快照注入 `rolling_structured`，滚动总结对 prompt 生效
 
-#### style_analyzer.py（501行）
+#### style_analyzer.py（505行）
 - **两层架构**：
   1. 22 项统计硬指标（纯代码）：句法、对话、词汇、词表密度、标点
   2. 8 维语义风格（LLM）：signature_expressions/narrative_rhythm/dialogue_style/rhetorical_preferences/emotional_expression/narrative_voice/information_control/narrator_and_genre
@@ -362,7 +368,7 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 
 ### 5.2 服务层（backend/services/）
 
-#### queue_service.py（815行）
+#### queue_service.py（847行）
 - **QueueManager**：队列状态机（pending/running/done/failed/skipped）
 - **AnalysisService**（单例）：
   - `_run_queue()`：逐本运行 `AnalysisPipeline`
@@ -370,9 +376,10 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
   - 自动总结：队列完成后逐本串行执行 `FinalSummaryRunner`
   - 自动归档：分析完成后 `shutil.move` 到 `分析结果/`
   - 每本书分析完成后 token 消耗落盘 `output/token_stats.json`
+- **跨协议探针纠正**：预检 models/chat 探针失败时翻转 provider 重探一次；OpenAI 协议暴露 claude-* 模型时就地纠正 provider 并经 config_manager 落盘持久化
 - **状态持久化**：`queue_state.json`（相对路径存储）
 
-#### final_summary.py（1702行）
+#### final_summary.py（1703行）
 - **职责**：全书总结执行引擎
 - **关键类**：`FinalSummaryRunner`
 - **关键方法**：`run()`、`_run_batch()`、`_reconcile_batch()`、`_recheck_remaining()`、`_write_report()`、`_plan_recheck_batches()`
@@ -388,31 +395,32 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 - **并发写入**：`ThreadPoolExecutor`（最多 32 工作者）缓解网络盘延迟
 - **运行护栏 + 原子写**：save/batch 路由有分析运行护栏；写盘暂存-交换原子化
 
-#### workspace_service.py（365行）
+#### workspace_service.py（381行）
 - **职责**：工作区目录管理
 - **安全机制**：`_is_within()` + `_safe_join()` 路径遍历防护
-- **平台回收站**：Windows `SHFileOperationW` + macOS `osascript` + Linux `gio trash`
+- **平台回收站**：Windows `SHFileOperationW` + macOS `osascript` + Linux `gio trash`；`fAnyOperationsAborted=TRUE`（用户/系统中止）同样视为失败
 - **显式路径删除**：`delete_novel_to_trash` 支持显式路径参数（按队列项 workspace_dir 删除，防同名误删）
+- **归档回滚**：归档失败自动回滚；回滚再失败则记录滞留临时目录路径并中止，不静默丢数据
 
 #### book_service.py（226行）
 - **职责**：书名→目录映射（catalog）
 - **发现来源**：队列项 + 文件系统扫描 + 归档目录 + 手动注册
 - **懒刷新**：冷启动（映射空）阻塞刷一次保证首查可用；此后 miss 仅触发后台单飞刷新并立即返回 None（消除事件循环秒级冻结，下次查询即命中）
 
-#### viz_service.py（229行）
+#### viz_service.py（265行）
 - **三种可视化数据**：
   1. `timeline_data()` — 事件 + 伏笔（含分类映射）
   2. `graph_data(output_dir, chapter_start?, chapter_end?, min_edge_weight=1, max_nodes=200, min_node_count=1)` — 角色节点 + 共现边，支持章节范围切片、边权阈值过滤、Top-N 截断，返回 `nodes/edges/total_characters/total_edges/filtered/chapter_range`
   3. `map_data()` — 地点 + 空间关系
 
-#### location_normalizer.py（380+行）
+#### location_normalizer.py（753行）
 - **职责**：地点与空间关系 LLM 归一化（Phase 0，归一化与最终总结已解耦，仅服务地图）
 - **关键类**：`LocationNormalizer`
 - **3 子阶段**（2026-08-23 砍掉 Phase 0a consolidation，见 10.10）：
   1. `_run_phase_0a_batches`：locations 切片 + 并发 LLM 调 + 校验（canonical ∈ aliases）
   2. `_run_phase_0b_batches`：spatial 切片 + canonical 白名单 + 并发 LLM
   3. `_run_phase_0b_dedupe`：机械去重同 (from, to) 对
-- **触发**：由地图归一化入口（MapPage + `POST /api/viz/locations/normalize`）触发；不再在 `FinalSummaryRunner.run()` 里调用
+- **触发**：MapPage 经 `LocationNormalizationService`（单例编排器，见 `location_normalization_service.py`；REST 入口 `/api/location-normalization/start|stop|status|result`）后台运行归一化，进度经 ProgressHub 广播；不再在 `FinalSummaryRunner.run()` 里调用
 - **复用配置**：`summary_model` / `summary_concurrency` / `summary_timeout` / `summary_thinking_mode`
 - **输出**：`output/locations_normalized.json` + `output/spatial_relationships_normalized.json`
 - **chapter 标记**：每章 chapter_*.json 顶部加 `_normalized_ref` + `_normalized_spatial_ref` 字段
@@ -420,15 +428,15 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 
 ### 5.3 工具层（backend/utils/）
 
-#### json_utils.py（297行）
-- **8级修复链**：直接解析 → 截尾 → 去注释 → 漏引号修复(两轮) → json5 → ast.literal_eval → json_repair → 单引号替换
-- **原子写**：`safe_save_json()` 先写进程内唯一 tmp 名（pid + uuid 后缀，防并发同目标互踩）再 `replace`
+#### json_utils.py（383行）
+- **8级修复链**：直接解析 → 截尾 → 去注释 → 漏引号修复(两轮) → json5 → ast.literal_eval → json_repair → 单引号替换；全策略仅接受 dict 结果（非 dict 一律视为该策略失败，防字符串/列表混入下游）
+- **原子写**：`safe_save_json()` 先写进程内唯一 tmp 名（pid + uuid 后缀，防并发同目标互踩）再 `replace`；replace 撞 `PermissionError` 时有界重试退避
 
 #### foreshadow_ledger.py（189行）
 - **状态机**：`active → resolved / dormant`
 - **休眠判定**：`last_seen_chapter` 距当前进度 ≥ 200 章
 
-#### aggregate_utils.py（882行）
+#### aggregate_utils.py（884行）
 - **职责**：逐章 JSON 结果聚合为 11 种输出格式
 - **关键类**：`JSONAggregator`
 - **去重机制**：角色名归一化（剥离角色后缀）、哈希去重、模糊主题去重
@@ -444,6 +452,11 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 - **可选依赖**：networkx（图算法）+ pyvis（HTML 生成）
 - **算法**：连通分量检测 → 颜色映射 → spring layout → 自定义 HTML patching
 
+#### excel_export.py（292行）
+- **职责**：聚合结果导出 Excel（11 个 sheet）
+- **安全**：单元格文本以 `= + - @` 开头时前置转义，防公式注入（DDE 攻击面）
+- **护栏**：聚合目录缺少可识别 JSON 时抛 `ValueError` 明确报错，不生成零 sheet 坏文件
+
 #### text_utils.py（417行）
 - **编码检测**：BOM/NUL 预检 + 候选编码采样罚分择优（U+FFFD×8 / 控制字符×4 / PUA×3 除以样本长度，取最低罚分；Big5 繁体书不再坠入 gb18030 乱码，`detect_and_decode` 与 `detect_encoding` 两入口共用同一选择器）
 - **文本去重**：归一化相等 + 子串包含 + SequenceMatcher 相似度
@@ -451,7 +464,7 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 
 ### 5.4 API 层（backend/api/）
 
-**总计约 57 个 HTTP 端点 + 1 个 WebSocket 端点**
+**总计 61 个 HTTP 端点 + 1 个 WebSocket 端点**
 
 | 路由模块 | 端点数 | 前缀 | 说明 |
 |---|---|---|---|
@@ -463,12 +476,14 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 | `routes_aggregate.py` | 4 | `/api/aggregate` | 聚合/文件列表/读取/Excel |
 | `routes_summary.py` | 3 | `/api/summary` | 总结 start/stop/status |
 | `routes_viz.py` | 3 | `/api/viz` | 时间线/关系图（支持 chapter_start/chapter_end/min_edge_weight/max_nodes/min_node_count query 参数）/地图 |
+| `routes_location_normalization.py` | 4 | `/api/location-normalization` | 归一化任务 start/stop/status/result |
 | `routes_prompt.py` | 1 | `/api/prompt` | Prompt 预览 |
 | `routes_foreshadow.py` | 1 | `/api/foreshadow` | 50类伏笔分类定义 |
 | `ws.py` | 1 WS | `/ws/progress` | WebSocket 实时进度 |
 
 **安全机制：**
 - 路径遍历防护（`routes_aggregate.py`）
+- put_queue 原始条目预检（畸形条目跳过不入队）；delete_book 按显式 workspace_dir 删除（防同名误删）
 - WebSocket 来源白名单（仅 localhost/127.0.0.1）
 - API Key 在 POST body 中（避免 URL/日志泄露）
 - 分析锁（`_ensure_idle()` / `_require_analysis_idle()`）
@@ -479,8 +494,8 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 
 ### 6.1 API 层
 
-#### client.ts（366行）
-- **53 个 API 方法**，覆盖所有后端端点
+#### client.ts（454行）
+- **60 个 API 方法**，覆盖所有后端端点
 - **TypeScript DTO**：`AppConfigDto`、`QueueItemDto`、`AnalysisStatus`、`TokenStatsResponse` 等
 - **错误增强**：HTTP 错误附加 `.status` 和 `.detail` 属性
 - **防重复读取**：先 `res.text()` 再 `JSON.parse()`，避免 body stream already read
@@ -512,29 +527,29 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 |---|---|---|
 | QueuePage | 555 | 主页：队列表、启停控制、实时进度（WS+轮询）、章节详情、日志 |
 | SettingsPage | 558 | 配置：API 预设、模型选择器、思维探测、伏笔分类网格、滚动总结参数、复检批大小 |
-| SummaryPage | 498 | 聚合+总结：4阶段加权进度、模型覆盖、日志抽屉、报告查看器 |
-| SplitterPage | 419 | 批量切章：文件选择、预览、自定义正则、卷识别、pywebview 文件对话框 |
-| WorkspacePage | 185 | 工作区/归档：列表、归档、删除（自定义确认对话框） |
-| TimelinePage | 249 | 时间线：事件+伏笔、重要性/分类筛选 |
+| SummaryPage | 532 | 聚合+总结：4阶段加权进度、模型覆盖、日志抽屉、报告查看器 |
+| SplitterPage | 422 | 批量切章：文件选择、预览、自定义正则、卷识别、pywebview 文件对话框 |
+| WorkspacePage | 186 | 工作区/归档：列表、归档、删除（自定义确认对话框） |
+| TimelinePage | 255 | 时间线：事件+伏笔、重要性/分类筛选 |
 | GraphPage | 385 | 角色关系图：ECharts force 力导向、章节范围切片、Top-N 截断、边权阈值过滤、邻接高亮、右侧关联面板 |
-| MapPage | 280+ | 地图：SVG 树形布局、空间关系虚线、归一化状态面板（强制走归一化数据，未归一化时拦截） |
-| CharacterCardPage | 259 | 角色数据库：统计、弧光、事件、状态演化、关系 |
+| MapPage | 358 | 地图：SVG 树形布局、空间关系虚线、归一化状态面板（强制走归一化数据，未归一化时拦截） |
+| CharacterCardPage | 277 | 角色数据库：统计、弧光、事件、状态演化、关系 |
 | StylePage | 139 | 风格分析：启停、轮询、结果展示 |
-| StatsPage | 181 | Token 统计：分类明细、每章详情、按书历史统计、5s 自动刷新 |
-| PromptPreviewPage | 55 | Prompt 预览：系统+用户消息、可指定章节号、字符计数 |
+| StatsPage | 220 | Token 统计：分类明细、每章详情、按书历史统计、5s 自动刷新 |
+| PromptPreviewPage | 62 | Prompt 预览：系统+用户消息、可指定章节号、字符计数 |
 
-### 6.5 组件（8个）
+### 6.5 组件（9个）
 
 | 组件 | 行数 | 职责 |
 |---|---|---|
-| AppLayout | 348 | 根布局：标题栏、可折叠侧边栏、pywebview 窗口控制、暗色模式 |
-| ChapterDetailPanel | 244 | 章节详情：自动跟踪最新章节（60s 空闲回退）、请求序列守卫 |
-| BookSelector | 69 | 书籍下拉选择器：状态指示器、刷新按钮 |
-| ChapterValue | 130 | 递归数据渲染：标量/数组/对象、中文字段标签 |
-| LogConsole | 110 | 日志控制台：简化/完整模式、自动滚动 |
+| AppLayout | 361 | 根布局：标题栏、可折叠侧边栏、pywebview 窗口控制、暗色模式 |
+| ChapterDetailPanel | 251 | 章节详情：自动跟踪最新章节（60s 空闲回退）、请求序列守卫 |
+| BookSelector | 66 | 书籍下拉选择器：状态指示器、刷新按钮 |
+| ChapterValue | 141 | 递归数据渲染：标量/数组/对象、中文字段标签 |
+| LogConsole | 113 | 日志控制台：简化/完整模式、自动滚动 |
 | ProgressBar | 41 | 进度条：块→章转换、ETA 显示 |
-| TokenBadge | 85 | Token 徽章：分类明细、紧凑/完整模式 |
-| ConfirmDialog | 82 | 确认对话框：玻璃材质、危险样式 |
+| CountUp | 74 | 数字缓动显示：QueuePage session stats（K/M 缩写 + 1 位小数%） |
+| ConfirmDialog | 96 | 确认对话框：玻璃材质、危险样式 |
 | Icon | 98 | SVG 图标库：30+ 图标 |
 
 ### 6.6 前端关键模式
@@ -549,7 +564,7 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 
 ## 7. 数据模型
 
-### 7.1 AnalysisResult（analysis_result.py，286行）
+### 7.1 AnalysisResult（analysis_result.py，295行）
 
 9 类结构化输出：
 ```python
@@ -595,7 +610,7 @@ AppConfig:
 APIConfig 预设：8+ 厂商（OpenAI/Anthropic/DeepSeek/Qwen/GLM/MiniMax/Moonshot/...）
 ```
 
-`AppConfig.from_dict` 经 `_coerce_fields` 对数值/布尔字段做强转清洗（字符串 "4"→4 等，脏配置不再瘫痪启动）。
+`AppConfig.from_dict` 经 `_coerce_fields` 对数值/布尔字段做强转清洗（字符串 "4"→4 等，脏配置不再瘫痪启动）；config.json 解析失败置损坏标志位，修复前 `save()` 拒绝写入（防默认配置覆盖真实 API Key）。
 
 ---
 
@@ -794,12 +809,12 @@ npm run build
 - **原因**：用户发起的全库双批审计
 - **驳回记录**：「自动总结两本书之间互斥窗口」被证伪（analysis.is_running 全程封锁两个入口），勿重复上报
 
-### 10.15 2026-08-24 P2/P3 划算项批量修复（第二批）
+### 10.14 2026-08-24 P2/P3 划算项批量修复（第二批）
 - S+A 两档共 19 项：pipeline 快照线程池化/failed 范围过滤/join 容错、解析健壮性双修、json 修复链 dict 守卫+tmp 唯一名、聚合原子写、put_queue 校验、假 done 广播、style_task 异常兜底、workspace 双修、excel 消毒、前端六页守卫/转义/定时器收口、moderation 阈值放宽、markdown 链接保护、client 编码、正文截断、设置页剪枝
 - **原因**：P1 修复后对剩余 P2/P3 做性价比筛选落地
 - **未动**：KB 近邻指纹、切分窄化算法、协议探测回退等高成本项（详见计划文档排除清单）
 
-### 10.16 2026-08-24 深度修复批次（大改值得七项）
+### 10.15 2026-08-24 深度修复批次（大改值得七项）
 - G1 审核拦截 skipped 标记持久化（重启不再重付 LLM 费用）；G2 KB 近邻增量基线指纹校验+副本断别名（陈旧 KB 不再固化进最终 knowledge.json）；G3 风格 token 接入统计；G4 书目刷新后台单飞（消除事件循环冻结）；G5 预检跨协议探针自动纠正 provider 误判；G6 切分次级格式比额门槛并入（混排书不再吞章）；G7 编码采样罚分择优（Big5 不坠入 gb18030 乱码，两入口预检统一）
 - **原因**：审计剩余项中「后果严重度×触发频率」最高、值得动核心逻辑的七项
 - **取舍**：normalizer salvage、死代码功能、macOS osascript、polish 级继续搁置
