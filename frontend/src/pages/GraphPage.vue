@@ -7,6 +7,7 @@ import { SVGRenderer } from 'echarts/renderers'
 import BookSelector from '../components/BookSelector.vue'
 import { api, type GraphNode, type GraphEdge } from '../api/client'
 import { useRouter } from 'vue-router'
+import { escapeHtml } from '../utils/markdown'
 
 echarts.use([GraphChart, TooltipComponent, DataZoomComponent, LegendComponent, SVGRenderer])
 
@@ -39,16 +40,18 @@ const COLORS = {
 }
 
 async function loadData() {
-  if (!bookId.value) return
+  const bid = bookId.value
+  if (!bid) return
   loading.value = true
   try {
     const [cs, ce] = chapterRangeSelected.value
-    const res = await api.getGraph(bookId.value, {
+    const res = await api.getGraph(bid, {
       chapter_start: cs,
       chapter_end: ce,
       max_nodes: maxNodes.value,
       min_edge_weight: minEdgeWeight.value,
     })
+    if (bid !== bookId.value) return   // 已切书：丢弃过期响应
     nodes.value = res.nodes
     edges.value = res.edges
     totalCharacters.value = res.total_characters
@@ -65,11 +68,12 @@ async function loadData() {
     await nextTick()
     renderChart()
   } catch (e) {
+    if (bid !== bookId.value) return
     nodes.value = []
     edges.value = []
     console.error('加载关系图失败:', e)
   } finally {
-    loading.value = false
+    if (bid === bookId.value) loading.value = false
   }
 }
 
@@ -101,7 +105,7 @@ function renderChart() {
           const n = nodes.value.find(x => x.id === params.data.id)
           const related = edges.value.filter(e => e.source === params.data.id || e.target === params.data.id).length
           return `<div style="font-family:Microsoft YaHei">` +
-            `<b>${params.data.name}</b><br/>` +
+            `<b>${escapeHtml(String(params.data.name))}</b><br/>` +
             `<span style="color:${COLORS.textSecondary}">出场章数: ${n?.event_count ?? 0}</span><br/>` +
             `<span style="color:${COLORS.textSecondary}">关联角色: ${related}</span>` +
             `</div>`
@@ -109,7 +113,7 @@ function renderChart() {
           const src = nodes.value.find(x => x.id === params.data.source)
           const tgt = nodes.value.find(x => x.id === params.data.target)
           return `<div style="font-family:Microsoft YaHei">` +
-            `<b>${src?.name ?? params.data.source}</b> — <b>${tgt?.name ?? params.data.target}</b><br/>` +
+            `<b>${escapeHtml(String(src?.name ?? params.data.source))}</b> — <b>${escapeHtml(String(tgt?.name ?? params.data.target))}</b><br/>` +
             `<span style="color:${COLORS.textSecondary}">共现 ${params.data.value} 章</span>` +
             `</div>`
         }

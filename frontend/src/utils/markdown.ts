@@ -4,7 +4,7 @@
 // 安全：先 HTML 转义再插入标签，避免 XSS
 
 /** HTML 转义 */
-function escapeHtml(text: string): string {
+export function escapeHtml(text: string): string {
   return text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
