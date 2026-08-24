@@ -53,18 +53,24 @@ class MemoryState:
         self._kb_limits = kb_limits or {}
 
     async def add_result(self, result: AnalysisResult) -> None:
-        """存储结果并增量更新 KB（协程安全）"""
-        self.results[result.chapter_number] = result
-        # 成功落盘的结果清除该章失败标记：重跑成功的章节不应再被永久报告为失败
-        self._failed_chapters.pop(result.chapter_number, None)
-        async with self._kb_lock:
-            self._merge_one(result)
-            # 子集缓存失效策略（2026-08-07 优化）：仅当新结果的章号落在已缓存
-            # limit 区间内才失效（该结果无法被"按章号区间增量扩展"覆盖）；
-            # 区间外的新结果（正常顺序分析）可直接增量扩展，避免每块全量重建 KB。
-            if (self._snapshot_cache_limit is not None
-                    and result.chapter_number <= self._snapshot_cache_limit):
-                self._snapshot_cache_limit = None
+        """存储结果并增量更新 KB（协程安全）
+
+        P2 收口：get_kb_snapshot 已线程池化，工作线程会并发深拷贝 results/kb。
+        插入与合并全程持 threading 锁与读侧互斥——merge 本身毫秒级，即便工作
+        线程正持锁做 to_dict，事件循环最多等它做完（有界短暂），远好于偶发
+        RuntimeError 导致静默丢块。锁序恒为 threading→asyncio，无死锁环。"""
+        with self._snapshot_lock:
+            self.results[result.chapter_number] = result
+            # 成功落盘的结果清除该章失败标记：重跑成功的章节不应再被永久报告为失败
+            self._failed_chapters.pop(result.chapter_number, None)
+            async with self._kb_lock:
+                self._merge_one(result)
+                # 子集缓存失效策略（2026-08-07 优化）：仅当新结果的章号落在已缓存
+                # limit 区间内才失效（该结果无法被"按章号区间增量扩展"覆盖）；
+                # 区间外的新结果（正常顺序分析）可直接增量扩展，避免每块全量重建 KB。
+                if (self._snapshot_cache_limit is not None
+                        and result.chapter_number <= self._snapshot_cache_limit):
+                    self._snapshot_cache_limit = None
 
     def add_failed(self, chapter_number: int, error: str) -> None:
         """记录失败章节"""
@@ -88,13 +94,15 @@ class MemoryState:
         正确性约束（2026-08-07 修复）：子集缓存只允许在请求 limit 等于或大于
         缓存 limit 时复用/扩展；绝不能用覆盖更大章号的缓存回答更小的 limit，
         否则并发分析中低章号块会"读到未来章节知识"（原实现 bug，P0-1）。
-        """
-        # 快照 keys 避免并发修改
-        keys = list(self.results.keys())
-        if chapter_limit is None or not keys or chapter_limit >= max(keys):
-            return self._apply_rolling_to_snapshot(KnowledgeBase.from_dict(self.kb.to_dict()))
 
+        P2 收口：整函数持 _snapshot_lock——to_thread 化后本方法在工作线程执行，
+        必须与 add_result 的写侧互斥，否则 to_dict 深遍历期间 results/kb 被
+        并发修改会抛 "dictionary changed size during iteration"。"""
         with self._snapshot_lock:
+            keys = list(self.results.keys())
+            if chapter_limit is None or not keys or chapter_limit >= max(keys):
+                return self._apply_rolling_to_snapshot(KnowledgeBase.from_dict(self.kb.to_dict()))
+
             cached_limit = self._snapshot_cache_limit
 
             # 命中：请求与缓存 limit 精确相等

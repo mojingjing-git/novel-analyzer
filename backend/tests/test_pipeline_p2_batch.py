@@ -1,6 +1,7 @@
 """P2 批量修复验证：
 1. MemoryState.failed_chapters_in 按 valid_block_ids 过滤（跨场失败标记不再误报）
 2. _archive_momentum_to_milestone 对非 str 势头条目不再 TypeError
+3. get_kb_snapshot（to_thread 工作线程）vs add_result 并发读写不再炸 RuntimeError
 """
 import asyncio
 import sys
@@ -10,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from backend.core.memory_state import MemoryState
 from backend.core.pipeline import AnalysisPipeline
+from backend.models.analysis_result import AnalysisResult
 
 
 def test_failed_chapters_in_filters_by_scope():
@@ -41,3 +43,48 @@ def test_archive_momentum_tolerates_non_str_entries():
 
     assert structured["recent_momentum"] == []
     assert any(isinstance(m, str) and "测试里程碑" in m for m in structured["global_milestones"])
+
+
+def _make_result(ch: int) -> AnalysisResult:
+    """最小 AnalysisResult（与 test_memory_state_rolling._result 同构）"""
+    return AnalysisResult.from_dict({
+        "chapter_number": ch,
+        "cross_block": {"summary": f"第{ch}章摘要", "unresolved_questions": [], "new_leads": []},
+        "core_events": [],
+        "character_arcs": [],
+        "foreshadowing": [],
+        "plot_holes": [],
+        "long_context_insights": {},
+        "updated_knowledge": {},
+    })
+
+
+def test_concurrent_snapshot_vs_add_no_runtime_error():
+    """P2 收口回归：工作线程并发快照 vs 事件循环写入不得炸
+    dictionary changed size during iteration（概率性，跑足轮次提高捕获率）"""
+    import random
+
+    async def main():
+        state = MemoryState()
+        stop = False
+        errors = []
+
+        def reader():
+            while not stop:
+                try:
+                    state.get_kb_snapshot(chapter_limit=random.choice([None, 5, 50, 500]))
+                except RuntimeError as e:
+                    errors.append(e)
+                    return
+
+        import threading
+        t = threading.Thread(target=reader)
+        t.start()
+        for ch in range(1, 300):
+            await state.add_result(_make_result(ch))
+        stop = True
+        t.join()
+
+        assert errors == [], f"并发读写竞态复现: {errors[:3]}"
+
+    asyncio.run(main())
