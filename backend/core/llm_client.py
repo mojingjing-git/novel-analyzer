@@ -750,6 +750,10 @@ class LLMClient:
                 return None
         return None
 
+    async def _sleep(self, seconds: float):
+        """重试等待的薄封装（测试注入点，行为同 asyncio.sleep）"""
+        await asyncio.sleep(seconds)
+
     async def chat_with_retry(
         self,
         messages: List[dict],
@@ -759,7 +763,7 @@ class LLMClient:
     ) -> Tuple[bool, str, str, Tuple[int, int], dict]:
         last_error = ""
         total_attempts = 0
-        moderation_hits = 0  # 内容审核拦截连续命中次数（重试1次后短路）
+        moderation_hits = 0  # 内容审核拦截连续命中次数（连续3次才短路，见下方短路判断）
         # 本次调用的失败 token 累计（并发安全：不再依赖客户端全局计数做差分归因）
         call_failed_tokens = 0
         messages_length = len(str(messages))
@@ -832,7 +836,7 @@ class LLMClient:
                         if attempt < self.config.temperature_max_retries - 1:
                             wait_time = 3 * (attempt + 1)
                             logger.info(f"⏳ 等待{wait_time}秒后进行下一次温度尝试...")
-                            await asyncio.sleep(wait_time)
+                            await self._sleep(wait_time)
                         continue
 
                 logger.info(f"✅ API请求成功（第{total_attempts}次尝试）")
@@ -843,10 +847,11 @@ class LLMClient:
             last_error = error
             logger.warning(f"❌ 尝试失败: {error}")
 
-            # 内容审核拦截：重试1次后短路（第1次失败→下一轮温度尝试；第2次仍拦截→立即放弃，
-            # 不进入指数退避，避免对"永久拒绝"白等 30 分钟）
+            # 内容审核拦截：连续 3 次命中才短路（P2 2026-08-24：宽松关键词会把
+            # 瞬时网关 502 误判为拦截，2 次即弃太激进——多给一轮温度尝试；
+            # 真·内容审核多付 1 次调用换取误判恢复，值得）
             if is_moderation_error(error):
-                if moderation_hits >= 1:
+                if moderation_hits >= 2:
                     _get_failure_logger().record_failure(
                         attempt_num=total_attempts,
                         max_retries=self.config.temperature_max_retries + self.config.backoff_max_retries,
@@ -855,7 +860,7 @@ class LLMClient:
                         error_message=error,
                         messages_length=messages_length,
                     )
-                    logger.warning("⛔ 内容审核拦截（连续2次），跳过该章节，不再重试")
+                    logger.warning("⛔ 内容审核拦截（连续3次），跳过该章节，不再重试")
                     return False, "", error, last_consumed_tokens, {"attempts": total_attempts, "failed_tokens": call_failed_tokens}
                 moderation_hits += 1
 
@@ -884,7 +889,7 @@ class LLMClient:
                 else:
                     wait_time = 3 * (attempt + 1)
                 logger.info(f"⏳ 等待{wait_time}秒后进行下一次温度尝试...")
-                await asyncio.sleep(wait_time)
+                await self._sleep(wait_time)
 
         # 指数退避重试（429 限流时额外多试几轮：限流通常是暂时的，快速放弃会丢块）
         final_temp = max(0.0, self.config.temperature - (self.config.temperature_max_retries - 1) * self.config.temperature_step)
@@ -893,8 +898,9 @@ class LLMClient:
             if self._stop_requested:
                 logger.info("⛔ 检测到停止请求，终止重试链")
                 return False, "", "用户请求停止", last_consumed_tokens, {"attempts": total_attempts, "failed_tokens": call_failed_tokens}
-            # 温度循环已重试过仍拦截（含 temperature_max_retries=1 的配置）→ 直接放弃
-            if is_moderation_error(last_error):
+            # 温度循环已连续 3 次命中审核拦截（含 temperature_max_retries<3 的配置）→ 直接放弃，
+            # 不进入指数退避，避免对"永久拒绝"白等 30 分钟
+            if is_moderation_error(last_error) and moderation_hits >= 2:
                 _get_failure_logger().record_failure(
                     attempt_num=total_attempts,
                     max_retries=self.config.temperature_max_retries + self.config.backoff_max_retries,
@@ -917,7 +923,7 @@ class LLMClient:
             logger.info(f"\n[指数退避] 尝试 {total_attempts}，"
                        f"等待{wait_time}秒，temperature={final_temp} "
                        f"(第{retry_num + 1}/{backoff_rounds}次)")
-            await asyncio.sleep(wait_time)
+            await self._sleep(wait_time)
 
             success, content, error, tokens = await self.chat(
                 messages,
