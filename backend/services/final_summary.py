@@ -1209,6 +1209,7 @@ class FinalSummaryRunner:
             'model': self.config.api.summary_model or self.config.api.model,
             'thinking_mode': self.config.api.summary_thinking_mode or self.config.api.thinking_mode,
             'timeout': self.config.api.summary_timeout,
+            'provider': self.config.api.provider,
         }
 
         try:
