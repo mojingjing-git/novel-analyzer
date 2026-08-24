@@ -559,6 +559,11 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 - **请求序列守卫**：单调递增计数器防止旧异步响应覆盖新数据
 - **空闲自动回退**：ChapterDetailPanel 60s 无操作自动回到最新章节
 - **参数持久化**：SummaryPage 使用版本计数器+防抖防止并发 PUT 竞态
+- **切书请求守卫三种正确写法（2026-08-24 审计后确立，新增页面必须选用其一）**：
+  ①seq 计数器型——适合同一资源反复加载（ChapterDetailPanel/CharacterCardPage.viewCard）；
+  ②bookId 快照比对型——适合 watch(bookId) 触发、且 catch 分支也会写状态的页面（Timeline/Graph/Map/Summary.loadReport）；
+  ③finally 条件复位型——loading 等互斥标志必须 `if (seq === requestSeq)` 才翻转。
+  共同底线：catch 分支同样要守卫；早退分支也要 bump seq；useBookScope 统一上下文方案已评估、决定暂缓（见 10.16），新页面手写守卫时参照本节。
 
 ---
 
@@ -818,6 +823,12 @@ npm run build
 - G1 审核拦截 skipped 标记持久化（重启不再重付 LLM 费用）；G2 KB 近邻增量基线指纹校验+副本断别名（陈旧 KB 不再固化进最终 knowledge.json）；G3 风格 token 接入统计；G4 书目刷新后台单飞（消除事件循环冻结）；G5 预检跨协议探针自动纠正 provider 误判；G6 切分次级格式比额门槛并入（混排书不再吞章）；G7 编码采样罚分择优（Big5 不坠入 gb18030 乱码，两入口预检统一）
 - **原因**：审计剩余项中「后果严重度×触发频率」最高、值得动核心逻辑的七项
 - **取舍**：normalizer salvage、死代码功能、macOS osascript、polish 级继续搁置
+
+### 10.16 2026-08-24 前端 vitest 基建 + P3 清扫
+- 引入 vitest/jsdom/@vue/test-utils 与独立 vitest.config.ts；markdown 自运行脚本迁入；useLogStore/useProgressSocket 守护测试（含退避时序、manualClose 现状锁定）；TimelinePage 竞态守卫组件级代表测试；client.ts 非 JSON 200 显式抛错；viewAggFile/GraphPage 两处状态残留小修
+- **原因**：竞态守卫类修复此前无自动化护栏，误删即静默回归
+- **决策**：useBookScope 统一上下文评估后暂缓——6 处竞态已修完且新增页面低频，规范写入 §6.6 代替；待第 13 个页面落地时再抽 composable 迁移
+- **未动**：OpenAPI 生成 client.ts（规模不够）、ECharts 再加固（已稳定）
 
 ### 10.12 相关文档
 - Win11 重做计划：`docs/superpowers/plans/2026-08-16-win11-frontend-redesign.md`

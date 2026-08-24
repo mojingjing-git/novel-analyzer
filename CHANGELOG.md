@@ -206,6 +206,10 @@
 - 新增测试文件 7 个：test_memory_state_skipped / test_kb_fingerprint / test_style_tokens / test_book_service_async_refresh / test_provider_heal / test_splitter_mixed_formats / test_text_encoding
 - 验证：后端全量 pytest 251 passed（本批新增约 24 用例），前端 vue-tsc + vite build 通过
 
+### 08-24 ｜ 前端 vitest 基建 + P3 清扫
+
+- 测试基建：引入 vitest + jsdom + @vue/test-utils 与独立 vitest.config.ts（markdown 自运行脚本迁入 npm test，新增 useLogStore/useProgressSocket/TimelinePage/client 4 个守护测试文件，全量 34 用例）；P3 修复 3 处：client.ts 非 JSON 的 200 响应显式抛错不再静默返回空对象、viewAggFile 过期失败不再污染新书 aggError、GraphPage 占位项清除上一本书的 loading 残留
+
 ### 未提交清单（当前工作区）
 
 - 08-02 之后的所有里程碑（自动总结/优化批/伏笔 50 类/模型选择/复检续跑）尚未 git 提交
