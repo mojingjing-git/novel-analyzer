@@ -33,6 +33,54 @@ describe('markdown 渲染器', () => {
     expect(r).toContain('<br/>')
   })
 
+  it('无序列表支持 - * + 三种前缀', () => {
+    for (const prefix of ['-', '*', '+'] as const) {
+      const r = renderMarkdown(`${prefix} a\n${prefix} b`)
+      expect(r).toContain('<ul class="md-ul">')
+      expect(r).toContain('<li>a</li>')
+      expect(r).toContain('<li>b</li>')
+    }
+    const r = renderMarkdown('- a\n- b\n- c')
+    expect(r).toContain('<li>c</li>')
+  })
+
+  it('有序列表', () => {
+    const r = renderMarkdown('1. one\n2. two')
+    expect(r).toContain('<ol class="md-ol">')
+    expect(r).toContain('<li>one</li>')
+    expect(r).toContain('<li>two</li>')
+  })
+
+  it('围栏代码块渲染与内容转义', () => {
+    const r = renderMarkdown('```python\nprint("hi")\n```')
+    expect(r).toContain('<pre class="md-pre">')
+    expect(r).toContain('language-python')
+    expect(r).toContain('print(&quot;hi&quot;)')
+  })
+
+  it('引用块', () => {
+    const r = renderMarkdown('> quote here')
+    expect(r).toContain('<blockquote class="md-quote">')
+    expect(r).toContain('quote here')
+  })
+
+  it('链接危险协议被过滤为 #', () => {
+    const r = renderMarkdown('[evil](javascript:alert(1))')
+    expect(r).toContain('href="#"')
+    expect(r).not.toContain('javascript:')
+  })
+
+  it('分隔线', () => {
+    expect(renderMarkdown('---')).toContain('<hr class="md-hr"/>')
+  })
+
+  it('表格', () => {
+    const r = renderMarkdown('| A | B |\n|---|---|\n| 1 | 2 |')
+    expect(r).toContain('<table class="md-table">')
+    expect(r).toContain('<th>A</th>')
+    expect(r).toContain('<td>1</td>')
+  })
+
   it('链接 href 不被强调正则污染（P2 2026-08-24）', () => {
     const r = renderMarkdown('[doc](https://example.com/wiki/a_b_c)')
     expect(r).not.toContain('<em>')
