@@ -39,10 +39,15 @@ function showSummaryHint(text: string) {
 
 // F-4：WS 高频事件（block_done/token_stats 每块 1 次）合并为防抖刷新，
 // 否则大书分析期间每块触发 2 次全量 REST 请求（2000 块 = 4000 请求）
-let refreshTimer: ReturnType<typeof setTimeout> | null = null
+// P2：按回调分键防抖——共享单 timer 时 token_stats 会吞掉先排队的 refresh
+const pendingRefreshTimers = new Map<() => Promise<void>, ReturnType<typeof setTimeout>>()
 function scheduleRefresh(fn: () => Promise<void>) {
-  if (refreshTimer) clearTimeout(refreshTimer)
-  refreshTimer = setTimeout(() => { refreshTimer = null; void fn() }, 500)
+  const prev = pendingRefreshTimers.get(fn)
+  if (prev) clearTimeout(prev)
+  pendingRefreshTimers.set(fn, setTimeout(() => {
+    pendingRefreshTimers.delete(fn)
+    void fn()
+  }, 500))
 }
 
 function onMessage(msg: ProgressMessage) {
@@ -139,25 +144,32 @@ function handleStart() {
 function handleStop() { withBusy(async () => { await api.stopAnalysis(); add('分析已停止', 'warn', 'analysis') }, '停止分析') }
 function handleScanWorkspace() { withBusy(async () => { const res = await api.scanWorkspace(); add(`扫描完成，新增 ${res.added} 本小说`, 'info', 'analysis') }, '扫描工作区') }
 function handleRemove(index: number) { withBusy(async () => { await api.removeQueueItem(index); add(`已移出队列项 #${index}`, 'info', 'analysis') }, '移出队列') }
-function handleDelete(index: number) { deleteTarget.value = index }
 function handleMoveUp(index: number) { withBusy(async () => { await api.moveQueueItemUp(index) }, '上移') }
 function handleMoveDown(index: number) { withBusy(async () => { await api.moveQueueItemDown(index) }, '下移') }
 function handleReset(index: number) { withBusy(async () => { await api.resetQueueItem(index); add(`已重置队列项 #${index} 为待处理`, 'info', 'analysis') }, '重跑') }
 function handleClear() { withBusy(async () => { await api.clearQueue(); add('队列已清空', 'info', 'analysis') }, '清空队列') }
 
 // 删除确认：用玻璃弹窗替代浏览器原生 confirm()
+function handleDelete(index: number) {
+  const it = status.value?.items?.[index]
+  if (!it) return
+  deleteTargetName.value = it.name
+  deleteTarget.value = index   // 仅作弹窗开关信号，确认时以名称实时解析索引
+}
+
 const deleteTarget = ref<number | null>(null)
-const deleteTargetName = computed(() => {
-  if (deleteTarget.value === null) return ''
-  return status.value?.items?.[deleteTarget.value]?.name ?? `#${deleteTarget.value}`
-})
+const deleteTargetName = ref('')
+
 function confirmDelete() {
-  const idx = deleteTarget.value
+  const name = deleteTargetName.value
   deleteTarget.value = null
-  if (idx === null) return
+  if (!name) return
   withBusy(async () => {
+    // P2：以名称实时解析索引，避免轮询/WS 重排后按旧索引删错书
+    const idx = status.value?.items?.findIndex(i => i.name === name) ?? -1
+    if (idx < 0) { add(`未找到《${name}》，可能已被移除`, 'warn', 'analysis'); return }
     await api.deleteBook(idx)
-    add(`已删除队列项 #${idx} 并移入回收站`, 'warn', 'analysis')
+    add(`已删除《${name}》并移入回收站`, 'warn', 'analysis')
   }, '删除小说')
 }
 
@@ -208,6 +220,8 @@ onMounted(() => {
 onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer)
   if (summaryHideTimer) clearTimeout(summaryHideTimer)
+  for (const t of pendingRefreshTimers.values()) clearTimeout(t)
+  pendingRefreshTimers.clear()
 })
 </script>
 
