@@ -1580,74 +1580,82 @@ class FinalSummaryRunner:
         style_task = asyncio.create_task(self._run_style_extraction())
         self._style_task = style_task
 
-        for coro in asyncio.as_completed(tasks):
-            try:
-                result = await coro
-                if result is None:
-                    continue
-                if result["status"] == "done":
-                    idx = result["idx"]
-                    self._emit_progress({
-                        "type": "batch_done", "batch": idx, "total_batches": total_batches,
-                        "elapsed": result["elapsed"],
-                        "message": f"[卷{idx}/{total_batches}] {'已从断点恢复' if result.get('restored') else '完成'}"
-                    })
-                    async with self._lock:
-                        self._apply_reconciliation(
-                            idx, result["ch_start"], result["ch_end"], result["foreshadow_data"])
-                elif result["status"] == "failed":
-                    idx = result["idx"]
-                    self._emit_progress({
-                        "type": "batch_failed", "batch": idx,
-                        "message": f"[卷{idx}] LLM调用失败，跳过"
-                    })
-            except Exception as e:
-                logger.error(f"卷异常: {e}")
+        # P2 收口（2026-08-24）：消费循环到风格结果回收之间任何异常（"所有批次
+        # 均失败"的 RuntimeError、复检抛错等）都不再遗留孤儿 style_task 继续
+        # 烧 token。正常路径 finally 时任务已被 await（done=True），cancel 为
+        # no-op；下方两条停止路径的显式回收保留（幂等双保险）。
+        try:
+            for coro in asyncio.as_completed(tasks):
+                try:
+                    result = await coro
+                    if result is None:
+                        continue
+                    if result["status"] == "done":
+                        idx = result["idx"]
+                        self._emit_progress({
+                            "type": "batch_done", "batch": idx, "total_batches": total_batches,
+                            "elapsed": result["elapsed"],
+                            "message": f"[卷{idx}/{total_batches}] {'已从断点恢复' if result.get('restored') else '完成'}"
+                        })
+                        async with self._lock:
+                            self._apply_reconciliation(
+                                idx, result["ch_start"], result["ch_end"], result["foreshadow_data"])
+                    elif result["status"] == "failed":
+                        idx = result["idx"]
+                        self._emit_progress({
+                            "type": "batch_failed", "batch": idx,
+                            "message": f"[卷{idx}] LLM调用失败，跳过"
+                        })
+                except Exception as e:
+                    logger.error(f"卷异常: {e}")
 
-        if self._stop_requested:
-            await self._cancel_style_task(style_task)
-            self._emit_progress({"type": "status", "message": "已停止"})
-            return None
-        if not volume_results:
-            raise RuntimeError("所有批次均失败，无法生成总结")
+            if self._stop_requested:
+                await self._cancel_style_task(style_task)
+                self._emit_progress({"type": "status", "message": "已停止"})
+                return None
+            if not volume_results:
+                raise RuntimeError("所有批次均失败，无法生成总结")
 
-        # 按 batch_idx 排序，恢复顺序
-        volume_summaries = []
-        volume_ranges: List[Tuple[int, int]] = []
-        for idx, ch_start, ch_end, _ in batch_tasks:
-            text = volume_results.get(idx, "")
-            if text:
-                volume_summaries.append(f"=== 第{ch_start}-{ch_end}章 ===\n{text}")
-                volume_ranges.append((ch_start, ch_end))
+            # 按 batch_idx 排序，恢复顺序
+            volume_summaries = []
+            volume_ranges: List[Tuple[int, int]] = []
+            for idx, ch_start, ch_end, _ in batch_tasks:
+                text = volume_results.get(idx, "")
+                if text:
+                    volume_summaries.append(f"=== 第{ch_start}-{ch_end}章 ===\n{text}")
+                    volume_ranges.append((ch_start, ch_end))
 
-        # 全书伏笔复检
-        await self._run_global_foreshadow_recheck(volume_summaries, foreshadow_catalog, volume_ranges)
-        if self._stop_requested:
-            # 复检可能已回收伏笔，保存账本保留进度后退出
+            # 全书伏笔复检
+            await self._run_global_foreshadow_recheck(volume_summaries, foreshadow_catalog, volume_ranges)
+            if self._stop_requested:
+                # 复检可能已回收伏笔，保存账本保留进度后退出
+                self.ledger.save(self.ledger_path)
+                await self._cancel_style_task(style_task)
+                self._emit_progress({"type": "status", "message": "已停止"})
+                return None
+
+            # 休眠判定统一收尾（BUG-D 修复：必须在复检之后执行——复检只审 active 伏笔，
+            # 若先休眠，本可被复检回收的伏笔会被冻结成 dormant 绕过复检，造成
+            # "已回收但标签未更新"（《奥术神座》报告第一类 ~60 条）。）
+            # 按批次升序、以各批真实 ch_end 为"当前进度"执行 reconcile，保证休眠名单确定。
+            if not self._stop_requested:
+                for idx, _ch_start, ch_end, _prompt in sorted(batch_tasks, key=lambda t: t[0]):
+                    self.ledger.reconcile_and_update(idx, ch_end)
+
             self.ledger.save(self.ledger_path)
+            self._emit_progress({"type": "ledger_updated", "counts": self.ledger.get_item_count()})
+
+            # 风格提取：实际工作已在阶段 1 启动时同步 create_task（与阶段 1 并行），
+            # 此处只 await 收结果。emit 时机不变（复检完成后），保持 UI 阶段标签顺序。
+            if not style_task.done():
+                self._emit_progress({
+                    "type": "phase", "phase": "style", "phase_label": "风格分析",
+                    "message": "[阶段3/4] 正在提取写作风格特征..."
+                })
+            style_profile = await style_task
+        finally:
             await self._cancel_style_task(style_task)
-            self._emit_progress({"type": "status", "message": "已停止"})
-            return None
-
-        # 休眠判定统一收尾（BUG-D 修复：必须在复检之后执行——复检只审 active 伏笔，
-        # 若先休眠，本可被复检回收的伏笔会被冻结成 dormant 绕过复检，造成
-        # "已回收但标签未更新"（《奥术神座》报告第一类 ~60 条）。）
-        # 按批次升序、以各批真实 ch_end 为"当前进度"执行 reconcile，保证休眠名单确定。
-        if not self._stop_requested:
-            for idx, _ch_start, ch_end, _prompt in sorted(batch_tasks, key=lambda t: t[0]):
-                self.ledger.reconcile_and_update(idx, ch_end)
-
-        self.ledger.save(self.ledger_path)
-        self._emit_progress({"type": "ledger_updated", "counts": self.ledger.get_item_count()})
-
-        # 风格提取：实际工作已在阶段 1 启动时同步 create_task（与阶段 1 并行），
-        # 此处只 await 收结果。emit 时机不变（复检完成后），保持 UI 阶段标签顺序。
-        if not style_task.done():
-            self._emit_progress({
-                "type": "phase", "phase": "style", "phase_label": "风格分析",
-                "message": "[阶段3/4] 正在提取写作风格特征..."
-            })
-        style_profile = await style_task
+            self._style_task = None
         style_text = self._format_style_for_prompt(style_profile) if style_profile else "（风格分析未完成）"
         if self._stop_requested:
             self._emit_progress({"type": "status", "message": "已停止"})
