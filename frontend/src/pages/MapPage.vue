@@ -98,10 +98,15 @@ watch(() => normStatus.value?.running, async (running, prev) => {
       window.clearInterval(normPollHandle)
       normPollHandle = null
     }
-    const res = (await api.getMap(bookId.value)) as unknown as MapDataResponse
-    locations.value = res.locations as Location[]
-    relationships.value = res.relationships as SpatialRel[]
-    needsNormalization.value = res.needs_normalization === true
+    // P2 修复：结束沿刷新失败此前成为 unhandled rejection，locations 不刷新无提示
+    try {
+      const res = (await api.getMap(bookId.value)) as unknown as MapDataResponse
+      locations.value = res.locations as Location[]
+      relationships.value = res.relationships as SpatialRel[]
+      needsNormalization.value = res.needs_normalization === true
+    } catch (e) {
+      console.error('归一化结束后刷新地图失败:', e)
+    }
     await refreshNormResult()
   }
 })
