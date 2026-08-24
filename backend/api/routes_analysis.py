@@ -98,8 +98,13 @@ async def put_queue(req: QueuePutRequest) -> dict:
     service = _ensure_idle()
     service.queue.clear()
     for d in req.items:
-        item = QueueItem.from_dict(d)
-        if not item.name or not str(item.blocks_dir):
+        # P2 修复：null/空串 blocks_dir 此前一路穿透——Path(None) 让接口 500，
+        # 空串还原成 PROJECT_ROOT 当书入队。改为原始 dict 预检 + 构造兜底。
+        if not d.get("name") or not d.get("blocks_dir") or not d.get("workspace_dir"):
+            continue
+        try:
+            item = QueueItem.from_dict(d)
+        except Exception:
             continue
         service.queue.add_item(item)
     service.save_queue()

@@ -574,7 +574,11 @@ class AnalysisService:
                 # 期间用户可通过既有 /api/summary/stop 停止）
                 if config.analysis.auto_summary:
                     await self._auto_summary_done_books(config)
-                await hub.state_change("done", "队列全部完成")
+                # P2 修复：自动总结期间用户可能已停止——此时不得广播“队列全部完成”
+                if self._stop_requested:
+                    await hub.state_change("stopped", "分析已停止（总结阶段中止）")
+                else:
+                    await hub.state_change("done", "队列全部完成")
             self._pipeline = None
         finally:
             # 冻结结束时刻：任务完成/被取消/异常后 is_running 即变 False，
