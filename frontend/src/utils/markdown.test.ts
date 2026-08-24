@@ -94,6 +94,19 @@ function runTests() {
   assertContains(r, '<br/>', 'br')
   console.log('✅ 段落合并')
 
+  // 链接 href 保护（P2 2026-08-24）
+  r = renderMarkdown('[doc](https://example.com/wiki/a_b_c)')
+  if (r.includes('<em>') || r.includes('<strong>') || r.includes('<del>')) {
+    console.error('❌ FAIL: 链接 href 被强调正则污染')
+    console.error('   actual: ' + r)
+    process.exit(1)
+  }
+  assertContains(r, 'href="https://example.com/wiki/a_b_c"', 'href intact')
+  r = renderMarkdown('__init__ 与 [x](https://a.io/p__q)')
+  assertContains(r, '<strong>init</strong>', '可见文本粗体仍生效')
+  assertContains(r, 'href="https://a.io/p__q"', 'URL 内双下划线不被加粗')
+  console.log('✅ 链接 href 保护')
+
   console.log('\n🎉 全部 Markdown 测试通过！')
 }
 

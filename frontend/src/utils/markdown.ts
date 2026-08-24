@@ -26,11 +26,15 @@ function inlineFormat(text: string): string {
   // 转义剩余内容
   text = escapeHtml(text)
 
-  // 链接 [text](url) — 必须先于粗体/斜体，避免 * 被吞掉
+  // 链接 [text](url)：生成 <a> 后整体入占位符，避免后续强调正则污染 href 值
+  const linkStash: string[] = []
   text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => {
     // 防止 javascript: 等危险协议
     const safeUrl = /^(https?:|mailto:|#|\/)/i.test(url) ? url : '#'
-    return `<a href="${safeUrl}" target="_blank" rel="noopener" class="md-link">${label}</a>`
+    const idx = linkStash.push(
+      `<a href="${safeUrl}" target="_blank" rel="noopener" class="md-link">${label}</a>`,
+    ) - 1
+    return `\u0001LINK${idx}\u0001`
   })
 
   // 粗体 **text** 或 __text__
@@ -43,6 +47,9 @@ function inlineFormat(text: string): string {
 
   // 删除线 ~~text~~
   text = text.replace(/~~([^~\n]+)~~/g, '<del>$1</del>')
+
+  // 还原链接占位符
+  text = text.replace(/\u0001LINK(\d+)\u0001/g, (_, idx) => linkStash[Number(idx)])
 
   // 还原行内代码占位符
   text = text.replace(/\u0001CODE(\d+)\u0001/g, (_, idx) => codeStash[Number(idx)])
