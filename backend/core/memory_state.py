@@ -63,6 +63,9 @@ class MemoryState:
             self.results[result.chapter_number] = result
             # 成功落盘的结果清除该章失败标记：重跑成功的章节不应再被永久报告为失败
             self._failed_chapters.pop(result.chapter_number, None)
+            # 同理清除陈旧 skipped 标记：否则下次 flush 会把已成功章节的
+            # 审核拦截标记重新写回磁盘（与上方 failed 清理对称）
+            self._skipped_chapters.pop(result.chapter_number, None)
             async with self._kb_lock:
                 self._merge_one(result)
                 # 子集缓存失效策略（2026-08-07 优化）：仅当新结果的章号落在已缓存
@@ -178,6 +181,13 @@ class MemoryState:
                         await asyncio.to_thread(failed_path.unlink)
                     except OSError:
                         pass
+                # 同理清理该章陈旧的 skipped 标记（P2：此前只清 failed）
+                skipped_path = output_dir / f"chapter_{ch}_skipped.json"
+                if skipped_path.exists():
+                    try:
+                        await asyncio.to_thread(skipped_path.unlink)
+                    except OSError:
+                        pass
             except Exception as e:
                 logger.warning(f"落盘章节 {ch} 失败: {e}")
 
@@ -198,6 +208,18 @@ class MemoryState:
                 )
             except Exception as e:
                 logger.warning(f"落盘失败标记 {ch} 失败: {e}")
+
+        # 写入 skipped 标记（审核拦截块）：持久化后重启续跑不再对同一批块
+        # 重新支付完整 LLM 重试链费用（P2 2026-08-24）
+        for ch, reason in list(self._skipped_chapters.items()):
+            skipped_path = output_dir / f"chapter_{ch}_skipped.json"
+            try:
+                await asyncio.to_thread(
+                    safe_save_json,
+                    {"chapter_number": ch, "reason": reason}, skipped_path
+                )
+            except Exception as e:
+                logger.warning(f"落盘 skipped 标记 {ch} 失败: {e}")
 
         return newly_flushed
 
@@ -278,6 +300,20 @@ class MemoryState:
                     if ch_num in restored_chapters:
                         continue  # 该章已有成功结果，跳过陈旧失败标记
                     self._failed_chapters[ch_num] = data.get("error", "")
+            except Exception:
+                pass
+
+        # 恢复 skipped 标记：已有成功结果的章节跳过陈旧标记
+        skipped_pattern = str(output_dir / "chapter_*_skipped.json")
+        for fp in sorted(glob_mod.glob(skipped_pattern)):
+            try:
+                with open(fp, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if isinstance(data, dict) and "chapter_number" in data:
+                    ch_num = data["chapter_number"]
+                    if ch_num in restored_chapters:
+                        continue
+                    self._skipped_chapters[ch_num] = data.get("reason", "")
             except Exception:
                 pass
 

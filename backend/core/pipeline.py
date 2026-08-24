@@ -320,7 +320,8 @@ class AnalysisPipeline:
         # 4a. 断点续跑：跳过已落盘的块
         completed = {bid for bid, _ in blocks if bid in state._flushed_chapters}
         skipped_blocks = [(bid, chs) for bid, chs in blocks if bid in completed]
-        remaining_blocks = [(bid, chs) for bid, chs in blocks if bid not in completed]
+        remaining_blocks = [(bid, chs) for bid, chs in blocks
+                            if bid not in completed and bid not in state._skipped_chapters]
         if skipped_blocks:
             logger.info(f"断点续跑：跳过已完成{len(skipped_blocks)}块 → 块ID: {[b[0] for b in skipped_blocks]}")
             # 补发 block_done 事件，使前端续跑时也能看到这些章「已完成」（与正常完成表现一致）
