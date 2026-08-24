@@ -100,6 +100,7 @@ class PromptBuilder:
         max_relationships: int = 15,
         max_verified_facts: int = 15,
         max_themes: int = 8,
+        max_content_chars: int = 30000,
     ):
         self.max_arc_length = max_arc_length
         self.max_arcs = max_arcs
@@ -112,6 +113,9 @@ class PromptBuilder:
         self.max_relationships = max_relationships
         self.max_verified_facts = max_verified_facts
         self.max_themes = max_themes
+        # P2 修复：正文是唯一无上限的 prompt 注入项；超窗确定性失败且退火无效。
+        # 3 万字≈为 32k-token 窗口的 system+九路上下文留足余量；后续可接配置。
+        self.max_content_chars = max_content_chars
 
     def build_messages(
         self,
@@ -210,6 +214,15 @@ class PromptBuilder:
 [主题元素]
 {theme_text}"""
 
+        # P2：尾部保序截断——开头丢弃量显式告知模型，避免其困惑叙事断裂
+        content_text = chapter_content
+        if len(content_text) > self.max_content_chars:
+            dropped = len(content_text) - self.max_content_chars
+            content_text = (
+                f"【注意】原文过长，已截去开头约 {dropped} 字，以下为保留的后段：\n"
+                + content_text[-self.max_content_chars:]
+            )
+
         user_prompt = f"""[当前时间线]
 {timeline}
 
@@ -232,7 +245,7 @@ class PromptBuilder:
 {full_history}
 
 [当前分析文本 - 第{chapter_number}章]
-{chapter_content}
+{content_text}
 
 请对上述章节进行深度分析，严格按照JSON格式输出分析结果。"""
 
