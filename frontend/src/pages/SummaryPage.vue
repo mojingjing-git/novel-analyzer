@@ -54,7 +54,13 @@ async function loadAggFiles() {
 }
 
 async function viewAggFile(name: string) {
-  try { const res = await api.getAggregateFile(bookId.value, name); aggContent.value = res.content; aggIsJson.value = res.is_json } catch (e) { aggError.value = (e as Error).message }
+  const bid = bookId.value
+  if (!bid) return
+  try {
+    const res = await api.getAggregateFile(bid, name)
+    if (bid !== bookId.value) return   // 已切书：丢弃过期响应
+    aggContent.value = res.content; aggIsJson.value = res.is_json
+  } catch (e) { aggError.value = (e as Error).message }
 }
 
 const aggNotice = ref('')
