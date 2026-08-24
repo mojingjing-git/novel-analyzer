@@ -273,6 +273,14 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     ;(err as Error & { status?: number; detail?: unknown }).detail = detail
     throw err
   }
+  // P3 收口（2026-08-24）：ok 但 body 非 JSON 此前静默返回 {}，
+  // 上游在深层字段上 TypeError 白屏且无从排查；显式失败走统一错误提示。
+  // 空 body 仍宽容返回 {}（为 204 类端点留余地）。
+  if (data === null && text) {
+    const err = new Error(`响应不是有效 JSON (${res.status})`)
+    ;(err as Error & { status?: number }).status = res.status
+    throw err
+  }
   return (data ?? {}) as T
 }
 
