@@ -315,8 +315,9 @@ def _validate_semantic_result(result: dict) -> dict:
     return result
 
 
-async def call_llm_semantic(prompt: str, api_config: dict) -> Optional[dict]:
-    """调用 LLM 获取语义风格特征（async）"""
+async def call_llm_semantic(prompt: str, api_config: dict,
+                            token_sink=None) -> Optional[dict]:
+    """调用 LLM 获取语义风格特征（async）；token_sink 可选，接收 (in, out) 元组"""
     client = LLMClient(APIConfig(
         base_url=api_config['base_url'],
         api_key=api_config['api_key'],
@@ -335,6 +336,11 @@ async def call_llm_semantic(prompt: str, api_config: dict) -> Optional[dict]:
         {"role": "user", "content": prompt}
     ]
     success, content, error, tokens, _call_stats = await client.chat_with_retry(messages, max_tokens=20000)
+    if token_sink:
+        try:
+            token_sink(tokens)
+        except Exception:
+            pass
 
     if not success:
         logger.warning(f"语义风格 LLM 调用失败: {error}")
@@ -384,10 +390,11 @@ def compute_book_stats(blocks_dir: Path) -> Tuple[Dict, List[Tuple[int, str]]]:
     return aggregate_stats(stats), samples
 
 
-async def extract_style_profile(blocks_dir: Path, book_name: str, api_config: dict) -> Optional[dict]:
+async def extract_style_profile(blocks_dir: Path, book_name: str, api_config: dict,
+                                token_sink=None) -> Optional[dict]:
     """
     提取风格 profile JSON（供 FinalSummaryRunner 注入 prompt）。
-    统计部分走线程池，语义部分 async LLM。
+    统计部分走线程池，语义部分 async LLM；token_sink 可选，透传给语义 LLM 调用。
     """
     import asyncio
 
@@ -401,7 +408,7 @@ async def extract_style_profile(blocks_dir: Path, book_name: str, api_config: di
 
     semantic_prompt = build_semantic_prompt(agg, samples, book_name)
     logger.info(f"语义风格提取中 (样本{len(samples)}章, ~{len(semantic_prompt)}字符)...")
-    semantic = await call_llm_semantic(semantic_prompt, api_config)
+    semantic = await call_llm_semantic(semantic_prompt, api_config, token_sink=token_sink)
     if semantic is None:
         logger.warning("语义风格提取失败，返回默认值")
         semantic = {f: '（提取失败）' for f in SEMANTIC_FIELDS}

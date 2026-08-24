@@ -1216,7 +1216,9 @@ class FinalSummaryRunner:
             # （style 用独立 LLMClient，连接池隔离，但 API 配额共享，必须走同一信号量）
             await self._acquire_llm_slot()
             try:
-                return await extract_style_profile(blocks_dir, self.book_name, api_config)
+                return await extract_style_profile(
+                    blocks_dir, self.book_name, api_config,
+                    token_sink=lambda t: self._record_tokens("style", t))
             finally:
                 self._release_llm_slot()
         except Exception as e:
