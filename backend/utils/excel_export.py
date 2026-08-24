@@ -10,6 +10,20 @@ from typing import List, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
+_RISKY_PREFIXES = ("=", "+", "-", "@")
+
+
+def _safe_cell_value(val) -> str:
+    """Excel 公式注入消毒：以 = + - @ 开头的文本前置单引号强制按文本存储。
+
+    P2 修复（2026-08-24）：LLM 产出的分析文本可能形如 =cmd|'/c calc'!A1，
+    openpyxl 原样写入会被 Excel 当公式求值（DDE 注入面）。负数显示不受影响
+    （前导撇号被 Excel 隐藏，值为文本 "-5"）。"""
+    s = str(val) if val is not None else ""
+    if s.startswith(_RISKY_PREFIXES):
+        return "'" + s
+    return s
+
 
 def export_aggregated_to_excel(aggregated_dir: Path, output_path: Path = None) -> Path:
     """
@@ -47,7 +61,7 @@ def export_aggregated_to_excel(aggregated_dir: Path, output_path: Path = None) -
             cell.alignment = header_align
         for r, row in enumerate(rows, 2):
             for c, val in enumerate(row, 1):
-                cell = ws.cell(row=r, column=c, value=str(val) if val is not None else "")
+                cell = ws.cell(row=r, column=c, value=_safe_cell_value(val))
                 cell.alignment = cell_align
 
     def _load_json(name: str) -> Optional[dict]:
@@ -188,6 +202,11 @@ def export_aggregated_to_excel(aggregated_dir: Path, output_path: Path = None) -
                     max_len = max(max_len, min(len(str(cell.value)), 60))
             ws.column_dimensions[col[0].column_letter].width = max_len + 2
 
+    if not wb.worksheets:
+        # P2 修复：目录里只有非识别名 JSON 时，11 个 _load_json 全 None，
+        # 删默认 sheet 后零工作表 → wb.save 抛 IndexError 接口 500；改为明确报错。
+        raise ValueError(f"聚合目录缺少可识别的分析 JSON 文件，无法导出 Excel: {aggregated_dir}")
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(output_path)
     logger.info(f"Excel已导出: {output_path} ({output_path.stat().st_size / 1024:.1f} KB)")
@@ -228,12 +247,12 @@ def export_characters_to_excel(character_data: Dict, output_path: Path) -> Path:
             f"ch{e.get('chapter','?')}:{str(e.get('event',''))[:50]}"
             for e in (events or [])[:10]
         )
-        ws.cell(row=row, column=1, value=name)
+        ws.cell(row=row, column=1, value=_safe_cell_value(name))
         ws.cell(row=row, column=2, value=str(info.get("first_appearance", "")))
         ws.cell(row=row, column=3, value=len(chapters))
         ws.cell(row=row, column=4, value=info.get("total_events", 0))
         ws.cell(row=row, column=5, value=_format_chapter_range(chapters))
-        ws.cell(row=row, column=6, value=event_summary)
+        ws.cell(row=row, column=6, value=_safe_cell_value(event_summary))
         row += 1
 
     for col in ws.columns:
