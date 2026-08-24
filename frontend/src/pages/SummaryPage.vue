@@ -60,7 +60,10 @@ async function viewAggFile(name: string) {
     const res = await api.getAggregateFile(bid, name)
     if (bid !== bookId.value) return   // 已切书：丢弃过期响应
     aggContent.value = res.content; aggIsJson.value = res.is_json
-  } catch (e) { aggError.value = (e as Error).message }
+  } catch (e) {
+    if (bid !== bookId.value) return   // 已切书：过期失败的错误不污染新书
+    aggError.value = (e as Error).message
+  }
 }
 
 const aggNotice = ref('')

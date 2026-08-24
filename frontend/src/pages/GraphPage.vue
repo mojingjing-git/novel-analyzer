@@ -41,7 +41,11 @@ const COLORS = {
 
 async function loadData() {
   const bid = bookId.value
-  if (!bid) return
+  if (!bid) {
+    // P3：切回占位项时清掉上一本书遗留的加载态，否则一直转圈到选中新书
+    loading.value = false
+    return
+  }
   loading.value = true
   try {
     const [cs, ce] = chapterRangeSelected.value
