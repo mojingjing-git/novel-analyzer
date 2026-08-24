@@ -312,7 +312,7 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 
 ### 5.1 核心模块（backend/core/）
 
-#### pipeline.py（1064+行）
+#### pipeline.py（1110行）
 - **职责**：全书分析总调度器
 - **关键类**：`AnalysisPipeline`
 - **关键方法**：`run()`、`_serial_warmup()`、`_streaming_concurrent()`、`_failure_retry()`、`_async_rolling()`、`_flush_checkpoint()`
@@ -339,17 +339,18 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 - **结构化滚动总结渲染**：`_render_structured_rolling()` — 五层渲染
 - **正文超限截断**：章节正文超 30000 字符时尾部保序截断（保留后段，丢弃开头字数显式告知模型，防超窗确定性失败）
 
-#### knowledge_base.py（464行）
+#### knowledge_base.py（483行）
 - **职责**：磁盘 KB 的加载/保存/合并/增量更新
 - **关键类**：`KnowledgeBaseManager`
 - **关键方法**：`merge_results()`、`build_temp_knowledge()`、`_merge_incremental()`、`_merge_result_into()`
+- **近邻增量缓存**：近邻命中前校验 ≤best_limit 基线区间文件指纹（mtime_ns），基线被重写即回退全量重建；命中产物返回副本断开对象别名（陈旧 KB 不固化进最终 knowledge.json）
 
-#### memory_state.py（398行）
+#### memory_state.py（466行）
 - **职责**：全内存 IO，持有所有 AnalysisResult + 增量 KB
 - **关键类**：`MemoryState`
 - **关键方法**：`merge_one()`、`get_kb_snapshot()`、`flush_to_disk()`、`restore_from_disk()`
 
-#### style_analyzer.py（494行）
+#### style_analyzer.py（501行）
 - **两层架构**：
   1. 22 项统计硬指标（纯代码）：句法、对话、词汇、词表密度、标点
   2. 8 维语义风格（LLM）：signature_expressions/narrative_rhythm/dialogue_style/rhetorical_preferences/emotional_expression/narrative_voice/information_control/narrator_and_genre
@@ -361,7 +362,7 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 
 ### 5.2 服务层（backend/services/）
 
-#### queue_service.py（741行）
+#### queue_service.py（815行）
 - **QueueManager**：队列状态机（pending/running/done/failed/skipped）
 - **AnalysisService**（单例）：
   - `_run_queue()`：逐本运行 `AnalysisPipeline`
@@ -371,7 +372,7 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
   - 每本书分析完成后 token 消耗落盘 `output/token_stats.json`
 - **状态持久化**：`queue_state.json`（相对路径存储）
 
-#### final_summary.py（1640+行）
+#### final_summary.py（1702行）
 - **职责**：全书总结执行引擎
 - **关键类**：`FinalSummaryRunner`
 - **关键方法**：`run()`、`_run_batch()`、`_reconcile_batch()`、`_recheck_remaining()`、`_write_report()`、`_plan_recheck_batches()`
@@ -380,10 +381,10 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 - 总结任务生命周期管理
 - 总结结束落盘 `output/summary_token_stats.json`
 
-#### splitter_service.py（707行）
+#### splitter_service.py（730行）
 - **职责**：小说文本切分为独立章节文件
 - **13 种章节正则**：中文数字、阿拉伯数字、"回"、"节"、卷+章组合、英文 Chapter 等
-- **核心算法**：两遍扫描（定位边界→提取内容）、评分式模式选择、MD5 去重、超长章拆分
+- **核心算法**：两遍扫描（定位边界→提取内容）、评分式模式选择、次级格式比额门槛并入（绝对得分 ≥2 且 ≥ 主导的 15%，混排书不吞章、高频噪声列表不过度切分）、MD5 去重、超长章拆分
 - **并发写入**：`ThreadPoolExecutor`（最多 32 工作者）缓解网络盘延迟
 - **运行护栏 + 原子写**：save/batch 路由有分析运行护栏；写盘暂存-交换原子化
 
@@ -393,10 +394,10 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 - **平台回收站**：Windows `SHFileOperationW` + macOS `osascript` + Linux `gio trash`
 - **显式路径删除**：`delete_novel_to_trash` 支持显式路径参数（按队列项 workspace_dir 删除，防同名误删）
 
-#### book_service.py（197行）
+#### book_service.py（226行）
 - **职责**：书名→目录映射（catalog）
 - **发现来源**：队列项 + 文件系统扫描 + 归档目录 + 手动注册
-- **懒刷新**：`get_book_path()` 在找不到 ID 时触发 `refresh_books()`
+- **懒刷新**：冷启动（映射空）阻塞刷一次保证首查可用；此后 miss 仅触发后台单飞刷新并立即返回 None（消除事件循环秒级冻结，下次查询即命中）
 
 #### viz_service.py（229行）
 - **三种可视化数据**：
@@ -443,8 +444,8 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 - **可选依赖**：networkx（图算法）+ pyvis（HTML 生成）
 - **算法**：连通分量检测 → 颜色映射 → spring layout → 自定义 HTML patching
 
-#### text_utils.py（359行）
-- **编码检测**：BOM 识别 + UTF-16 NUL 密度检测（I-7 修复）
+#### text_utils.py（417行）
+- **编码检测**：BOM/NUL 预检 + 候选编码采样罚分择优（U+FFFD×8 / 控制字符×4 / PUA×3 除以样本长度，取最低罚分；Big5 繁体书不再坠入 gb18030 乱码，`detect_and_decode` 与 `detect_encoding` 两入口共用同一选择器）
 - **文本去重**：归一化相等 + 子串包含 + SequenceMatcher 相似度
 - **伏笔去重**：关键词倒排索引 + 序列相似度（PERF-2 优化）
 
@@ -797,6 +798,11 @@ npm run build
 - S+A 两档共 19 项：pipeline 快照线程池化/failed 范围过滤/join 容错、解析健壮性双修、json 修复链 dict 守卫+tmp 唯一名、聚合原子写、put_queue 校验、假 done 广播、style_task 异常兜底、workspace 双修、excel 消毒、前端六页守卫/转义/定时器收口、moderation 阈值放宽、markdown 链接保护、client 编码、正文截断、设置页剪枝
 - **原因**：P1 修复后对剩余 P2/P3 做性价比筛选落地
 - **未动**：KB 近邻指纹、切分窄化算法、协议探测回退等高成本项（详见计划文档排除清单）
+
+### 10.16 2026-08-24 深度修复批次（大改值得七项）
+- G1 审核拦截 skipped 标记持久化（重启不再重付 LLM 费用）；G2 KB 近邻增量基线指纹校验+副本断别名（陈旧 KB 不再固化进最终 knowledge.json）；G3 风格 token 接入统计；G4 书目刷新后台单飞（消除事件循环冻结）；G5 预检跨协议探针自动纠正 provider 误判；G6 切分次级格式比额门槛并入（混排书不再吞章）；G7 编码采样罚分择优（Big5 不坠入 gb18030 乱码，两入口预检统一）
+- **原因**：审计剩余项中「后果严重度×触发频率」最高、值得动核心逻辑的七项
+- **取舍**：normalizer salvage、死代码功能、macOS osascript、polish 级继续搁置
 
 ### 10.12 相关文档
 - Win11 重做计划：`docs/superpowers/plans/2026-08-16-win11-frontend-redesign.md`

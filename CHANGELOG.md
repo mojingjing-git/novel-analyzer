@@ -199,6 +199,13 @@
 - 验证：后端全量 pytest 226 passed（本批新增约 15 用例），前端 vue-tsc + vite build 通过
 - **未动**：KB 近邻指纹、切分窄化算法、协议探测回退等高成本项；逐项明细见计划文档：`docs/superpowers/plans/2026-08-24-p2p3-batch-fixes.md`
 
+### 08-24 ｜ 深度修复批次（G1-G7，大改值得七项）
+
+- 上批「未动」的三项高成本项全部落地：KB 近邻指纹（G2）、切分窄化算法（G6）、协议探测回退（G5），外加四个审计高优先项
+- 后端 9 文件：memory_state 审核拦截 skipped 标记随 checkpoint 持久化 + 成功落盘清理陈旧标记 + pipeline 续跑过滤已 skipped 块（重启不再重付 LLM 重试链费用）；knowledge_base 近邻增量校验 ≤best_limit 基线区间文件指纹、失效即全量重建，命中产物返回副本断开对象别名（陈旧 KB 不再固化进最终 knowledge.json）；style_analyzer `token_sink` 经 final_summary 接入 runner 统计（style 分类恒零盲区消除）；book_service `get_book_path` miss 改后台单飞刷新并立即返回 None（冷启动保留一次阻塞刷新，消除事件循环秒级冻结）；queue_service 预检加跨协议探针自动纠正 provider 误判（OpenAI 网关上的 claude-* 不再整书 404）；splitter 次级章节格式按比额门槛并入切分（绝对得分 ≥2 且 ≥ 主导的 15%，卷章混排书不再吞章、高频编号列表仍被挡住）；text_utils 编码检测改采样罚分择优（U+FFFD×8/控制字符×4/PUA×3 除以样本长度取最低罚分，Big5 繁体书不再坠入 gb18030 乱码，`detect_and_decode`/`detect_encoding` 两入口预检统一）
+- 新增测试文件 7 个：test_memory_state_skipped / test_kb_fingerprint / test_style_tokens / test_book_service_async_refresh / test_provider_heal / test_splitter_mixed_formats / test_text_encoding
+- 验证：后端全量 pytest 251 passed（本批新增约 24 用例），前端 vue-tsc + vite build 通过
+
 ### 未提交清单（当前工作区）
 
 - 08-02 之后的所有里程碑（自动总结/优化批/伏笔 50 类/模型选择/复检续跑）尚未 git 提交
