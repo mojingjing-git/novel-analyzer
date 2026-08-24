@@ -209,7 +209,25 @@ class KnowledgeBaseManager:
                         if key[1] > best_limit:
                             best_key, best_limit = key, key[1]
 
+            near_neighbor_valid = False
             if best_key is not None:
+                cached_fp, cached_results, cached_kb = _temp_kb_cache[best_key]
+                # P2 修复（2026-08-24）：≤best_limit 基线区间的文件可能已被重写
+                # （重跑/手工修正）。近邻增量只解析 >best_limit 新文件，若不校验
+                # 基线指纹，陈旧 KB 会经 _cache_put 固化到新 key 且永不自愈，
+                # 并可经 merge_results 进入最终 knowledge.json。
+                cur_base = {}
+                for f in result_files:
+                    m = re.match(r'chapter_(\d+)_result\.json', f.name)
+                    if m and int(m.group(1)) <= best_limit:
+                        cur_base[f.name] = f.stat().st_mtime_ns
+                base_map = dict(cached_fp)
+                near_neighbor_valid = (
+                    set(base_map.keys()) == set(cur_base.keys())
+                    and all(base_map[n] == cur_base[n] for n in base_map)
+                )
+
+            if best_key is not None and near_neighbor_valid:
                 cached_fp, cached_results, cached_kb = _temp_kb_cache[best_key]
                 # 只读章号 > best_limit 的新文件
                 new_files = []
@@ -226,11 +244,12 @@ class KnowledgeBaseManager:
                         KnowledgeBase.from_dict(cached_kb.to_dict()), new_results)
                     _cache_put(cache_key, (current_fingerprint, all_results, kb))
                 else:
-                    kb = cached_kb
+                    kb = KnowledgeBase.from_dict(cached_kb.to_dict())
                     _cache_put(cache_key, (current_fingerprint, cached_results, kb))
                 KnowledgeBaseManager._apply_rolling_data(kb, output_dir)
                 logger.debug(f"build_temp_knowledge 近邻增量(best_limit={best_limit}): +{len(new_results)}章")
                 return kb
+            # 基线失效或无可用近邻 → 落入下方全量重建（陈旧数据不固化）
 
             # 3. 全量构建（首次）
             results = KnowledgeBaseManager._parse_result_files(result_files)
