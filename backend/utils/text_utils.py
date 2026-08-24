@@ -5,67 +5,42 @@
 """
 
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
-def detect_and_decode(file_path: Path, encoding_priority: List[str]) -> str:
-    """
-    按优先级尝试多种编码读取文件
-
-    Args:
-        file_path: 文件路径
-        encoding_priority: 编码优先级列表
-
-    Returns:
-        解码后的文本内容
-
-    Raises:
-        UnicodeDecodeError: 所有编码都失败时抛出
-    """
-    last_error = None
-
-    for encoding in encoding_priority:
-        try:
-            with open(file_path, 'r', encoding=encoding) as f:
-                content = f.read()
-            return content
-        except UnicodeDecodeError as e:
-            last_error = e
-            continue
-        except Exception as e:
-            raise IOError(f"读取文件失败: {e}")
-
-    raise last_error or UnicodeDecodeError(
-        "unknown", b"", 0, 1,
-        f"无法使用任何编码读取文件: {file_path}"
-    )
+# P2 修复（2026-08-24）：编码选择从「首个解码成功即返回」改为「采样罚分择优」。
+# 繁体中文书（Big5）的字节流在 gb18030 下能无错解码，但产出乱码/PUA 字符，
+# 整本书静默损坏。罚分权重：U+FFFD ×8（解码器替换符，强信号）/
+# 控制字符 ×4 / PUA(U+E000-F8FF) ×3（gb18030 吞 Big5 的典型产物）。
+_SAMPLE_BYTES = 256 * 1024
+_CTRL_ALLOWED = set("\t\n\r")
 
 
-def detect_encoding(file_path: Path, encoding_priority: List[str]) -> str:
-    """
-    检测文件编码，返回第一个成功的编码名称
+def _penalty_sample(raw: bytes, encoding: str) -> Optional[float]:
+    """采样解码罚分：越低越好。None = 该编码在采样上硬解失败。
 
-    Args:
-        file_path: 文件路径
-        encoding_priority: 编码优先级列表
-
-    Returns:
-        成功的编码名称
-
-    Raises:
-        UnicodeDecodeError: 所有编码都失败时抛出
-    """
-    last_error = None
-
-    # I-7 修复：BOM 与无 BOM 的 UTF-16/32 预判。
-    # 原实现 utf-16 排在 gbk 之后，无 BOM 的 UTF-16LE 文件会被 GBK"成功"解码成
-    # \x00 乱码（\x00 是合法 GBK 单字节），整书静默损坏且零报错。
+    罚分权重：U+FFFD ×8（解码器替换符，强信号）/ 控制字符 ×4 /
+    PUA(U+E000-F8FF) ×3（gb18030 吞 Big5 的典型产物）。
+    P2 修复（2026-08-24)：取代「首个解码成功即返回」——Big5 字节流在 gb18030
+    下无错解码但产出乱码，繁体书整本静默损坏。"""
+    sample = raw[:_SAMPLE_BYTES]
     try:
-        with open(file_path, 'rb') as f:
-            head = f.read(4096)
-    except Exception:
-        head = b""
+        text = sample.decode(encoding)
+    except UnicodeDecodeError:
+        return None
+    except LookupError:
+        return None
+    if not text:
+        return 0.0
+    penalty = text.count("\ufffd") * 8
+    penalty += sum(1 for ch in text if ord(ch) < 32 and ch not in _CTRL_ALLOWED) * 4
+    penalty += sum(1 for ch in text if 0xE000 <= ord(ch) <= 0xF8FF) * 3
+    return penalty / len(text)
 
+
+def _select_encoding(raw: bytes, encoding_priority: List[str]) -> Optional[str]:
+    """BOM/NUL 预检 + 采样罚分择优。返回胜者编码名；全部失败返回 None。"""
+    head = raw[:4096]
     if head.startswith(b'\xff\xfe\x00\x00') or head.startswith(b'\x00\x00\xfe\xff'):
         return 'utf-32'
     if head.startswith(b'\xff\xfe'):
@@ -74,32 +49,50 @@ def detect_encoding(file_path: Path, encoding_priority: List[str]) -> str:
         return 'utf-16-be'
     if head.startswith(b'\xef\xbb\xbf'):
         return 'utf-8-sig'
-
     if head and head.count(b'\x00') / len(head) > 0.05:
         # 无 BOM 但 NUL 密度高：几乎必然是 UTF-16（BE/LE 各试一次整文件解码）
         for enc in ('utf-16', 'utf-16-be'):
             try:
-                with open(file_path, 'r', encoding=enc) as f:
-                    f.read()
+                raw.decode(enc)
                 return enc
-            except UnicodeDecodeError as e:
-                last_error = e
+            except (UnicodeDecodeError, LookupError):
+                continue
 
+    best_enc, best_score = None, None
     for encoding in encoding_priority:
-        try:
-            with open(file_path, 'r', encoding=encoding) as f:
-                f.read()
-            return encoding
-        except UnicodeDecodeError as e:
-            last_error = e
+        score = _penalty_sample(raw, encoding)
+        if score is None:
             continue
-        except Exception as e:
-            raise IOError(f"读取文件失败: {e}")
+        if best_score is None or score < best_score:
+            best_enc, best_score = encoding, score
+    return best_enc
 
-    raise last_error or UnicodeDecodeError(
-        "unknown", b"", 0, 1,
-        f"无法使用任何编码读取文件: {file_path}"
-    )
+
+def detect_and_decode(file_path: Path, encoding_priority: List[str]) -> str:
+    """读取文件并以采样罚分择优解码（BOM/NUL 预检与 detect_encoding 共用一套）
+
+    Raises:
+        UnicodeDecodeError: 所有编码都失败时抛出
+    """
+    raw = Path(file_path).read_bytes()
+    enc = _select_encoding(raw, encoding_priority)
+    if enc is None:
+        raise UnicodeDecodeError(
+            "unknown", b"", 0, 1, f"无法使用任何编码读取文件: {file_path}")
+    return raw.decode(enc)
+
+
+def detect_encoding(file_path: Path, encoding_priority: List[str]) -> str:
+    """检测文件编码（与 detect_and_decode 共用评分选择器）"""
+    try:
+        raw = Path(file_path).read_bytes()
+    except Exception as e:
+        raise IOError(f"读取文件失败: {e}")
+    enc = _select_encoding(raw, encoding_priority)
+    if enc is None:
+        raise UnicodeDecodeError(
+            "unknown", b"", 0, 1, f"无法使用任何编码读取文件: {file_path}")
+    return enc
 
 
 def truncate_text(text: str, max_length: int, suffix: str = "...") -> str:
