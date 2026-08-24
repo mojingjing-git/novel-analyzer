@@ -94,4 +94,9 @@ describe('markdown 渲染器', () => {
     expect(r).toContain('<strong>init</strong>')
     expect(r).toContain('href="https://a.io/p__q"')
   })
+
+  it('链接完整形态：href/target/rel/锚文本', () => {
+    const r = renderMarkdown('[百度](https://baidu.com)')
+    expect(r).toContain('<a href="https://baidu.com" target="_blank" rel="noopener" class="md-link">百度</a>')
+  })
 })

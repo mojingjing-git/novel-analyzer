@@ -32,7 +32,7 @@ function pick(wrapper: ReturnType<typeof mount>, bookId: string) {
 }
 
 beforeEach(() => {
-  vi.clearAllMocks()
+  vi.resetAllMocks()
   mockedApi.getForeshadowCategories.mockResolvedValue({
     schema_version: 1,
     fallback: 'builtin',
