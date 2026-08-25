@@ -98,7 +98,7 @@ onMounted(() => {
     <div class="layout-body">
       <!-- Win11 NavigationView 侧边栏：Mica 基底（背景层），内容卡片白色浮于其上 -->
       <aside class="sidebar mica-surface" :class="{ collapsed }">
-        <nav class="nav-list list-enter">
+        <nav class="nav-list">
           <router-link
             v-for="item in navItems"
             :key="item.path"
@@ -245,7 +245,8 @@ html.dark .sidebar {
   justify-content: center;
 }
 .sidebar.collapsed .nav-item.is-active::before {
-  left: -8px; /* 竖条仍贴侧边栏左边缘，与内边距无关 */
+  left: -6px; /* 折叠态贴 rail 边缘；胶囊几何（居中/高度/圆角）与展开态共用 */
+  height: 16px;
 }
 
 /* ===== 导航列表 =====
@@ -325,10 +326,11 @@ html.dark .sidebar {
   content: "";
   position: absolute;
   left: -8px;
-  top: 0;
-  bottom: 0;
-  width: 4px;
-  border-radius: 0 2px 2px 0;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 20px;
+  width: 3px;
+  border-radius: 2px;
   background: var(--win-accent);
 }
 .nav-item.is-active .nav-icon-wrap {

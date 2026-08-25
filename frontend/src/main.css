@@ -194,6 +194,52 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   transition: background-color 400ms var(--win-ease);
+
+  /* ===== Win11 风格滚动条（WebView2 为 Chromium，::-webkit-scrollbar 有效）=====
+     细圆角拇指 + 透明轨道，替代 WebView2 默认的经典宽滚动条 */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.22) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.22);
+  border-radius: 6px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(0, 0, 0, 0.34);
+}
+html.dark ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.22);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+html.dark ::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.34);
+}
+
+/* ===== Win11 真 Mica（desktop.py DWM 启用成功时注入 mica-on）=====
+   页面/侧边栏/标题栏底色让位系统 Mica 背景，卡片保持不透明形成浮层。
+   DWM 失败时无 mica-on 类，以上纯色背景完整回退。 */
+html.mica-on body {
+  background-color: transparent;
+  background-image: none;
+}
+html.mica-on .sidebar {
+  background-color: transparent;
+  background-image: none;
+}
+html.mica-on .titlebar {
+  background-color: transparent;
+  background-image: none;
 }
 
 /* Mica 表面（侧边栏/标题栏/主区背景）：基底灰 + 极淡壁纸色调，内容卡片白色叠加其上 */

@@ -369,6 +369,7 @@ def main():
         min_size=(960, 700),
         text_select=True,
         js_api=Api(port),
+        transparent=True,  # Win11 Mica：WebView2 底色透明，让 DWM 背景透出（见 _apply_win11_backdrop）
     )
 
     # 记录窗口关闭 / 前端加载异常，便于区分「用户主动关」还是「渲染进程崩溃」
@@ -393,7 +394,49 @@ def main():
         window.events.closed += _on_closed
         window.events.load_exception += _on_load_exc
     except Exception as e:
-        logger.debug(f"注册窗口事件回调失败（pywebview 版本旧？）: {e}")
+        logger.debug(f"注册窗口事件回调失败（pywebview 版本差异）: {e}")
+
+    def _apply_win11_backdrop():
+        """Win11 宿主质感：DWM Mica 背景 + 深浅色适配。
+
+        透明 WebView2 已在 create_window(transparent=True) 打开；本线程等窗口
+        句柄就绪后启用 DWM Mica，成功则给前端注入 mica-on 类让页面底色让位
+        系统背景。任一步失败（Win10/关闭桌面合成等）静默降级——前端无
+        mica-on 类，保持原纯色背景，观感与旧版一致。"""
+        import ctypes
+        try:
+            theme = ""
+            try:
+                cfg_path = Path(__file__).resolve().parent / "config.json"
+                theme = str(json.loads(cfg_path.read_text(encoding="utf-8")).get("gui", {}).get("theme", ""))
+            except Exception:
+                pass  # 主题读取失败按浅色处理
+
+            native = None
+            for _ in range(60):
+                native = getattr(window, "native", None)
+                if native is not None and getattr(native, "Handle", 0):
+                    break
+                time.sleep(0.25)
+            if native is None:
+                logger.warning("Win11 背景：未获取窗口句柄，跳过 Mica")
+                return
+
+            hwnd = int(native.Handle)
+            dwm = ctypes.windll.dwmapi
+            dark = ctypes.c_int(1 if theme.lower() == "dark" else 0)
+            dwm.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(dark), 4)  # DWMWA_USE_IMMERSIVE_DARK_MODE
+            backdrop = ctypes.c_int(2)                                  # DWMSBT_MAINWINDOW（Mica）
+            hr = dwm.DwmSetWindowAttribute(hwnd, 38, ctypes.byref(backdrop), 4)
+            if hr != 0:
+                logger.warning(f"Win11 背景：Mica 不可用 (hr={hr})，保持纯色背景")
+                return
+            window.evaluate_js("document.documentElement.classList.add('mica-on')")
+            logger.info("Win11 背景：Mica 已启用")
+        except Exception as e:
+            logger.warning(f"Win11 背景：启用失败（保持纯色）: {e}")
+
+    threading.Thread(target=_apply_win11_backdrop, args=(), daemon=True).start()
 
     webview.start()
     # 窗口关闭后清理锁并退出

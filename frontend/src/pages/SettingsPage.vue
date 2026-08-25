@@ -51,6 +51,7 @@ const tooltips: Record<string, string> = {
 
 
 const config = ref<AppConfigDto | null>(null)
+const loadError = ref('')
 const presets = ref<Record<string, { base_url: string; model: string; api_key?: string }>>({})
 const models = ref<string[]>([])
 const saving = ref(false)
@@ -88,10 +89,14 @@ async function loadCategoryDefs() {
 }
 
 async function load() {
+  loadError.value = ''
   try {
     config.value = await api.getSettings()
     presets.value = (await api.getPresets()).presets
-  } catch (e) { console.error(e) }
+  } catch (e) {
+    // P3：此前静默失败导致 v-if="config" 整页空白且无重试入口
+    loadError.value = (e as Error).message || '无法连接后端服务'
+  }
 }
 
 const modelError = ref('')
@@ -279,7 +284,11 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="space-y-6 max-w-3xl" v-if="config">
+  <div v-if="loadError" class="glass-card p-6 text-center space-y-3">
+    <p class="text-sm" style="color: var(--win-danger)">设置加载失败：{{ loadError }}</p>
+    <button class="glass-button" @click="load">重试</button>
+  </div>
+  <div class="space-y-6 max-w-3xl" v-else-if="config">
     <div>
       <h2 class="section-title">设置</h2>
       <p class="section-subtitle">API、分析、知识库限制等参数</p>
