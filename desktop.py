@@ -422,7 +422,7 @@ def main():
                 logger.warning("Win11 背景：未获取窗口句柄，跳过 Mica")
                 return
 
-            hwnd = int(native.Handle)
+            hwnd = int(native.Handle.ToInt64()) if hasattr(native.Handle, 'ToInt64') else int(native.Handle)
             dwm = ctypes.windll.dwmapi
             dark = ctypes.c_int(1 if theme.lower() == "dark" else 0)
             dwm.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(dark), 4)  # DWMWA_USE_IMMERSIVE_DARK_MODE
