@@ -431,6 +431,11 @@ def main():
             if hr != 0:
                 logger.warning(f"Win11 背景：Mica 不可用 (hr={hr})，保持纯色背景")
                 return
+            # 关键：WinForms 背景擦除会用不透明 BackColor 盖住 DWM Mica——
+            # 把窗体刷子设为 alpha≈0（近透明），擦除等于不画，Mica 才能透出。
+            # （alpha=1 而非 0：避开 Color.Transparent 的父背景特殊分支）
+            from System.Drawing import Color  # noqa: clr 此时已由 pywebview 平台模块加载
+            native.BackColor = Color.FromArgb(1, 0, 0, 0)
             window.evaluate_js("document.documentElement.classList.add('mica-on')")
             logger.info("Win11 背景：Mica 已启用")
         except Exception as e:

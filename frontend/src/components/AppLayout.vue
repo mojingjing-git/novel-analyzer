@@ -245,7 +245,7 @@ html.dark .sidebar {
   justify-content: center;
 }
 .sidebar.collapsed .nav-item.is-active::before {
-  left: -6px; /* 折叠态贴 rail 边缘；胶囊几何（居中/高度/圆角）与展开态共用 */
+  left: 0;
   height: 16px;
 }
 
@@ -325,10 +325,10 @@ html.dark .sidebar {
 .nav-item.is-active::before {
   content: "";
   position: absolute;
-  left: -8px;
+  left: 0;
   top: 50%;
   transform: translateY(-50%);
-  height: 20px;
+  height: 22px;
   width: 3px;
   border-radius: 2px;
   background: var(--win-accent);
