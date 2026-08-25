@@ -833,7 +833,7 @@ npm run build
 ### 10.17 2026-08-24 Win11 宿主质感（视觉验证驱动）
 - 视觉取证（真实窗口+headless 截图）后落地：desktop.py 透明 WebView2 + DWM Mica（DWMWA_SYSTEMBACKDROP_TYPE=2，失败静默降级纯色，前端 mica-on 类门控）；main.css Win11 细滚动条（::-webkit-scrollbar）+ mica-on 透明规则；选中态指示条改居中胶囊（3×20px）；移除侧边栏 stagger 入场（Win11 即时渲染）；SettingsPage API 失败显示错误卡+重试（原整页空白）
 - **原因**：用户反馈"不是很 Win11"，视觉验证定位差距在宿主层（滚动条/Mica/指示条形状/入场动画）而非设计系统本身
-- **待实机确认**：Mica 实际观感（取证时用户在全屏游戏，未能截到 DWM 效果）；回退开关=去掉 create_window 的 transparent=True
+- **两阶段排障**：DWM 调用成功但视觉仍灰白——根因是 WinForms 窗体背景擦除（不透明 BackColor）盖住 Mica，修复=窗体刷子改 alpha≈0（FromArgb(1,0,0,0)，避开 Transparent 特殊分支）；选中指示条按用户反馈贴齐灰色高亮左缘并加高至 22px；回退开关=去掉 create_window 的 transparent=True
 - **未动**：标题栏 caption 按钮（Win11 本就低调）、错误横幅（已近 InfoBar）
 
 ### 10.12 相关文档### 10.12 相关文档
