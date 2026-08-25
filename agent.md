@@ -830,7 +830,13 @@ npm run build
 - **决策**：useBookScope 统一上下文评估后暂缓——6 处竞态已修完且新增页面低频，规范写入 §6.6 代替；待第 13 个页面落地时再抽 composable 迁移
 - **未动**：OpenAPI 生成 client.ts（规模不够）、ECharts 再加固（已稳定）
 
-### 10.12 相关文档
+### 10.17 2026-08-24 Win11 宿主质感（视觉验证驱动）
+- 视觉取证（真实窗口+headless 截图）后落地：desktop.py 透明 WebView2 + DWM Mica（DWMWA_SYSTEMBACKDROP_TYPE=2，失败静默降级纯色，前端 mica-on 类门控）；main.css Win11 细滚动条（::-webkit-scrollbar）+ mica-on 透明规则；选中态指示条改居中胶囊（3×20px）；移除侧边栏 stagger 入场（Win11 即时渲染）；SettingsPage API 失败显示错误卡+重试（原整页空白）
+- **原因**：用户反馈"不是很 Win11"，视觉验证定位差距在宿主层（滚动条/Mica/指示条形状/入场动画）而非设计系统本身
+- **待实机确认**：Mica 实际观感（取证时用户在全屏游戏，未能截到 DWM 效果）；回退开关=去掉 create_window 的 transparent=True
+- **未动**：标题栏 caption 按钮（Win11 本就低调）、错误横幅（已近 InfoBar）
+
+### 10.12 相关文档### 10.12 相关文档
 - Win11 重做计划：`docs/superpowers/plans/2026-08-16-win11-frontend-redesign.md`
 - 角色关系图重构计划：`docs/superpowers/plans/2026-08-21-graph-redesign.md`
 - 项目 README：`README.md`
