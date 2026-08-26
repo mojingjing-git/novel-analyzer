@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 from backend.utils.text_utils import detect_and_decode
+from backend.config.constants import ENCODING_CANDIDATES
 
 logger = logging.getLogger(__name__)
 
@@ -188,11 +189,14 @@ class SplitOptions:
 # ---------------------------------------------------------------------------
 # 编码 / 读取
 # ---------------------------------------------------------------------------
-ENCODING_PRIORITY = ["utf-8", "utf-8-sig", "gbk", "gb2312", "big5", "utf-16"]
-
-
+# 与其他入口（file_processor / routes_prompt 等）共用 ENCODING_CANDIDATES 常量，
+# 包含 gb18030（GBK 超集，能解 GBK 边界字符）和 latin-1 兜底。
+# P3 修复（2026-08-27）：之前的本地列表缺 gb18030，导致 4.5MB GBK 小说在
+# 256KB 采样边界切到 2-byte 字符尾字节时，gbk 解码失败，splitter 路径
+# 抛 "无法使用任何编码读取文件"。与 file_processor.py 行为对齐后，splitter
+# 与 file_processor 选编码结果一致。
 def _detect_and_read(file_path: Path) -> str:
-    content = detect_and_decode(file_path, ENCODING_PRIORITY)
+    content = detect_and_decode(file_path, ENCODING_CANDIDATES)
     if content.startswith("\ufeff"):
         content = content[1:]
     content = content.replace("\r\n", "\n").replace("\r", "\n")

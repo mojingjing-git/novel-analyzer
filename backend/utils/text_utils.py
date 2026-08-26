@@ -15,6 +15,15 @@ from typing import Dict, List, Optional
 _SAMPLE_BYTES = 256 * 1024
 _CTRL_ALLOWED = set("\t\n\r")
 
+# 单字节编码（latin-1 / cp1252 / ascii）能无错解码任何字节流，
+# 它们的「无错」特性让它们在罚分系统里天然占优，会盖过真正的多字节编码
+# （GBK 文本在 GBK 下的真实 penalty ~1e-5，单字节永远是 0）。
+# P3 修复（2026-08-27）：给单字节编码加基础偏置 0.001，让 GBK 文本在
+# GBK 解码下胜出（GBK penalty 0.00001 < 1e-3 < latin-1 penalty 0.001），
+# 又远低于真正乱码（gb18030 解 Big5 文本 penalty ~0.3）。
+_SINGLE_BYTE_ENCODINGS = frozenset({"latin-1", "cp1252", "ascii"})
+_SINGLE_BYTE_BIAS = 0.001
+
 
 def _penalty_sample(raw: bytes, encoding: str) -> Optional[float]:
     """采样解码罚分：越低越好。None = 该编码在采样上硬解失败。
@@ -22,12 +31,19 @@ def _penalty_sample(raw: bytes, encoding: str) -> Optional[float]:
     罚分权重：U+FFFD ×8（解码器替换符，强信号）/ 控制字符 ×4 /
     PUA(U+E000-F8FF) ×3（gb18030 吞 Big5 的典型产物）。
     P2 修复（2026-08-24)：取代「首个解码成功即返回」——Big5 字节流在 gb18030
-    下无错解码但产出乱码，繁体书整本静默损坏。"""
+    下无错解码但产出乱码，繁体书整本静默损坏。
+
+    P3 修复（2026-08-27）：decode 用 errors='replace' 而非 strict。
+    之前的 strict 模式在 256KB 采样窗口边界处会切坏 2-byte 编码（GBK/GB2312）
+    的尾字节，触发 'incomplete multibyte sequence' → 整个合法编码被错误排除。
+    真实案例：4.5MB GBK 小说在 256KB 边界正好切到 2-byte 字符的尾字节 0xA1，
+    导致 gbk 解码失败，splitter 路径（无 gb18030 也无 latin-1 兜底）抛
+    "无法使用任何编码读取文件"。改为 replace 后边界字符变 U+FFFD（罚分 8），
+    不会让 GBK 文本在 GBK 解码下被排除，FFFD 罚分量级 ~1e-5/字符 远低于
+    真正乱码（PUA 整片出现罚分 ~3e-5/字符）。"""
     sample = raw[:_SAMPLE_BYTES]
     try:
-        text = sample.decode(encoding)
-    except UnicodeDecodeError:
-        return None
+        text = sample.decode(encoding, errors='replace')
     except LookupError:
         return None
     if not text:
@@ -35,7 +51,10 @@ def _penalty_sample(raw: bytes, encoding: str) -> Optional[float]:
     penalty = text.count("\ufffd") * 8
     penalty += sum(1 for ch in text if ord(ch) < 32 and ch not in _CTRL_ALLOWED) * 4
     penalty += sum(1 for ch in text if 0xE000 <= ord(ch) <= 0xF8FF) * 3
-    return penalty / len(text)
+    base = penalty / len(text)
+    if encoding in _SINGLE_BYTE_ENCODINGS:
+        base += _SINGLE_BYTE_BIAS
+    return base
 
 
 def _select_encoding(raw: bytes, encoding_priority: List[str]) -> Optional[str]:
