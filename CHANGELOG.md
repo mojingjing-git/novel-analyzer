@@ -218,6 +218,17 @@
 
 ---
 
+## 2026-08-26 日志轮转彻底修复（H15）
+
+- **`desktop.py` crash.log 轮转 bug**：`_StderrTee` 用独立 `open("a")` 句柄写 `crash.log`，与同文件 `RotatingFileHandler` 句柄并存，Windows 下 `os.rename` 因 `ERROR_SHARING_VIOLATION` 失败 → 异常被 `logging.handleError` 写回 stderr（即 crash.log）→ 形成「永不轮转 + 永不增长上限」反馈环。**实测** crash.log 60MB 无 `.1` 备份
+- **`llm_client.py` FailureLogger 无大小上限**：原 `open("a")` 裸追加，24h-unlink 仅在 `__init__` 触发一次；长跑不重启文件只增不减
+- **修复**：`_StderrTee` 改走 `crash_logger` 的 `RotatingFileHandler`（统一流/锁/轮转），`FailureLogger` 改用 `RotatingFileHandler(10MB × 3)`，取消 24h-unlink
+- **统一策略**：所有 log 单文件 ≤10MB，备份 3 份（30MB 总占用上限）
+- **回归**：255 pytest 全过，行为契约零变动；轮转备份在桌面端重启后首次到 10MB 时自动出现
+- **未动**：`%LOCALAPPDATA%\NovelAnalyzer\run.log` / `build.log`（不在工程内）
+
+---
+
 ## 核心机制演进主线
 
 | 机制 | 雏形期（3月） | PyQt6/PySide6 期（4-7月） | Web 版（8月） |

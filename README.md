@@ -27,7 +27,7 @@
 ### 可视化与工具
 
 - 时间线（事件泳道 + 伏笔埋设/回收 + 50 类筛选）、角色关系图、地点地图、角色卡（HTML/文本）
-- 小说切分器（13 种章格式自动识别、卷/部层级、广告清理、防盗章去重、超长章拆分、批量处理）
+- 小说切分器（12 种章格式 + 4 种卷格式自动识别、卷/部层级、广告清理、防盗章去重、超长章拆分、批量处理）
 - 数据聚合（11 类 JSON）与 Excel 多 Sheet 导出
 - Prompt 预览（调试真实 LLM prompt）、Token 统计面板
 
@@ -135,7 +135,7 @@ workspace/
 
 ### JSON 容错解析链（json_utils.py）
 
-8 级策略：直接解析 → 截尾 → 去注释 → 漏引号定向修复（两轮，先于 lenient 解析器）→ json5 → `ast.literal_eval` → json-repair → 单引号值转双引号。
+9 级策略（含全角归一）：直接解析 → 截尾 → 去注释 → 漏引号定向修复（两轮，先于 lenient 解析器）→ 全角归一 → json5 → `ast.literal_eval` → json-repair → 单引号值转双引号。
 
 ### 伏笔系统（50 类分类）
 
@@ -253,12 +253,14 @@ python -m pytest        # 55 个用例，backend/tests/
 
 ## 日志与排障
 
-| 文件 | 内容 |
-|---|---|
-| `analyzer.log`（10MB×3 轮转） | 主日志：LLM 调用/token/流程/错误 |
-| `api_failures.log` | LLM 调用失败明细（24h 滚动）：温度/错误类型/等待时长 |
-| `crash.log` | 桌面端未捕获异常 / pywebview 原生报错 |
-| `%LOCALAPPDATA%\NovelAnalyzer\run.log` / `build.log` | 桌面启动与前端构建诊断 |
+| 文件 | 大小策略 | 内容 |
+|---|---|---|
+| `analyzer.log` | `RotatingFileHandler(10MB × 3)` | 主日志：LLM 调用/token/流程/错误 |
+| `api_failures.log` | `RotatingFileHandler(10MB × 3)` | LLM 调用失败明细（温度/错误类型/等待时长，每行一条 JSON 便于 `jq`/grep） |
+| `crash.log` | `RotatingFileHandler(10MB × 3)` | 桌面端未捕获异常 / pywebview 原生报错（stderr 走 logging 体系，无句柄共享冲突） |
+| `%LOCALAPPDATA%\NovelAnalyzer\run.log` / `build.log` | 不在工程内 | 桌面启动与前端构建诊断 |
+
+> 所有 log 单文件上限 10MB，备份 3 份（即 30MB 总占用上限）。`.log` / `.log.*` 已被 `.gitignore` 排除，不会进库。
 
 **常见问题**：
 - **分析慢/超时**：`api.timeout` / `api.summary_timeout` 调大；重试链 `temperature_max_retries`/`backoff_max_retries` 调小快速放弃；总结页单独切更快的模型

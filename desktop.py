@@ -55,6 +55,16 @@ def _install_crash_diagnostics():
     把未捕获异常 / 线程异常 / 原生 stderr 输出全部落盘，便于排查「闪退」。
     默认情况下桌面端 stderr 没有文件落盘，进程被 os._exit 或渲染进程崩溃带走时
     任何 traceback / pywebview(WebView2) 原生报错都会丢失，难以定位。
+
+    H15 修复（2026-08-26）：原实现中 _StderrTee 用独立 open("a") 句柄直接写 crash.log，
+    这与 crash_logger 的 RotatingFileHandler 持有同一文件的另一句柄——Windows 下
+    os.rename(crash.log → crash.log.1) 会因 ERROR_SHARING_VIOLATION 失败，
+    异常被 logging.handleError 捕获后又写回 stderr（即 crash.log），形成「永远不轮转 +
+    永远增长」的反馈环，实测 crash.log 单文件涨到 60MB 无 .1 备份。
+
+    修法：让 stderr 写入也走 crash_logger 的 logging 体系（统一 stream、统一锁、
+    自动跟随 RotatingFileHandler.doRollover）；不再持有独立 open() 句柄，Windows
+    上不再有共享锁竞争。
     """
     import sys
     import threading
@@ -67,8 +77,7 @@ def _install_crash_diagnostics():
         getattr(h, "baseFilename", "") == str(crash_path)
         for h in crash_logger.handlers
     ):
-        # H14 修复：原用裸 FileHandler 不限制大小，crash.log 会无限增长（实测已达 45MB）。
-        # 改用 RotatingFileHandler，与 analyzer.log 同策略（10MB × 3），避免长期运行撑爆磁盘。
+        # 与 analyzer.log 同策略（10MB × 3），保证单文件不超过 10MB。
         fh = RotatingFileHandler(
             str(crash_path), encoding="utf-8",
             maxBytes=10 * 1024 * 1024, backupCount=3,
@@ -96,39 +105,49 @@ def _install_crash_diagnostics():
 
     threading.excepthook = _thread_excepthook
 
-    # 重定向 stderr 到「原 stderr + crash.log」，捕获 pywebview / WebView2 原生报错
-    crash_fh = open(crash_path, "a", encoding="utf-8", buffering=1)
-
+    # 重定向 stderr 到「原 stderr + crash.log（走 logging）」，捕获 pywebview / WebView2 原生报错。
+    # H15 关键：不再独立 open()，让 stderr 写入借 crash_logger 的 RotatingFileHandler
+    # （同一流、同一锁、轮转自动跟随），消除 Windows ERROR_SHARING_VIOLATION。
     class _StderrTee:
-        def __init__(self, original, fileobj):
+        """std.stderr 替换实现：把原生 stderr 写入既送到原 stderr（控制台），
+        也通过 crash_logger.error 走统一的 logging 体系（自动轮转）。"""
+        _FLUSH_INTERVAL = 0  # 行缓冲依赖 logging 内部行为；此处不重复 flush
+
+        def __init__(self, original, logger):
             self._orig = original
-            self._f = fileobj
+            self._logger = logger
 
         def write(self, s):
-            try:
-                self._f.write(s)
-                self._f.flush()
-            except Exception:
-                pass
+            # 1) 先送到原 stderr（控制台输出、第三方工具 attachConsole 等）
             try:
                 self._orig.write(s)
             except Exception:
                 pass
+            # 2) 持久化：去掉末尾空白（logging 会再加换行），避免重复空行
+            if s and s.strip():
+                try:
+                    self._logger.error("%s", s.rstrip())
+                except Exception:
+                    # logger 自身抛异常时静默吞掉，不影响 stderr 主通道
+                    pass
 
         def flush(self):
-            try:
-                self._f.flush()
-            except Exception:
-                pass
             try:
                 self._orig.flush()
             except Exception:
                 pass
+            # logging 体系内部已管理 flush，无需手动触发
+            try:
+                for h in self._logger.handlers:
+                    h.flush()
+            except Exception:
+                pass
 
         def __getattr__(self, name):
+            # 任何未实现的方法/属性都代理给原 stderr（如 .isatty、.fileno、.encoding 等）
             return getattr(self._orig, name)
 
-    sys.stderr = _StderrTee(sys.stderr, crash_fh)
+    sys.stderr = _StderrTee(sys.stderr, crash_logger)
     logger.info(f"崩溃诊断已启用，原生报错将写入: {crash_path}")
 
 

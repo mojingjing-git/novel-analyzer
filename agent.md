@@ -63,7 +63,7 @@
 │   │   ├── analysis_result.py    # AnalysisResult 9类结构化输出
 │   │   └── knowledge.py          # KnowledgeBase 12类跨章记忆
 │   ├── utils/
-│   │   ├── json_utils.py         # 8级 JSON 容错修复链
+│   │   ├── json_utils.py         # 9级 JSON 容错修复链（含全角归一）
 │   │   ├── foreshadow_ledger.py  # 伏笔账本（状态机）
 │   │   ├── aggregate_utils.py    # 聚合工具（11种 JSON 输出）
 │   │   ├── character_card_generator.py  # 角色卡片生成器
@@ -111,7 +111,7 @@
 │   │   └── main.css              # Win11 Fluent 设计系统（--win-* 变量）
 │   ├── package.json
 │   └── vite.config.ts
-├── desktop.py                    # pywebview 桌面入口（单实例锁 O_EXCL 原子抢锁 + 关闭确认 + crash.log 轮转 + graceful 退出）
+├── desktop.py                    # pywebview 桌面入口（单实例锁 O_EXCL 原子抢锁 + 关闭确认 + H15 崩溃诊断走 logging 体系 + Win11 Mica + graceful 退出）
 ├── config.json                   # 运行配置（含 API Key，已 gitignore）
 ├── queue_state.json              # 队列状态（已 gitignore）
 ├── workspace/                    # 分析工作区（已 gitignore）
@@ -157,7 +157,7 @@
 
 ```
 .txt 文件
-  → splitter_service（切章，13种正则模式）
+  → splitter_service（切章，12种章格式 + 4种卷格式正则）
   → blocks/*.txt
   → pipeline（三阶段分析）
       → serial warmup（前 N 块串行）
@@ -227,7 +227,7 @@ system: SYSTEM_PROMPT + 50类伏笔表 + 已知世界观 + 主题元素  ← 恒
 user:   时间线 + 角色状态 + 角色关系 + 已验证事实 + 前情摘要 + 伏笔网络 + 故事历史 + 章节正文
 ```
 
-**九路上下文注入：**
+**十路上下文注入（system 4 路 + user 7 路，不含章节正文）：**
 1. 完整故事历史（结构化滚动总结 + 近期逐章 timeline）
 2. 前情摘要（最近 N 章）
 3. 当前时间线
@@ -327,7 +327,7 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 - **关键方法**：`chat()`、`chat_with_retry()`、`list_models()`、`probe_thinking_params()`、`detect_provider()`
 - **KV Cache 统计**：读取 `prompt_tokens_details.cached_tokens`
 - **审核识别**：`moderation_hit_from_exception()` 统一判定；审核拦截需连续 3 次命中才短路退出重试链（瞬时误判多给一轮温度尝试）
-- **FailureLogger**：线程安全，24h 滚动日志，记录温度/错误类型/等待时长；重试等待统一经 `_sleep()` 封装
+- **FailureLogger**：线程安全，`RotatingFileHandler(10MB × 3)` 轮转，每行 JSON 便于 `jq`/grep；记录温度/错误类型/等待时长；重试等待统一经 `_sleep()` 封装
 
 #### analyzer.py（223行）
 - **职责**：单章分析引擎
@@ -390,7 +390,7 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 
 #### splitter_service.py（730行）
 - **职责**：小说文本切分为独立章节文件
-- **13 种章节正则**：中文数字、阿拉伯数字、"回"、"节"、卷+章组合、英文 Chapter 等
+- **12 种章格式 + 4 种卷格式正则**：中文数字、阿拉伯数字、"回"、"节"、卷+章组合、英文 Chapter 等
 - **核心算法**：两遍扫描（定位边界→提取内容）、评分式模式选择、次级格式比额门槛并入（绝对得分 ≥2 且 ≥ 主导的 15%，混排书不吞章、高频噪声列表不过度切分）、MD5 去重、超长章拆分
 - **并发写入**：`ThreadPoolExecutor`（最多 32 工作者）缓解网络盘延迟
 - **运行护栏 + 原子写**：save/batch 路由有分析运行护栏；写盘暂存-交换原子化
@@ -429,7 +429,7 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 ### 5.3 工具层（backend/utils/）
 
 #### json_utils.py（383行）
-- **8级修复链**：直接解析 → 截尾 → 去注释 → 漏引号修复(两轮) → json5 → ast.literal_eval → json_repair → 单引号替换；全策略仅接受 dict 结果（非 dict 一律视为该策略失败，防字符串/列表混入下游）
+- **9级修复链**：直接解析 → 截尾 → 去注释 → 漏引号修复(两轮) → 全角归一 → json5 → ast.literal_eval → json_repair → 单引号替换；全策略仅接受 dict 结果（非 dict 一律视为该策略失败，防字符串/列表混入下游）
 - **原子写**：`safe_save_json()` 先写进程内唯一 tmp 名（pid + uuid 后缀，防并发同目标互踩）再 `replace`；replace 撞 `PermissionError` 时有界重试退避
 
 #### foreshadow_ledger.py（189行）
@@ -767,7 +767,6 @@ npm run build
   - H1 事件循环冻结：`_auto_scan_workspace` 同步 → 改 `app.py` lifespan `asyncio.to_thread`
   - H2a 章节结果非原子写 → 改 `safe_save_json`
   - H2b `os._exit(0)` 前加 `logging.shutdown()`
-  - crash.log 不轮转 → `RotatingFileHandler(10MB, 3)`
   - 端口锁竞态 → `O_CREAT|O_EXCL` 原子抢锁
   - config 非原子写 → `safe_save_json`
   - `delete_book` 顺序改为「先回收站成功再改队列」
@@ -831,10 +830,45 @@ npm run build
 - **未动**：OpenAPI 生成 client.ts（规模不够）、ECharts 再加固（已稳定）
 
 ### 10.17 2026-08-24 Win11 宿主质感（视觉验证驱动）
-- 视觉取证（真实窗口+headless 截图）后落地：desktop.py 透明 WebView2 + DWM Mica（DWMWA_SYSTEMBACKDROP_TYPE=2，失败静默降级纯色，前端 mica-on 类门控）；main.css Win11 细滚动条（::-webkit-scrollbar）+ mica-on 透明规则；选中态指示条改居中胶囊（3×20px）；移除侧边栏 stagger 入场（Win11 即时渲染）；SettingsPage API 失败显示错误卡+重试（原整页空白）
+- 视觉取证（真实窗口+headless 截图）后落地：desktop.py 透明 WebView2 + DWM Mica（DWMWA_SYSTEM_BACKDROP_TYPE=2，失败静默降级纯色，前端 mica-on 类门控）；main.css Win11 细滚动条（::-webkit-scrollbar）+ mica-on 透明规则；选中态指示条改居中胶囊（3×20px）；移除侧边栏 stagger 入场（Win11 即时渲染）；SettingsPage API 失败显示错误卡+重试（原整页空白）
 - **原因**：用户反馈"不是很 Win11"，视觉验证定位差距在宿主层（滚动条/Mica/指示条形状/入场动画）而非设计系统本身
 - **两阶段排障**：DWM 调用成功但视觉仍灰白——根因是 WinForms 窗体背景擦除（不透明 BackColor）盖住 Mica，修复=窗体刷子改 alpha≈0（FromArgb(1,0,0,0)，避开 Transparent 特殊分支）；选中指示条按用户反馈贴齐灰色高亮左缘并加高至 22px；回退开关=去掉 create_window 的 transparent=True
+
+### 10.18 2026-08-26 日志轮转彻底修复（H15）
+- **根因**：`desktop.py` 的 `_StderrTee` 用独立 `open("a")` 句柄直接写 `crash.log`；与同文件 `RotatingFileHandler` 句柄并存，Windows 下 `os.rename(crash.log → crash.log.1)` 因 `ERROR_SHARING_VIOLATION` 失败；异常被 `logging.handleError` 捕获后又写回 `sys.stderr`（即 crash.log），形成「永远不轮转 + 永远增长」反馈环，实测 crash.log 60MB 无 `.1` 备份
+- **修复 1 `desktop.py`**：`_StderrTee` 改为借 `crash_logger` 的 `RotatingFileHandler`（统一流、锁、轮转），不再独立 `open()`；stderr 写入走 `crash_logger.error(s.rstrip())`，控制台原 stderr 同步保留；Windows 句柄竞争彻底消失
+- **修复 2 `llm_client.py`**：`FailureLogger` 由 `open("a")` 裸追加改为 `RotatingFileHandler(10MB × 3)`；取消 `_check_reset` 24h-unlink（轮转接管）；JSON 一行一条格式不变，便于 `jq`/grep
+- **统一策略**：所有 log 单文件 ≤10MB，备份 3 份（30MB 总占用上限）。`analyzer.log` 沿用 `app.py:53-58` 既有 `RotatingFileHandler(10MB × 3)`
+- **回归验证**：255 个 pytest 用例全过（0 改动行为契约）；`crash.log` 备份在下一轮桌面端启动后首次到 10MB 时自动出现
+- **原因**：用户报告 `crash.log` 60MB 无轮转备份，根因分析发现 H14 的 `RotatingFileHandler` 修复被 `_StderrTee` 旁路；`api_failures.log` 1.7MB 同样无大小上限
+- **未动**：`%LOCALAPPDATA%\NovelAnalyzer\run.log` / `build.log`（非工程内，桌面启动批处理自己管）
 - **未动**：标题栏 caption 按钮（Win11 本就低调）、错误横幅（已近 InfoBar）
+
+### 10.18 2026-08-26 M3 端点 thinking 默认差异（运行时经验）
+- 现象：《我不可能是剑神》ch457 块（block_size=4，prompt 30K 字符 / 19.6K tokens）M3 卡死 6 次 230s 硬超时，**M2.7 一次过**
+- 直接打 API 实测（同 prompt，无 thinking 显式参数）：M3 chat/completions 端点 status=200 elapsed=70.3s，response 中 `completion_tokens_details.reasoning_tokens=**7497**`、completion=11579 —— 证明 **chat/completions 端点对 M3 默认开 thinking**
+- 用户观察：Anthropic / Response 端点对 M3 默认**关闭** thinking —— **同一模型不同端点默认行为不同**
+- **根因**：M3 的 chat/completions 端点（项目当前默认 base_url）默认开 thinking，对 30K 复杂 prompt 触发 7497 tokens reasoning 链 → 撞 `AsyncOpenAI` HTTP/2 长连接的连接级超时边界（`api.timeout+30=230s` 兜不住）。`thinking_mode={}`（空 dict）= 走端点默认 = 开 thinking，**不是关闭** —— 旧 §10.18 这里写错了，已纠正
+- **缓解**（按代价从小到大）：
+  1. 临时改 `api.thinking_mode = {"thinking":{"type":"disabled"}}`（项目里 mimo/GLM/M3 的标准关闭语法，llm_client.py 已有路径）—— 一次过，无需换模型
+  2. 临时切 `api.model` 到 `MiniMax-M2.7`（无 thinking，秒回，但见 10.8：50-110K 大 prompt 慢）
+  3. 切 Anthropic / Response 端点（默认关 thinking，但需确认 base_url 协议兼容）
+- **未来加固方向**（未做）：①在 SettingsPage 给 `api.thinking_mode` 加下拉/显式选项（当前是 JSON 自由字段，新手易留 `{}`），并显示当前"开启/关闭"推断状态；②补一个 `/api/analysis/probe_thinking` 自检端点（发 1-token 请求读 reasoning_tokens 字段，零成本探针）
+- **关联**：10.8（M2.7 大 prompt 慢）—— 仍有效，仅适用于 M2.7 模型本身；M3 + chat/completions 的卡顿是**端点默认行为**而非模型本身问题
+- **教训**：未来调 M3 卡死问题，先看 `thinking_mode` 是否显式 disable（不要假设 `{}` 是关闭），再排查 prompt/连接问题
+
+### 10.19 2026-08-26 probe_thinking v2（多模式检测）
+- **问题**：v1 `probe_thinking_params` 只看 `message.reasoning_content` 字段，对 M3 / DeepSeek R1 / QwQ / OpenAI o-series / Anthropic 协议全部误判为"默认无思考"——因为这些模型的 thinking 内容不在 `reasoning_content` 字段里
+- **改动**（`backend/core/llm_client.py:probe_thinking_params`）：引入 `_THINKING_DETECTORS`（7 个检测维度，OR 判定）+ 扩展 candidates 4→7 个（新增 `thinking:disabled + reasoning_split` / `chat_template_kwargs:enable_thinking=false` / `reasoning:effort=none`）+ 返回 `detection_breakdown` / `think_tag_chars` / `reasoning_token_count` / `default_detection_breakdown` 字段
+- **前端**（`SettingsPage.vue` + `client.ts:ProbeThinkingResult`）：探测结果区加 `<details>` 折叠面板显示 7 维度分项命中；每个 candidate 行加 think_tag_chars / reasoning_token_count 展示
+- **测试**（`backend/tests/test_anthropic_provider.py`）：5 个新 mock 测试覆盖 think_tags 嵌 content / usage.reasoning_tokens / Anthropic thinking blocks / 全 clean 时各维度 False / 必返回 breakdown 字段
+- **真机验证**（uvicorn 单独跑后端 + 真 M3 API）：
+  - 基线：think_tags=True，think_tag_chars=196 字，M3 即便空 prompt 也开 thinking
+  - `thinking:disabled` 候选：think_tag_chars=0，所有维度 False，worked=True
+  - `enable_thinking:false` 候选：think_tag_chars=296 字，M3 不认此参数，worked=False
+- **收益**：M3 chat/completions 卡死问题（10.18）的诊断链路彻底打通——用户现在能在 UI 上看到"基线检测到 thinking 痕迹" + 7 维度分项详情，直接定位"是否需关 thinking"
+- **回归**：260/261 pytest 通过（1 个 pre-existing 失败：test_json_repair.py 因 json_repair 包未装，与本改动无关）；npm run build 成功（679 modules）
+- **未做**：①探测 prompt 用简单数学题，对 M3 的"按需 thinking"特性有时不触发，复杂 prompt（小说分析）才稳定触发——未来可让探测跑两轮（简单+复杂）取 OR；②SettingsPage 没把 `_THINKING_DETECTORS` 拆到独立 ts 文件共享
 
 ### 10.12 相关文档### 10.12 相关文档
 - Win11 重做计划：`docs/superpowers/plans/2026-08-16-win11-frontend-redesign.md`
