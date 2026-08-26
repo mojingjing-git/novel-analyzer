@@ -10,14 +10,53 @@
     {"type": "block_done",   "payload": {"chapter": 5, "ok": true}}
     {"type": "state_change", "payload": {"state": "running|stopped|done", "detail": "..."}}
     {"type": "token_stats",  "payload": {"category": "chapter", "input_tokens": 100, "output_tokens": 50}}
+    {"type": "token_delta",  "payload": {"context": "analysis", "session_id": "...", "unit_idx": N, "delta": {...}, "timestamp": ...}}
 """
 
 import asyncio
 import logging
 import queue as thread_queue
+import time
 from typing import Any, Dict, Set
 
 logger = logging.getLogger(__name__)
+
+
+class ThrottledBroadcaster:
+    """按 channel key 独立节流（150ms）；适合流式 token 增量广播 + 多 block 并发。
+
+    H16 (2026-08-26) P1-8 修订：
+    - channel_key 三元组 (context, session_id, unit_idx) 独立桶，不合并最新值
+    - 多 block 并发广播不互相覆盖
+
+    设计：emit() 立即调度；同 key 在 MIN_INTERVAL (150ms) 内只发一次；不同 key 独立计时。
+    """
+
+    MIN_INTERVAL = 0.15  # 150ms
+
+    def __init__(self, hub: "ProgressHub"):
+        self._hub = hub
+        self._last_emit: Dict[str, float] = {}
+        self._pending_tasks: Dict[str, asyncio.Task] = {}
+
+    async def emit(self, channel_key: str, message: Dict[str, Any]) -> None:
+        now = asyncio.get_running_loop().time()
+        elapsed = now - self._last_emit.get(channel_key, 0)
+        if elapsed >= self.MIN_INTERVAL:
+            await self._hub.publish(message)
+            self._last_emit[channel_key] = now
+        elif channel_key not in self._pending_tasks:
+            self._pending_tasks[channel_key] = asyncio.create_task(
+                self._delayed_emit(channel_key, message)
+            )
+
+    async def _delayed_emit(self, channel_key: str, message: Dict[str, Any]) -> None:
+        try:
+            await asyncio.sleep(self.MIN_INTERVAL)
+            await self._hub.publish(message)
+            self._last_emit[channel_key] = asyncio.get_running_loop().time()
+        finally:
+            self._pending_tasks.pop(channel_key, None)
 
 
 class ProgressHub:
@@ -27,6 +66,8 @@ class ProgressHub:
         # 每个连接持有一个独立队列，publish 时向所有队列投递
         self._queues: Set[asyncio.Queue] = set()
         self._lock = asyncio.Lock()
+        # H16 (2026-08-26)：流式 token 增量广播节流器
+        self._token_throttler = ThrottledBroadcaster(self)
 
     async def subscribe(self) -> asyncio.Queue:
         """新连接订阅，返回其专属消息队列"""
@@ -79,6 +120,37 @@ class ProgressHub:
 
     async def state_change(self, state: str, detail: str = "") -> None:
         await self.publish({"type": "state_change", "payload": {"state": state, "detail": detail}})
+
+    async def broadcast_token_delta(
+        self,
+        context: str,
+        session_id: str,
+        unit_idx: int,
+        delta: Dict[str, Any],
+    ) -> None:
+        """流式 token 增量广播（H16）：自动节流 5-10/s
+
+        channel_key 三元组 (context, session_id, unit_idx) 独立桶——
+        多 block 并发不互相覆盖；同一 block 的流式 chunk 150ms 内合并。
+
+        Args:
+            context: 'analysis' | 'summary_phase_1' | 'summary_phase_2' | 'summary_phase_3' | 'summary_phase_4'
+            session_id: 书 ID（用于多本书并发隔离）
+            unit_idx: block_idx（分析）或 batch_idx（总结）
+            delta: {output_tokens, rate_tokens_per_sec, elapsed_sec, eta_sec?, ...}
+        """
+        channel_key = f"{context}:{session_id}:{unit_idx}"
+        msg = {
+            "type": "token_delta",
+            "payload": {
+                "context": context,
+                "session_id": session_id,
+                "unit_idx": unit_idx,
+                "delta": delta,
+                "timestamp": time.time(),
+            },
+        }
+        await self._token_throttler.emit(channel_key, msg)
 
 
 # 模块级单例
