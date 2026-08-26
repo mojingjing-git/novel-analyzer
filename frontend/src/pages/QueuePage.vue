@@ -8,6 +8,7 @@ import ProgressBar from '../components/ProgressBar.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import CountUp from '../components/CountUp.vue'
 import RunDashboard, { type DiscoveryItem, type ActiveBlock, type FinishedBlock } from '../components/RunDashboard.vue'
+import { applySummaryProgress } from '../utils/summaryLanes'
 import { api, type AnalysisStatus, type TokenStatsResponse, type SessionTokenStatsResponse } from '../api/client'
 import { useProgressSocket, type ProgressMessage } from '../api/useProgressSocket'
 import { useLogStore } from '../composables/useLogStore'
@@ -168,16 +169,30 @@ function onMessage(msg: ProgressMessage) {
     case 'state_change': scheduleRefresh(refresh); break
     case 'token_stats': scheduleRefresh(refreshTokens); break
     case 'summary_progress': {
+      // 最终总结阶段的进度事件：原版只更新顶部 hint 横幅，但 LaneView 显示的还是
+      // 分析阶段的残留（ch1669-ch1648 之类）。H17 P3 V2 修复（2026-08-26）：把
+      // summary 事件合成为 block_start/block_done 喂给现有 activeBlocks/finishedBlocks，
+      // LaneView 就能用同一组件显示最终总结阶段的 LLM 调用。
+      // 合成逻辑全部抽到 utils/summaryLanes.ts（可独立 vitest）。
       const p = (msg as unknown as { payload?: Record<string, unknown> }).payload || {}
+      const ptype = String(p.type ?? '')
+      const phase = String(p.phase ?? '')
       const phaseLabel: Record<string, string> = {
         batch: '分卷分析+伏笔调和', recheck: '全书伏笔复检',
         style: '写作风格分析', report: '生成全书脉络报告', complete: '已完成',
       }
-      const ph = phaseLabel[String(p.phase ?? '')] || String(p.phase ?? '')
-     	const bd = p.batches_done ?? 0
-      const tb = p.total_batches ?? 0
+      const phLabel = phaseLabel[phase] || phase
+      const bd = Number(p.batches_done ?? 0)
+      const tb = Number(p.total_batches ?? 0)
       const extra = p.message ? `（${String(p.message)}）` : ''
-      showSummaryHint(`最终总结进行中${ph ? '：' + ph : ''} · 卷${bd}/${tb}${extra} — 详见「最终总结」页`)
+      showSummaryHint(`最终总结进行中${phLabel ? '：' + phLabel : ''} · 卷${bd}/${tb}${extra} — 详见「最终总结」页`)
+
+      // 合成 LaneView 兼容的 active/finished 块（phase/batch_done/complete 三种事件类型）
+      const result = applySummaryProgress(p, activeBlocks.value, finishedBlocks.value)
+      if (result.changed) {
+        activeBlocks.value = result.newActive
+        finishedBlocks.value = result.newFinished
+      }
       break
     }
   }
