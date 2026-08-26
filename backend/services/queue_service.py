@@ -52,6 +52,60 @@ def _store_path(p) -> str:
         return Path(p).as_posix()
 
 
+# H17 (2026-08-26) 发现流提取
+# 停用词表：过滤"众人/他们/旁白"等指代词，避免"新人物"列表噪音
+# 上线后从 api_failures / 用户反馈迭代词表；独立常量好改
+_DISCOVERY_STOP_WORDS = frozenset({
+    "众人", "他们", "对方", "旁白", "自己", "他", "她", "它", "我", "你",
+    "我们", "你们", "它们", "她们", "他们俩", "他们三人", "某人", "何人",
+    "此人", "那人", "大家", "无名", "路人", "某人影",
+})
+
+
+def _extract_discovery(result: Optional[dict], seen_characters: set) -> Optional[dict]:
+    """从块结果提取发现流摘要（plan Task 1.2）
+
+    4 类：
+    - core_events 数
+    - 新伏笔（foreshadowing[].clue 截 24 字，最多 5 条）
+    - 新人物（首次登场：seen_characters 集合求差，最多 5 条）
+    - 遗留悬念（cross_block.unresolved_questions 截 24 字，最多 2 条）
+
+    跨块伏笔去重明确不做（plan 决策 5）。
+    续跑后人物"全量首次"是已知限制（plan 标注 Open Question）。
+    """
+    if not isinstance(result, dict):
+        return None
+    core_events = result.get("core_events") or []
+    foreshadowing = result.get("foreshadowing") or []
+    cross_block = result.get("cross_block") or {}
+    unresolved = cross_block.get("unresolved_questions") or []
+
+    # 新人物：core_events[].characters 逗号/顿号分隔 → 拆词 → 过滤停用词/长度 → 已见集合求差
+    new_characters: List[str] = []
+    for ev in core_events:
+        chars_str = ev.get("characters", "")
+        if not chars_str:
+            continue
+        for name in str(chars_str).replace("、", ",").split(","):
+            name = name.strip()
+            if not name or len(name) < 2 or len(name) > 8:
+                continue
+            if name in _DISCOVERY_STOP_WORDS:
+                continue
+            if name in seen_characters:
+                continue
+            new_characters.append(name)
+            seen_characters.add(name)
+
+    return {
+        "events": len(core_events),
+        "foreshadows": [str(f.get("clue", ""))[:24] for f in foreshadowing][:5],
+        "characters": new_characters[:5],
+        "unresolved": [str(q)[:24] for q in unresolved][:2],
+    }
+
+
 def _load_path(s: str) -> Path:
     """读取时：相对路径按 PROJECT_ROOT 还原；绝对路径原样保留
     （兼容旧数据里的 F:/... 等绝对路径）。"""
@@ -435,6 +489,8 @@ class AnalysisService:
         self._token_stats: Dict[str, Dict[str, int]] = {}
         # 每章统计记录 [(chapter, elapsed, input_tokens, output_tokens)]
         self._chapter_stats: List[Dict[str, Any]] = []
+        # H17 (2026-08-26) 发现流：跨块"已见人物"集合（断点续跑后全量"首次"是已知限制）
+        self._seen_characters: set = set()
         self._total_retries = 0
         self._total_failed_tokens = 0
         # EFF-5：KV cache 命中 token 累计（运行中实时读当前 analyzer；结束后用累计值）
@@ -698,7 +754,13 @@ class AnalysisService:
         await hub.state_change("running", f"分析中: {item.name}")
 
         async def on_progress(payload: dict) -> None:
-            """pipeline 进度 → WS 消息（type 对齐旧 Qt 信号）"""
+            """pipeline 进度 → WS 消息（type 对齐旧 Qt 信号）
+
+            H17 (2026-08-26) 改造：
+            - status=start → 转发 block_start（带 range 文本）
+            - block_done 补 range 字段
+            - status=done 且 result 存在 → publish discovery
+            """
             status = payload.get("status", "")
             message = payload.get("message", "")
             if message:
@@ -707,18 +769,40 @@ class AnalysisService:
             if "progress" in payload and "total" in payload:
                 item.completed_chapters = payload["progress"]
                 await hub.progress(payload["progress"], payload["total"])
+
+            # H17: block_start 转发（带章范围文本 message 复用现有"开始分析第X-Y章..."）
+            if status == "start":
+                await hub.publish({
+                    "type": "block_start",
+                    "payload": {
+                        "chapter": payload.get("chapter", 0),  # block_id（块起始章号）
+                        "range": message,
+                        "progress": payload.get("progress", 0),
+                        "total": payload.get("total", 0),
+                        "ts": time.time(),
+                    },
+                })
+
             if status in ("done", "failed"):
                 await hub.publish({
                     "type": "block_done",
                     "payload": {
                         "chapter": payload.get("chapter", 0),
                         "ok": status == "done",
+                        "range": message,  # H17: 失败/完成 message 含章范围
                         "elapsed": payload.get("elapsed"),
                         "tokens": payload.get("tokens"),
                     },
                 })
                 # 记录每章统计（失败块同样计入：重试成本不可因失败而归零）
                 self._record_chapter_stat(payload)
+
+                # H17: discovery 提取（仅成功块，result 是 AnalysisResult dataclass dict）
+                if status == "done":
+                    result = payload.get("result")
+                    discovery = _extract_discovery(result, self._seen_characters)
+                    if discovery:
+                        await hub.publish({"type": "discovery", "payload": discovery})
 
         async def on_token_stats(payload: dict) -> None:
             # 累积分类 token 统计

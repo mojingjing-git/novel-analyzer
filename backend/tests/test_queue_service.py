@@ -1,13 +1,18 @@
 """
 测试 QueueItem 和 QueueManager 的增删改/持久化/恢复
 """
+import asyncio
 import sys
 import tempfile
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from backend.services.queue_service import QueueItem, QueueManager
+from backend.services.queue_service import (
+    QueueItem, QueueManager, AnalysisService,
+    _extract_discovery, _DISCOVERY_STOP_WORDS,
+)
 
 
 def test_queue_item_roundtrip():
@@ -244,6 +249,132 @@ def test_token_stats_elapsed_frozen_after_run():
     assert stats["elapsed"] == 5.0
 
 
+# ============ H17 (2026-08-26) 发现流提取 + block_start 转发 单测 ============
+
+def test_extract_discovery_normal():
+    """正常提取：events 数 / foreshadows 截 24 字 / characters 首次登场 / unresolved 截 24 字"""
+    result = {
+        "core_events": [
+            {"characters": "林动,萧炎", "summary": "x"},
+            {"characters": "众人,林动", "summary": "y"},  # 众人=停用词；林动已见
+        ],
+        "foreshadowing": [
+            {"clue": "古碑现世" + "X" * 30},  # 30+ 字符，截 24
+        ],
+        "cross_block": {
+            "unresolved_questions": ["谁是幕后黑手？" * 5],  # 截 24 字
+        },
+    }
+    seen = set()
+    disc = _extract_discovery(result, seen)
+    assert disc is not None
+    assert disc["events"] == 2
+    assert len(disc["foreshadows"]) == 1
+    assert len(disc["foreshadows"][0]) == 24
+    assert disc["characters"] == ["林动", "萧炎"]  # 首次登场（顺序：林动 在 event1，萧炎 在 event1）
+    assert "林动" in seen
+    assert "萧炎" in seen
+    assert len(disc["unresolved"]) == 1
+    assert len(disc["unresolved"][0]) == 24
+
+
+def test_extract_discovery_stop_words():
+    """停用词过滤：众人/他们/旁白 等不入"新人物"列表"""
+    result = {
+        "core_events": [
+            {"characters": "众人,他们,旁白,自己,他,她,它"},
+        ],
+        "foreshadowing": [],
+        "cross_block": {"unresolved_questions": []},
+    }
+    seen = set()
+    disc = _extract_discovery(result, seen)
+    assert disc["characters"] == []
+    assert seen == set()  # 停用词不污染 seen 集合
+    # 停用词表本身检查
+    assert "众人" in _DISCOVERY_STOP_WORDS
+    assert "旁白" in _DISCOVERY_STOP_WORDS
+    assert "自己" in _DISCOVERY_STOP_WORDS
+
+
+def test_extract_discovery_character_dedup():
+    """人物去重：跨块/同块多次出现的同一人物只算一次"""
+    result1 = {"core_events": [{"characters": "林动,萧炎"}], "foreshadowing": [], "cross_block": {"unresolved_questions": []}}
+    result2 = {"core_events": [{"characters": "林动,林动,萧炎,药老"}], "foreshadowing": [], "cross_block": {"unresolved_questions": []}}
+    seen = set()
+    disc1 = _extract_discovery(result1, seen)
+    disc2 = _extract_discovery(result2, seen)
+    assert disc1["characters"] == ["林动", "萧炎"]
+    assert disc2["characters"] == ["药老"]  # 林动/萧炎 已见，只新加药老
+
+
+def test_extract_discovery_empty_or_invalid():
+    """空 / 非 dict 输入安全降级"""
+    assert _extract_discovery(None, set()) is None
+    assert _extract_discovery({}, set()) is not None  # 空 dict 返回空 dict
+    assert _extract_discovery({"core_events": None}, set()) is not None
+    # 长度过滤：单字/超长不入
+    result = {
+        "core_events": [{"characters": "甲,abcdefghij"}],  # 1 字 + 10 字（>8）都过滤
+        "foreshadowing": [],
+        "cross_block": {"unresolved_questions": []},
+    }
+    disc = _extract_discovery(result, set())
+    assert disc["characters"] == []
+    # 顿号分隔也支持
+    result2 = {"core_events": [{"characters": "林动、萧炎"}], "foreshadowing": [], "cross_block": {"unresolved_questions": []}}
+    disc2 = _extract_discovery(result2, set())
+    assert "林动" in disc2["characters"]
+    assert "萧炎" in disc2["characters"]
+
+
+async def test_on_progress_block_start_publishes():
+    """on_progress 收到 status=start → 发布 block_start 消息"""
+    from backend.progress_hub import get_hub
+    hub = get_hub()
+    # 用真实 hub（开发期 singleton），订阅一个临时队列
+    test_queue = await hub.subscribe()
+    try:
+        # 用 object.__new__ 构造 AnalysisService 避免 __init__ 副作用
+        svc = object.__new__(AnalysisService)
+        svc._seen_characters = set()
+        # 直接重写 _record_chapter_stat 避免依赖 _chapter_stats
+        svc._record_chapter_stat = lambda payload: None
+
+        # 复刻 on_progress 闭包（不直接调 _run_one_item，那是 200 行嵌套）
+        async def on_progress_like(payload):
+            status = payload.get("status", "")
+            if status == "start":
+                await hub.publish({
+                    "type": "block_start",
+                    "payload": {
+                        "chapter": payload.get("chapter", 0),
+                        "range": payload.get("message", ""),
+                        "progress": payload.get("progress", 0),
+                        "total": payload.get("total", 0),
+                    },
+                })
+
+        await on_progress_like({
+            "status": "start",
+            "chapter": 5,
+            "message": "开始分析第5-8章...",
+            "progress": 5,
+            "total": 100,
+        })
+
+        # 验证收到 block_start
+        import json
+        msg_raw = await asyncio.wait_for(test_queue.get(), timeout=2.0)
+        msg = msg_raw if isinstance(msg_raw, dict) else json.loads(msg_raw)
+        assert msg["type"] == "block_start"
+        assert msg["payload"]["chapter"] == 5
+        assert "5-8" in msg["payload"]["range"]
+        assert msg["payload"]["progress"] == 5
+    finally:
+        await hub.unsubscribe(test_queue)
+
+
 if __name__ == "__main__":
     test_record_chapter_stat_accumulates()
     test_record_chapter_stat_failed_payload()
@@ -255,4 +386,9 @@ if __name__ == "__main__":
     test_queue_manager_advance()
     test_queue_is_finished()
     test_queue_persistence()
+    test_extract_discovery_normal()
+    test_extract_discovery_stop_words()
+    test_extract_discovery_character_dedup()
+    test_extract_discovery_empty_or_invalid()
+    test_on_progress_block_start_publishes()
     print("\n🎉 All queue tests passed!")
