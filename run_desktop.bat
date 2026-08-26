@@ -1,5 +1,6 @@
 @echo off
 setlocal EnableExtensions
+chcp 65001 >nul
 echo === Novel Analyzer Desktop Mode ===
 echo.
 
@@ -68,6 +69,11 @@ rem opening the log file. This PowerShell tail window streams run.log live with
 rem the last 50 lines pre-loaded, so startup and analysis are both visible.
 rem Note: do this BEFORE launching desktop.py so the tail window catches the
 rem launching echo and any early python errors.
+rem Closing the GUI: when desktop.py exits we taskkill this window by its title
+rem (set via `start "NovelAnalyzer 运行日志" ...` above) so the user only has to
+rem dismiss one remaining cmd window. PowerShell -NoExit does not change the
+rem host title, so the `start` title persists for the lifetime of the tail
+rem process and the filter is an exact match.
 if not exist "%RUN_LOG%" type nul > "%RUN_LOG%"
 start "NovelAnalyzer 运行日志" powershell -NoExit -ExecutionPolicy Bypass -Command "Get-Content -Path '%RUN_LOG%' -Wait -Encoding UTF8 -Tail 50"
 
@@ -76,6 +82,11 @@ pushd "%LOCAL_APP%"
 set RUN_ERR=%ERRORLEVEL%
 popd
 echo [%date% %time%] === python desktop.py exited with code %RUN_ERR% === >> "%RUN_LOG%"
+
+rem ---- Close the tail window we opened above ----
+rem /T also kills any child powershell job; /F forces immediate termination.
+rem The cmd window itself stays open so the user can read the exit code at pause.
+taskkill /FI "WINDOWTITLE eq NovelAnalyzer 运行日志" /T /F 2>nul
 
 popd
 pause
