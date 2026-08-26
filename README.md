@@ -195,7 +195,7 @@ workspace/
 | 伏笔 | `GET /foreshadow/categories` | 50 类定义+保留集+阈值 |
 | Prompt | `POST /prompt/preview` | 真实 prompt 调试 |
 | 工作区 | `GET /workspace/novels|archives` `POST /workspace/archive|archive_all|delete_archive` | 归档管理 |
-| WS | `/ws/progress` | 实时日志/进度/token 广播（消息类型：log/progress/block_done/state_change/token_stats/summary_progress） |
+| WS | `/ws/progress` | 实时日志/进度/token 广播（消息类型：log/progress/block_done/block_start/state_change/token_stats/summary_progress/discovery） |
 
 ---
 

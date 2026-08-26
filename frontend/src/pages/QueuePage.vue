@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import Icon from '../components/Icon.vue'
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import LogConsole from '../components/LogConsole.vue'
 import ChapterDetailPanel from '../components/ChapterDetailPanel.vue'
 import BookSelector from '../components/BookSelector.vue'
 import ProgressBar from '../components/ProgressBar.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import CountUp from '../components/CountUp.vue'
+import RunDashboard, { type DiscoveryItem, type ActiveBlock, type FinishedBlock } from '../components/RunDashboard.vue'
 import { api, type AnalysisStatus, type TokenStatsResponse, type SessionTokenStatsResponse } from '../api/client'
 import { useProgressSocket, type ProgressMessage } from '../api/useProgressSocket'
 import { useLogStore } from '../composables/useLogStore'
@@ -17,6 +18,14 @@ const tokens = ref<TokenStatsResponse | null>(null)
 const sessionStats = ref<SessionTokenStatsResponse | null>(null)
 const busy = ref(false)
 const error = ref('')
+
+// H17 (2026-08-26) 实时仪表盘：活跃块 / 已完成块 / 发现流
+const activeBlocks = ref<Map<number, ActiveBlock>>(new Map())
+const finishedBlocks = ref<Map<number, FinishedBlock>>(new Map())
+const discoveries = ref<DiscoveryItem[]>([])
+let discoveryId = 1
+// 已完成块保留上限（防止 Map 无限增长）
+const FINISHED_BLOCKS_MAX = 50
 // 章节详情共享的书目与章节号（从独立的工具栏提升到此处，便于两个分栏内容框对齐）
 const detailBookId = ref('')
 const detailChapter = ref(0)
@@ -59,7 +68,57 @@ function onMessage(msg: ProgressMessage) {
         eta: (msg.payload.eta as string) || '',
       }
       break
-    case 'block_done': scheduleRefresh(refresh); break
+    case 'block_start': {
+      // H17: 块开始 → 活跃块登记
+      const p = (msg as unknown as { payload?: Record<string, unknown> }).payload || {}
+      const blockId = Number(p.chapter ?? 0)
+      if (blockId > 0) {
+        activeBlocks.value.set(blockId, {
+          range: String(p.range ?? `block ${blockId}`),
+          startedAt: Number(p.ts ?? Date.now() / 1000) * 1000,
+        })
+        // 触发响应式更新（Map 引用未变需重建）
+        activeBlocks.value = new Map(activeBlocks.value)
+      }
+      break
+    }
+    case 'block_done': {
+      // H17: 块完成 → 移出活跃 + 登记 finished（用于车道占位视觉）
+      const p = (msg as unknown as { payload?: Record<string, unknown> }).payload || {}
+      const blockId = Number(p.chapter ?? 0)
+      if (blockId > 0) {
+        activeBlocks.value.delete(blockId)
+        activeBlocks.value = new Map(activeBlocks.value)
+        finishedBlocks.value.set(blockId, {
+          ok: Boolean(p.ok),
+          range: String(p.range ?? `block ${blockId}`),
+        })
+        // 限制大小：超过 FINISHED_BLOCKS_MAX 删最早的
+        if (finishedBlocks.value.size > FINISHED_BLOCKS_MAX) {
+          const firstKey = finishedBlocks.value.keys().next().value
+          if (firstKey !== undefined) finishedBlocks.value.delete(firstKey)
+        }
+        finishedBlocks.value = new Map(finishedBlocks.value)
+      }
+      scheduleRefresh(refresh)
+      break
+    }
+    case 'discovery': {
+      // H17: 发现流 append-only
+      const p = (msg as unknown as { payload?: Record<string, unknown> }).payload || {}
+      const item: DiscoveryItem = {
+        id: discoveryId++,
+        ts: Date.now(),
+        events: Number(p.events ?? 0),
+        foreshadows: (p.foreshadows as string[]) ?? [],
+        characters: (p.characters as string[]) ?? [],
+        unresolved: (p.unresolved as string[]) ?? [],
+        highlighted: ((p.foreshadows as string[] | undefined)?.length ?? 0) > 0
+                    || ((p.characters as string[] | undefined)?.length ?? 0) > 0,
+      }
+      discoveries.value = [...discoveries.value, item].slice(-200)
+      break
+    }
     case 'state_change': scheduleRefresh(refresh); break
     case 'token_stats': scheduleRefresh(refreshTokens); break
     case 'summary_progress': {
@@ -188,6 +247,21 @@ const currentBlockSize = computed(() => {
   const runningItem = status.value.items.find((i) => i.status === 'running') || status.value.items[0]
   return runningItem?.block_size || 1
 })
+
+// H17 (2026-08-26) 左面板 tab 切换：运行中默认概览，否则默认详情；用户手动切换后记忆
+const currentTab = ref<'overview' | 'detail'>('detail')
+const userSwitchedTab = ref(false)
+const isRunning = computed(() => Boolean(status.value?.running))
+watch([isRunning, userSwitchedTab], ([run, switched]) => {
+  // 仅在用户没手动切过时自动切默认
+  if (!switched) {
+    currentTab.value = run ? 'overview' : 'detail'
+  }
+})
+function switchTab(tab: 'overview' | 'detail') {
+  currentTab.value = tab
+  userSwitchedTab.value = true
+}
 
 // 设置项 tooltip 字典：只覆盖"非一眼能看出"的字段；状态/操作按钮/进度文字不加
 const tooltips: Record<string, string> = {
@@ -343,14 +417,34 @@ onUnmounted(() => {
     </div>
 
     <div class="split-grid">
-      <!-- 左栏：章节选择（与详情同宽）+ 详情液态玻璃框 -->
+      <!-- 左栏：tab 切换（运行概览 | 章节详情） -->
       <div class="split-col">
         <div class="col-head">
           <div class="head-main">
-            <span class="col-title">章节详情</span>
-            <span class="col-sub2">{{ detailChapter > 0 ? `正在查看 第 ${detailChapter} 章` : '自动显示最新章节' }}</span>
+            <div class="left-tabs" role="tablist">
+              <button
+                :class="['left-tab', currentTab === 'overview' ? 'left-tab-active' : '']"
+                @click="switchTab('overview')"
+                role="tab"
+                type="button"
+              >运行概览</button>
+              <button
+                :class="['left-tab', currentTab === 'detail' ? 'left-tab-active' : '']"
+                @click="switchTab('detail')"
+                role="tab"
+                type="button"
+              >章节详情</button>
+            </div>
+            <span class="col-sub2">
+              <template v-if="currentTab === 'overview'">
+                {{ isRunning ? `运行中 · 车道 ${activeBlocks.size}` : '空闲' }}
+              </template>
+              <template v-else>
+                {{ detailChapter > 0 ? `正在查看 第 ${detailChapter} 章` : '自动显示最新章节' }}
+              </template>
+            </span>
           </div>
-          <div class="cd-controls">
+          <div class="cd-controls" v-if="currentTab === 'detail'">
             <BookSelector v-model="detailBookId" class="cd-book" />
             <input
               v-model.number="detailChapter"
@@ -362,7 +456,23 @@ onUnmounted(() => {
             />
           </div>
         </div>
-        <ChapterDetailPanel :book-id="detailBookId" v-model:chapter="detailChapter" class="split-detail" />
+        <RunDashboard
+          v-if="currentTab === 'overview'"
+          :running="isRunning"
+          :concurrency="currentBlockSize"
+          :progress="progress"
+          :session-tokens="sessionTotal"
+          :active-blocks="activeBlocks"
+          :finished-blocks="finishedBlocks"
+          :discoveries="discoveries"
+          class="split-detail"
+        />
+        <ChapterDetailPanel
+          v-else
+          :book-id="detailBookId"
+          v-model:chapter="detailChapter"
+          class="split-detail"
+        />
       </div>
 
       <!-- 右栏：简化日志（过滤 debug），撑满整列（腾出的空间由其填补） -->
@@ -448,6 +558,32 @@ onUnmounted(() => {
 .total-item b {
   color: var(--win-text-primary);
   font-weight: 500;
+}
+
+/* H17 (2026-08-26) 左面板 tab 切换（运行概览 | 章节详情） */
+.left-tabs {
+  display: flex;
+  gap: 4px;
+}
+.left-tab {
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--win-text-secondary);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.left-tab:hover {
+  background: var(--win-control-hover, rgba(255,255,255,0.04));
+  color: var(--win-text-primary);
+}
+.left-tab.left-tab-active {
+  color: var(--win-accent, #4f46e5);
+  background: rgba(79, 70, 229, 0.10);
+  border-color: rgba(79, 70, 229, 0.25);
 }
 
 /* 章节选择控件：位于左栏标题条内，与详情框同宽 */

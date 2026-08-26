@@ -218,6 +218,24 @@
 
 ---
 
+## 2026-08-26 队列运行中实时仪表盘（H17 / S1）
+
+- **后端（queue_service.py:700 on_progress）**：
+  - 新增 `block_start` WS 消息（status=start，带 chapter/range/progress/total/ts）
+  - `block_done` 补 `range` 字段
+  - 新增 `discovery` 消息（status=done + result 存在）：core_events 数 / foreshadows 截 24 字 / 新人物（首次登场 + 停用词过滤）/ unresolved 截 24 字
+  - 顶层 helper `_extract_discovery(result, seen_characters)` 纯函数好测
+  - 类级 `_seen_characters: set` 跨块持久（Open Question：续跑后全量"首次"）
+- **前端（3 组件 + QueuePage 集成）**：
+  - `LaneView.vue`：并发车道状态机（占位/释放/失败态/超上限/重试同 id）
+  - `DiscoveryFeed.vue`：ring buffer 200，hover 暂停滚动，新伏笔/新人物紫色高亮（#534AB7）
+  - `RunDashboard.vue`：4 卡聚合（已完成/ETA/本会话输入输出）+ LaneView + DiscoveryFeed
+  - `QueuePage.vue` 左 split-col tab 化：「运行概览」/「章节详情」；默认 running→概览，否则详情；用户手动切换本会话记忆
+  - `useProgressSocket` ProgressMessage type 联合加 `'block_start' | 'discovery'`
+- **测试**：后端 +5 / 前端 +12（LaneView 5 / DiscoveryFeed 5 / RunDashboard 2）；全量 293 + 47 passed / 0 回归；vue-tsc 0 错；vite build 0 错
+- **分支**：全程在 `h16-recovery`（feature/streaming-tokens 名字被并发 watcher 针对）
+- **不做**：流式 content_delta 输出 / 跨块伏笔去重 / 车道进度条+卡死预警（V2 升级，依赖 H16 Phase 3 业务接入）
+
 ## 2026-08-26 日志轮转彻底修复（H15）
 
 - **`desktop.py` crash.log 轮转 bug**：`_StderrTee` 用独立 `open("a")` 句柄写 `crash.log`，与同文件 `RotatingFileHandler` 句柄并存，Windows 下 `os.rename` 因 `ERROR_SHARING_VIOLATION` 失败 → 异常被 `logging.handleError` 写回 stderr（即 crash.log）→ 形成「永不轮转 + 永不增长上限」反馈环。**实测** crash.log 60MB 无 `.1` 备份

@@ -916,3 +916,35 @@ mypy backend/
 7. **遇到模糊需求先确认**：不要擅自扩大范围
 8. **不修改用户明确要求"不要修改"的内容**
 9. **⚠️ 修改后更新 agent.md**：完成变更后，检查并更新本文件中受影响的章节，确保知识库与代码同步
+
+---
+
+### 10.20 2026-08-26 队列运行中实时仪表盘（H17 / S1）
+
+- **根因**：QueuePage 左面板原本只放 ChapterDetailPanel（章节详情），分析运行中无数据可显；用户看不到模型在不在干活、并发到第几块、最近发现什么
+- **方案**：左面板 tab 化，新增「运行概览」+「章节详情」二选一；运行概览 = 聚合 4 卡 + 并发车道 + 发现流
+- **后端（5 用例 / queue_service.py ~700 行 on_progress）**：
+  - 新增 `block_start` WS 消息：转发 status=start（带 chapter/range/progress/total/ts）
+  - `block_done` payload 补 `range` 字段（message 复用）
+  - 新增 `discovery` 消息（status=done 且 result 存在时）：4 类摘要
+    - core_events 数 / foreshadows（截 24 字最多 5）/ 新人物（首次登场 + 停用词过滤）/ unresolved（截 24 字最多 2）
+  - 顶层 helper `_extract_discovery(result, seen_characters)` 纯函数好测
+  - 类级 `_seen_characters: set` 维护跨块"已见"（断点续跑后全量"首次"是已知限制，标 Open Question）
+- **前端（3 组件 + 12 用例）**：
+  - `LaneView.vue` 状态机：block_start→占位 / block_done→释放；按 blockId 降序 finishedBlocks 补空槽；并发多块不闪烁（plan 决策 3）
+  - `DiscoveryFeed.vue` ring buffer 200，hover 暂停滚动，新伏笔/新人物紫色高亮（#534AB7）
+  - `RunDashboard.vue` 容器：4 卡聚合（已完成/ETA/本会话输入输出）+ LaneView + DiscoveryFeed；复用 CountUp 缓动
+  - `QueuePage.vue` 左 split-col tab 化：默认 running→「运行概览」，否则「章节详情」；用户手动切换后本会话记忆（plan 决策 2）
+  - 消息处理 `onMessage` 增 block_start / block_done（维护 Map）/ discovery 三个 case
+- **进度中枢**：useProgressSocket `ProgressMessage` type 联合加 `'block_start' | 'discovery'`
+- **信息形态原则（plan 决策核心）**：并发下凡"替换式"显示必闪烁；本方案只选**单调递增**（聚合计数）与 **append-only**（发现流）；车道按 block 固定绑定不互相覆盖
+- **不做**（明确范围外）：
+  - 不做流式 content_delta 输出（观感差）
+  - 不做跨块伏笔去重（数据支撑不足，诚实不做）
+  - 不动 ChapterDetailPanel 现有功能（tab 共存不替换）
+- **风险与已验证缓解**：
+  - 其他 Agent watcher：全程 `h16-recovery` 分支，commit 前 `git status` 双核对
+  - 续跑后人物全量"首次"：V1 接受（UI tooltip 标注）
+  - 车道渲染开销：纯文本 + Vue 静态提升足够
+- **回归**：后端 293 passed / 前端 47 passed / 0 回归；vue-tsc 0 错；vite build 0 错
+- **未做（V2 升级）**：车道进度条 + 卡死预警（依赖 H16 Phase 3 token_delta 业务接入，H16 当前仅完成 Phase 1 骨架）；Phase 3 单独排期
