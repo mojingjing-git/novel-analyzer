@@ -59,6 +59,18 @@ copy /Y config.json "%LOCAL_APP%\config.json" >> "%RUN_LOG%"
 rem ---- Launch from local copy; data/logs via NOVEL_ROOT point back to share ----
 echo [%date% %time%] === launching: %PYTHON% "%LOCAL_APP%\desktop.py"  (NOVEL_ROOT=%SHARE_ROOT%) === >> "%RUN_LOG%"
 set "NOVEL_ROOT=%SHARE_ROOT%"
+
+rem ---- Open a separate window showing the complete log in real-time ----
+rem Reason: without this, all python output is redirected to %RUN_LOG% (which can
+rem grow to 30+ MB during long analyses) and the original cmd window sits idle
+rem showing only echo + pause. User can't see what's happening without manually
+rem opening the log file. This PowerShell tail window streams run.log live with
+rem the last 50 lines pre-loaded, so startup and analysis are both visible.
+rem Note: do this BEFORE launching desktop.py so the tail window catches the
+rem launching echo and any early python errors.
+if not exist "%RUN_LOG%" type nul > "%RUN_LOG%"
+start "NovelAnalyzer 运行日志" powershell -NoExit -ExecutionPolicy Bypass -Command "Get-Content -Path '%RUN_LOG%' -Wait -Encoding UTF8 -Tail 50"
+
 pushd "%LOCAL_APP%"
 %PYTHON% desktop.py >> "%RUN_LOG%" 2>&1
 set RUN_ERR=%ERRORLEVEL%
