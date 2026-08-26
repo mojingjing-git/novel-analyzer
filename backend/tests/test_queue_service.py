@@ -414,6 +414,48 @@ def test_start_resets_seen_characters():
     print("✅ test_start_resets_seen_characters passed")
 
 
+def test_status_exposes_concurrency_and_block_size():
+    """H17 P3 V2 修复（2026-08-26）：status() 暴露 concurrency / block_size
+
+    修复前 LaneView 接收 currentBlockSize（每块几章）当作 concurrency（并发块数），
+    UI 显示「N/4」实际是「N/每块4章」——配置 concurrency=8 时后端 8 路并发但 UI 标 4。
+    """
+    svc = object.__new__(AnalysisService)
+    # 模拟 config_manager.config.analysis.concurrency=8 / block_size=4
+    analysis_cfg = MagicMock()
+    analysis_cfg.concurrency = 8
+    analysis_cfg.block_size = 4
+    cm_cfg = MagicMock()
+    cm_cfg.analysis = analysis_cfg
+    cm = MagicMock()
+    cm.config = cm_cfg
+    svc.config_manager = cm
+    # 模拟 queue / is_running（status() 内部访问）
+    svc.queue = MagicMock()
+    svc.queue.get_progress.return_value = {}
+    svc.queue.items = []
+    svc._runner_task = None  # is_running → False
+
+    status = svc.status()
+    assert status["concurrency"] == 8, f"应暴露真实并发数 8，实际 {status.get('concurrency')}"
+    assert status["block_size"] == 4, f"应暴露每块章数 4，实际 {status.get('block_size')}"
+    # 健壮性：未配置时返回 None（前端用 1 作 fallback，不假装是 1）
+    svc2 = object.__new__(AnalysisService)
+    # MagicMock 替代 None，绕过 status() 内部访问 workspace_path（也走 config_manager）
+    svc2.config_manager = MagicMock()
+    svc2.config_manager.config = MagicMock()
+    svc2.config_manager.config.analysis = None  # analysis 缺失 → concurrency 兜底 None
+    svc2.config_manager.config.workspace_dir = "F:/test"  # workspace_path 走它
+    svc2.queue = MagicMock()
+    svc2.queue.get_progress.return_value = {}
+    svc2.queue.items = []
+    svc2._runner_task = None
+    status2 = svc2.status()
+    assert status2["concurrency"] is None
+    assert status2["block_size"] is None
+    print("✅ test_status_exposes_concurrency_and_block_size passed")
+
+
 if __name__ == "__main__":
     test_record_chapter_stat_accumulates()
     test_record_chapter_stat_failed_payload()
@@ -431,4 +473,5 @@ if __name__ == "__main__":
     test_extract_discovery_empty_or_invalid()
     test_on_progress_block_start_publishes()
     test_start_resets_seen_characters()
+    test_status_exposes_concurrency_and_block_size()
     print("\n🎉 All queue tests passed!")

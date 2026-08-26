@@ -27,6 +27,11 @@ export interface AnalysisStatus {
   queue: QueueProgress
   items: QueueItemDto[]
   workspace_dir: string
+  // H17 P3 V2 修复（2026-08-26）：后端 status 接口加 concurrency / block_size
+  // 修复前 LaneView 用 block_size（每块几章）当并发数显示「N/4」错误
+  // 实际配置 concurrency=8 时后端是 8 路并发，UI 标 4
+  concurrency?: number
+  block_size?: number
 }
 
 export interface TokenCategory {

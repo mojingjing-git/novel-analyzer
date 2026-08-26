@@ -294,6 +294,11 @@ const currentBlockSize = computed(() => {
   return runningItem?.block_size || 1
 })
 
+// H17 P3 V2 修复（2026-08-26）：并发块数（不是每块几章！）
+// 修复前 RunDashboard 接收的是 currentBlockSize，导致「并发车道 N/4」实际是 N/每块4章
+// 配置 concurrency=8 时后端 8 路并发但 UI 标 4。后端 status 已加 concurrency 字段
+const currentConcurrency = computed(() => status.value?.concurrency || 1)
+
 // H17 (2026-08-26) 左面板 tab：默认「运行概览」（H17 Phase 3 决策：分析器进度信息优先）
 // 用户手动切换后本会话记忆（与 plan 决策 2 一致）
 const currentTab = ref<'overview' | 'detail'>('overview')
@@ -505,7 +510,7 @@ onUnmounted(() => {
         <RunDashboard
           v-if="currentTab === 'overview'"
           :running="Boolean(status?.running)"
-          :concurrency="currentBlockSize"
+          :concurrency="currentConcurrency"
           :progress="progress"
           :session-tokens="sessionTotal"
           :active-blocks="activeBlocks"
@@ -666,13 +671,16 @@ onUnmounted(() => {
   flex-direction: column;
   min-height: 0;
 }
-/* 两个分栏使用同等高度的标题条，保证下方内容框上沿、下沿都对齐 */
+/* 两个分栏使用同等高度的标题条，保证下方内容框上沿、下沿都对齐
+   H17 P3 V2 修复（2026-08-26）：min-height 38 → 56，容纳 2 行内容（标题 14px + 副标 11px + 行距）
+   修复前左栏 2 行（tabs + 副标）撑到 ~46px，右栏 1 行 + 按钮 ~32px，
+   align-items:center 居中后导致左右两卡顶/底沿错位 ~5-8px */
 .col-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  min-height: 38px;
+  min-height: 56px;
   margin-bottom: 10px;
 }
 .head-main {

@@ -508,11 +508,18 @@ class AnalysisService:
         return self._runner_task is not None and not self._runner_task.done()
 
     def status(self) -> Dict[str, Any]:
+        # H17 P3 V2 修复（2026-08-26）：暴露 concurrency / block_size，
+        # 前端 LaneView 之前误用 block_size（每块几章）当作 concurrency（并发块数），
+        # 导致「并发车道 N/4」实际是「N/每块4章」——配置 concurrency=8 时实际 8 路并发但 UI 标 4。
+        cm = getattr(self, "config_manager", None)
+        analysis_cfg = getattr(getattr(cm, "config", None), "analysis", None) if cm else None
         return {
             "running": self.is_running,
             "queue": self.queue.get_progress(),
             "items": [item.to_dict() for item in self.queue.items],
             "workspace_dir": self.workspace_path.as_posix(),
+            "concurrency": getattr(analysis_cfg, "concurrency", None) if analysis_cfg else None,
+            "block_size": getattr(analysis_cfg, "block_size", None) if analysis_cfg else None,
         }
 
     def token_stats(self) -> Dict[str, Any]:
