@@ -10,11 +10,13 @@ import time
 import json
 import re
 import asyncio
+import inspect
 import logging
 import threading
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Tuple, Optional, List, Callable
+from typing import Tuple, Optional, List, Callable, Awaitable
 from openai import AsyncOpenAI, APITimeoutError, APIError, AuthenticationError
 import anthropic
 from anthropic import AsyncAnthropic
@@ -25,6 +27,46 @@ from ..core.moderation import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# H16 (2026-08-26)：流式 LLM 调用数据结构
+@dataclass
+class StreamChunk:
+    """流式响应的一个 chunk
+
+    字段说明：
+    - type: "content" | "reasoning" | "usage" | "error"
+    - text: type=content 时的增量文本
+    - reasoning_text: type=reasoning 时的思考链增量（M2.7 等思考型模型）
+    - estimated_total_tokens: 累计输出 token 估算（字符数 / 4，含 reasoning）
+      **重要**：在 chat_stream_with_retry 内部由调用方维护累计值，传入时
+      已是累计值，前端直接用作动画的 target_value
+    - usage_*: type=usage 时的真实 usage（OpenAI 最后一个 chunk、Anthropic 每 chunk）
+    - is_final: 是否最后一个 chunk（用于结束标志）
+    - error: type=error 时的错误消息
+    """
+    type: str = ""
+    text: str = ""
+    reasoning_text: str = ""
+    estimated_total_tokens: int = 0
+    usage_prompt_tokens: int = 0
+    usage_completion_tokens: int = 0
+    usage_cached_tokens: int = 0
+    is_final: bool = False
+    error: str = ""
+
+
+@dataclass
+class StreamResult:
+    """流式调用结束后的最终结果（与 chat() 返回值字段对齐）"""
+    success: bool
+    content: str
+    error: str
+    prompt_tokens: int
+    completion_tokens: int
+    cached_tokens: int
+    reasoning_chars: int  # 思考链总字符数（被剥离的）
+    call_stats: dict = field(default_factory=dict)  # {"attempts": N, "failed_tokens": M}
 
 
 def detect_provider(config: APIConfig) -> str:
@@ -733,6 +775,516 @@ class LLMClient:
                 messages_length=len(str(messages))
             )
             return False, "", error_msg, (0, 0)
+
+    async def chat_stream(
+        self,
+        messages: List[dict],
+        temperature: float = 0.1,
+        max_tokens: Optional[int] = None,
+    ) -> "AsyncIterator[StreamChunk]":
+        """流式 LLM 调用：每收到一个 chunk 立即 yield（不阻塞等完整响应）。
+
+        与 chat() 区别：
+        - chat() 等完整响应，10.5 分钟硬超时才能发现连接被切；chat_stream 边生成边吐
+        - usage 字段：OpenAI 在最后一个 chunk（choices 为空），Anthropic 在 message_delta 事件
+        - stop 语义：每 chunk 检查 self._stop_requested，true 时调 stream.close() 优雅退出
+        - stream_options 降级：部分聚合网关不认 include_usage 会 400，降级为不带该参数
+
+        调用方责任（chat_stream_with_retry 已封装）：
+        - 累积 full_content / full_reasoning
+        - 维护 accumulated_output_tokens
+        - 调 self._strip_thinking 剥离 <think> 标签
+        - 调 validate_response 验证（兼容同步/异步）
+        """
+        if max_tokens is None:
+            max_tokens = self.config.max_tokens
+
+        extra_kwargs = {}
+        if (self.provider != "anthropic"
+                and self.config.json_mode != "default"
+                and "localhost" not in self.config.base_url
+                and "127.0.0.1" not in self.config.base_url):
+            extra_kwargs["response_format"] = {"type": "json_object"}
+
+        if self.config.thinking_mode and self.provider != "anthropic":
+            extra_kwargs["extra_body"] = dict(self.config.thinking_mode)
+
+        try:
+            if self.provider == "anthropic":
+                # Anthropic 流式：async with + current_message_snapshot 收尾
+                async with self.anthropic.messages.stream(
+                    **self._build_anthropic_payload(messages, temperature, max_tokens)
+                ) as stream:
+                    async for event in stream:
+                        if self._stop_requested:
+                            await stream.close()
+                            return
+                        chunk = self._parse_anthropic_stream_event(event)
+                        if chunk:
+                            yield chunk
+                    # 收尾：补一个 usage chunk
+                    snap = stream.current_message_snapshot
+                    if snap and getattr(snap, "usage", None):
+                        u = snap.usage
+                        yield StreamChunk(
+                            type="usage",
+                            usage_prompt_tokens=getattr(u, "input_tokens", 0) or 0,
+                            usage_completion_tokens=getattr(u, "output_tokens", 0) or 0,
+                            usage_cached_tokens=getattr(u, "cache_read_input_tokens", 0) or 0,
+                            is_final=True,
+                        )
+            else:
+                # OpenAI 流式：先尝试带 stream_options，不支持则降级
+                stream = None
+                try:
+                    stream = await self.client.chat.completions.create(
+                        model=self.config.model,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        timeout=self.config.timeout,
+                        stream=True,
+                        stream_options={"include_usage": True},
+                        **extra_kwargs,
+                    )
+                except (TypeError, APIError) as e:
+                    if "stream_options" in str(e):
+                        logger.warning(f"该端点不支持 stream_options，降级不带该参数: {e}")
+                        stream = await self.client.chat.completions.create(
+                            model=self.config.model,
+                            messages=messages,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                            timeout=self.config.timeout,
+                            stream=True,
+                            **extra_kwargs,
+                        )
+                    else:
+                        raise
+
+                async for event in stream:
+                    if self._stop_requested:
+                        if hasattr(stream, "close"):
+                            await stream.close()
+                        return
+                    chunk = self._parse_openai_stream_event(event)
+                    if chunk:
+                        yield chunk
+        except asyncio.CancelledError:
+            # 调用方主动 cancel
+            raise
+        except Exception as e:
+            # 整个调用级别错误（连接失败、API 4xx/5xx 等）作为 error chunk yield
+            error_msg = f"流式调用异常: {type(e).__name__}: {str(e)}"
+            logger.warning(error_msg)
+            yield StreamChunk(type="error", error=error_msg)
+
+    def _parse_openai_stream_event(self, event) -> Optional[StreamChunk]:
+        """OpenAI 流式事件 → StreamChunk
+
+        事件类型：
+        - 有 choices[0].delta.content：内容 chunk
+        - 有 choices[0].delta.reasoning_content：思考链 chunk（M2.7 等）
+        - 无 choices 但有 usage：usage-only chunk（最后一个，stream_options=include_usage 才有）
+        """
+        if not getattr(event, "choices", None):
+            if getattr(event, "usage", None):
+                u = event.usage
+                cached = 0
+                ptd = getattr(u, "prompt_tokens_details", None)
+                if ptd is not None:
+                    cached = getattr(ptd, "cached_tokens", 0) or 0
+                cached = cached or getattr(u, "prompt_cache_hit_tokens", 0) or 0
+                return StreamChunk(
+                    type="usage",
+                    usage_prompt_tokens=u.prompt_tokens or 0,
+                    usage_completion_tokens=u.completion_tokens or 0,
+                    usage_cached_tokens=cached,
+                    is_final=True,
+                )
+            return None
+
+        choice = event.choices[0]
+        delta = getattr(choice, "delta", None)
+        if not delta:
+            return None
+
+        text = getattr(delta, "content", "") or ""
+        reasoning = getattr(delta, "reasoning_content", "") or ""
+
+        if reasoning:
+            return StreamChunk(type="reasoning", reasoning_text=reasoning)
+        if text:
+            return StreamChunk(type="content", text=text)
+        return None
+
+    def _parse_anthropic_stream_event(self, event) -> Optional[StreamChunk]:
+        """Anthropic 流式事件 → StreamChunk
+
+        事件类型：
+        - content_block_delta(type=text)：内容 chunk
+        - content_block_delta(type=thinking)：思考链 chunk
+        - message_delta.usage：增量 usage（每 chunk 都有）
+        """
+        etype = getattr(event, "type", "")
+        if etype == "content_block_delta":
+            delta = getattr(event, "delta", None)
+            if not delta:
+                return None
+            dtype = getattr(delta, "type", "")
+            if dtype == "text":
+                return StreamChunk(type="content", text=getattr(delta, "text", "") or "")
+            if dtype == "thinking":
+                return StreamChunk(type="reasoning", reasoning_text=getattr(delta, "thinking", "") or "")
+        elif etype == "message_delta":
+            usage = getattr(event, "usage", None)
+            if usage:
+                return StreamChunk(
+                    type="usage",
+                    usage_completion_tokens=getattr(usage, "output_tokens", 0) or 0,
+                    is_final=False,
+                )
+        return None
+
+    @staticmethod
+    async def _call_validate_response(validate_fn, content: str, timeout: float = 30.0):
+        """兼容同步/异步 validate_response；30s 超时（与 chat_with_retry 风格一致）
+
+        H16 (2026-08-26)：现有 validator 都是同步函数（llm_client.py:881 签名），
+        老代码用 asyncio.to_thread 包裹（925/1059 行）。新流式版保持同步/异步双兼容，
+        避免破坏现有 4 个 validator。
+        """
+        try:
+            if inspect.iscoroutinefunction(validate_fn):
+                return await asyncio.wait_for(validate_fn(content), timeout=timeout)
+            return await asyncio.wait_for(
+                asyncio.to_thread(validate_fn, content),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            return False, "验证超时（30秒）"
+        except Exception as e:
+            return False, f"验证异常: {e}"
+
+    async def chat_stream_with_retry(
+        self,
+        messages: List[dict],
+        max_tokens: Optional[int] = None,
+        validate_response: Optional[Callable] = None,
+        retry_messages_builder: Optional[Callable] = None,
+        on_progress: Optional[Callable[[StreamChunk], Awaitable[None]]] = None,
+    ) -> StreamResult:
+        """流式重试包装：完整对齐 chat_with_retry 行为契约
+        （温度退火 → 指数退避；429 Retry-After；审核短路；认证即停；FailureLogger；统计累加）。
+
+        H16 (2026-08-26) 关键设计：
+        - 同步/异步 validator 双兼容（_call_validate_response 包裹）
+        - stop 语义：每 attempt 顶部检查 _stop_requested；chunk 循环内 chat_stream 自身也检查
+        - 累计值：accumulated_output_tokens + started_at，on_progress 传累计值
+        - 空响应按失败处理（moderation 嗅探）
+        - partial content 保留：流式中断时 final_content 留作 9 级 JSON 容错链尝试
+        """
+        last_error = ""  # 关键：每次调用重置为 ""，不是 "未知错误"
+        total_attempts = 0
+        moderation_hits = 0
+        call_failed_tokens = 0
+        messages_length = len(str(messages))
+        last_consumed_tokens: Tuple[int, int] = (0, 0)
+        accumulated_output_tokens = 0  # P0-4 累计值
+        started_at = time.monotonic()
+        final_content = ""  # 保留 partial content
+        final_reasoning = ""
+        last_usage: Optional[StreamChunk] = None
+
+        logger.info("=" * 60)
+        logger.info(f"开始流式API调用 - Model: {self.config.model}")
+        logger.info(f"配置: temperature={self.config.temperature}, temperature_step={self.config.temperature_step}, "
+                    f"temperature_max_retries={self.config.temperature_max_retries}, "
+                    f"backoff_max_retries={self.config.backoff_max_retries}")
+        if validate_response:
+            logger.info(f"启用响应验证回调")
+        logger.info("=" * 60)
+
+        def _build_result(success, content, error, prompt_tok, comp_tok,
+                          cached_tokens=0, reasoning_chars=0):
+            return StreamResult(
+                success=success, content=content, error=error,
+                prompt_tokens=prompt_tok, completion_tokens=comp_tok,
+                cached_tokens=cached_tokens, reasoning_chars=reasoning_chars,
+                call_stats={"attempts": total_attempts, "failed_tokens": call_failed_tokens},
+            )
+
+        def _record_validation_failure(validation_error, temp):
+            nonlocal last_error, call_failed_tokens
+            last_error = f"响应验证失败: {validation_error}"
+            if last_consumed_tokens[0] > 0 or last_consumed_tokens[1] > 0:
+                with self._stats_lock:
+                    self._failed_tokens += last_consumed_tokens[0] + last_consumed_tokens[1]
+                call_failed_tokens += last_consumed_tokens[0] + last_consumed_tokens[1]
+            _get_failure_logger().record_failure(
+                attempt_num=total_attempts,
+                max_retries=self.config.temperature_max_retries + self.config.backoff_max_retries,
+                temperature=temp,
+                error_type="ValidationFailed",
+                error_message=last_error,
+                wait_time=0,
+                messages_length=messages_length,
+            )
+
+        async def _run_stream_attempt(temp):
+            """单次流式 attempt：返回 (status, content, reasoning, usage_chunk, err)
+            status ∈ {"ok", "error", "cancelled"}"""
+            nonlocal accumulated_output_tokens, last_consumed_tokens
+            nonlocal final_content, final_reasoning, last_usage
+            attempt_content = ""
+            attempt_reasoning = ""
+            attempt_error = ""
+            try:
+                async for chunk in self.chat_stream(messages, temperature=temp, max_tokens=max_tokens):
+                    if chunk.type == "content":
+                        attempt_content += chunk.text
+                        accumulated_output_tokens += len(chunk.text) // 4
+                    elif chunk.type == "reasoning":
+                        attempt_reasoning += chunk.reasoning_text
+                    elif chunk.type == "usage":
+                        last_usage = chunk
+                        last_consumed_tokens = (chunk.usage_prompt_tokens, chunk.usage_completion_tokens)
+                    elif chunk.type == "error":
+                        attempt_error = chunk.error
+                        break
+                    # P0-4: on_progress 传累计值
+                    if on_progress:
+                        await on_progress(StreamChunk(
+                            type="content",
+                            estimated_total_tokens=accumulated_output_tokens,
+                            text=chunk.text if chunk.type == "content" else "",
+                        ))
+            except asyncio.CancelledError:
+                return ("cancelled", attempt_content, attempt_reasoning, last_usage, "用户请求停止")
+
+            if attempt_error:
+                return ("error", attempt_content, attempt_reasoning, last_usage, attempt_error)
+            return ("ok", attempt_content, attempt_reasoning, last_usage, "")
+
+        # === 温度退火重试层 ===
+        for attempt in range(self.config.temperature_max_retries):
+            if self._stop_requested:
+                logger.info("⛔ 检测到停止请求，终止重试链")
+                return _build_result(False, final_content, "用户请求停止",
+                                     last_consumed_tokens[0], last_consumed_tokens[1])
+            total_attempts += 1
+            with self._stats_lock:
+                self._attempts += 1
+
+            temp = max(0.0, self.config.temperature - attempt * self.config.temperature_step)
+            logger.info(f"\n[温度退火] 尝试 {total_attempts}，temperature={temp} "
+                        f"(第{attempt + 1}/{self.config.temperature_max_retries}次)")
+
+            status, content, reasoning, usage, err = await _run_stream_attempt(temp)
+
+            if status == "cancelled":
+                return _build_result(False, content, err, 0, 0, reasoning_chars=len(reasoning))
+
+            if status == "error":
+                last_error = err
+                logger.warning(f"❌ 尝试失败: {err}")
+                if last_consumed_tokens[0] > 0 or last_consumed_tokens[1] > 0:
+                    with self._stats_lock:
+                        self._failed_tokens += last_consumed_tokens[0] + last_consumed_tokens[1]
+                    call_failed_tokens += last_consumed_tokens[0] + last_consumed_tokens[1]
+
+                if is_moderation_error(err):
+                    if moderation_hits >= 2:
+                        _get_failure_logger().record_failure(
+                            attempt_num=total_attempts,
+                            max_retries=self.config.temperature_max_retries + self.config.backoff_max_retries,
+                            temperature=temp, error_type="ModerationBlocked",
+                            error_message=err, messages_length=messages_length,
+                        )
+                        logger.warning("⛔ 内容审核拦截（连续3次），跳过该章节")
+                        return _build_result(False, final_content, err,
+                                             last_consumed_tokens[0], last_consumed_tokens[1])
+                    moderation_hits += 1
+
+                _get_failure_logger().record_failure(
+                    attempt_num=total_attempts,
+                    max_retries=self.config.temperature_max_retries + self.config.backoff_max_retries,
+                    temperature=temp, error_type="RetryNeeded",
+                    error_message=err, wait_time=0, messages_length=messages_length,
+                )
+
+                if "认证失败" in err or "401" in err:
+                    logger.error("⛔ 认证错误，停止重试")
+                    return _build_result(False, final_content, err,
+                                         last_consumed_tokens[0], last_consumed_tokens[1])
+
+                if attempt < self.config.temperature_max_retries - 1:
+                    if self._is_429(err):
+                        wait_time = min(self._retry_after_seconds(err) or 30 * (attempt + 1), 120)
+                    else:
+                        wait_time = 3 * (attempt + 1)
+                    logger.info(f"⏳ 等待{wait_time}秒后进行下一次温度尝试...")
+                    await self._sleep(wait_time)
+                continue
+
+            # status == "ok"：剥离思考链 + 累计成功 token + 验证
+            stripped = self._strip_thinking(content)
+            if stripped:
+                content = stripped
+
+            if last_consumed_tokens[0] > 0 or last_consumed_tokens[1] > 0:
+                with self._stats_lock:
+                    self._total_tokens += last_consumed_tokens[0] + last_consumed_tokens[1]
+                    if usage:
+                        self._cached_tokens += usage.usage_cached_tokens
+
+            # 空响应检测（moderation 嗅探）— P0-小-2
+            if not content.strip():
+                error_msg = "API返回空内容（可能触发内容过滤）"
+                if usage and (is_moderation_message(str(usage)) or is_moderation_error(error_msg)):
+                    error_msg = mark_moderation(error_msg)
+                logger.warning(error_msg)
+                last_error = error_msg
+                _get_failure_logger().record_failure(
+                    attempt_num=total_attempts,
+                    max_retries=self.config.temperature_max_retries + self.config.backoff_max_retries,
+                    temperature=temp, error_type="EmptyResponse",
+                    error_message=error_msg, messages_length=messages_length,
+                )
+                if attempt < self.config.temperature_max_retries - 1:
+                    await self._sleep(3 * (attempt + 1))
+                continue
+
+            if validate_response:
+                is_valid, validation_error = await self._call_validate_response(validate_response, content, timeout=30)
+                if not is_valid:
+                    logger.warning(f"❌ 响应验证失败: {validation_error}")
+                    if retry_messages_builder:
+                        messages = retry_messages_builder(validation_error, messages)
+                    _record_validation_failure(validation_error, temp)
+                    if attempt < self.config.temperature_max_retries - 1:
+                        await self._sleep(3 * (attempt + 1))
+                    continue
+
+            # 成功
+            logger.info(f"✅ API请求成功（第{total_attempts}次尝试）")
+            logger.info(f"使用Tokens: {last_consumed_tokens}")
+            logger.info("=" * 60)
+            return _build_result(
+                True, content, "",
+                last_consumed_tokens[0], last_consumed_tokens[1],
+                cached_tokens=usage.usage_cached_tokens if usage else 0,
+                reasoning_chars=len(reasoning),
+            )
+
+        # === 指数退避重试层（429 时额外多 3 轮）===
+        final_temp = max(0.0, self.config.temperature -
+                         (self.config.temperature_max_retries - 1) * self.config.temperature_step)
+        backoff_rounds = max(self.config.backoff_max_retries, 3) \
+            if self._is_429(last_error) else self.config.backoff_max_retries
+
+        for retry_num in range(backoff_rounds):
+            if self._stop_requested:
+                logger.info("⛔ 检测到停止请求，终止重试链")
+                return _build_result(False, final_content, "用户请求停止",
+                                     last_consumed_tokens[0], last_consumed_tokens[1])
+            if is_moderation_error(last_error) and moderation_hits >= 2:
+                _get_failure_logger().record_failure(
+                    attempt_num=total_attempts,
+                    max_retries=self.config.temperature_max_retries + self.config.backoff_max_retries,
+                    temperature=final_temp, error_type="ModerationBlocked",
+                    error_message=last_error, messages_length=messages_length,
+                )
+                logger.warning("⛔ 内容审核拦截（重试1次后仍拦截），跳过该章节")
+                return _build_result(False, final_content, last_error,
+                                     last_consumed_tokens[0], last_consumed_tokens[1])
+
+            total_attempts += 1
+            with self._stats_lock:
+                self._attempts += 1
+
+            if self._is_429(last_error):
+                wait_time = min(self._retry_after_seconds(last_error) or 30 * (retry_num + 1), 120)
+            else:
+                wait_time = min(2 ** (retry_num + 1), 60)
+            logger.info(f"\n[指数退避] 尝试 {total_attempts}，等待{wait_time}秒，"
+                        f"temperature={final_temp} (第{retry_num + 1}/{backoff_rounds}次)")
+            await self._sleep(wait_time)
+
+            status, content, reasoning, usage, err = await _run_stream_attempt(final_temp)
+
+            if status == "cancelled":
+                return _build_result(False, content, err, 0, 0, reasoning_chars=len(reasoning))
+
+            if status == "error":
+                last_error = err
+                logger.warning(f"❌ 重试失败: {err}")
+                if last_consumed_tokens[0] > 0 or last_consumed_tokens[1] > 0:
+                    with self._stats_lock:
+                        self._failed_tokens += last_consumed_tokens[0] + last_consumed_tokens[1]
+                    call_failed_tokens += last_consumed_tokens[0] + last_consumed_tokens[1]
+                _get_failure_logger().record_failure(
+                    attempt_num=total_attempts,
+                    max_retries=self.config.temperature_max_retries + self.config.backoff_max_retries,
+                    temperature=final_temp, error_type="ExponentialBackoff",
+                    error_message=err, wait_time=wait_time, messages_length=messages_length,
+                )
+                if "认证失败" in err or "401" in err:
+                    logger.error("⛔ 认证错误，停止重试")
+                    return _build_result(False, final_content, err,
+                                         last_consumed_tokens[0], last_consumed_tokens[1])
+                continue
+
+            # status == "ok"
+            stripped = self._strip_thinking(content)
+            if stripped:
+                content = stripped
+
+            if last_consumed_tokens[0] > 0 or last_consumed_tokens[1] > 0:
+                with self._stats_lock:
+                    self._total_tokens += last_consumed_tokens[0] + last_consumed_tokens[1]
+                    if usage:
+                        self._cached_tokens += usage.usage_cached_tokens
+
+            if not content.strip():
+                error_msg = "API返回空内容（可能触发内容过滤）"
+                if usage and (is_moderation_message(str(usage)) or is_moderation_error(error_msg)):
+                    error_msg = mark_moderation(error_msg)
+                logger.warning(error_msg)
+                last_error = error_msg
+                continue
+
+            if validate_response:
+                is_valid, validation_error = await self._call_validate_response(validate_response, content, timeout=30)
+                if not is_valid:
+                    logger.warning(f"❌ 响应验证失败: {validation_error}")
+                    if retry_messages_builder:
+                        messages = retry_messages_builder(validation_error, messages)
+                    _record_validation_failure(validation_error, final_temp)
+                    continue
+
+            # 成功
+            logger.info(f"✅ API请求成功（第{total_attempts}次尝试）")
+            logger.info(f"使用Tokens: {last_consumed_tokens}")
+            logger.info("=" * 60)
+            return _build_result(
+                True, content, "",
+                last_consumed_tokens[0], last_consumed_tokens[1],
+                cached_tokens=usage.usage_cached_tokens if usage else 0,
+                reasoning_chars=len(reasoning),
+            )
+
+        final_msg = (f"所有重试均失败（温度退火{self.config.temperature_max_retries}次 + "
+                     f"指数退避{backoff_rounds}次 = 共{total_attempts}次）。最后错误: {last_error}")
+        logger.error("\n" + "=" * 60)
+        logger.error(f"⛔ API调用最终失败")
+        logger.error(f"总尝试次数: {total_attempts}")
+        logger.error(f"最后错误: {last_error}")
+        summary = _get_failure_logger().get_summary()
+        logger.error(f"失败统计: {summary}")
+        logger.error("=" * 60)
+        return _build_result(False, final_content, final_msg,
+                             last_consumed_tokens[0], last_consumed_tokens[1])
 
     @staticmethod
     def _is_429(error: str) -> bool:
