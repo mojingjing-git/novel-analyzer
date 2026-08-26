@@ -444,6 +444,20 @@ class AnalysisPipeline:
             async with sem:
                 if self._stop_requested:
                     return block_id, block_chs, False, 0.0, (0, 0), None, {"retries": 0, "failed_tokens": 0}, True
+                # H17 P3 V2 修复（2026-08-26）：并发模式必须 emit start
+                # 原因：前端 activeBlocks 依赖 block_start 消息登记车道。
+                # 原代码 _worker 只调 _analyze_one_block（不 emit），由 _handle_block_outcome
+                # 触发 done。结果：预热阶段（用 analyze_block_with_progress）正常，
+                # 并发阶段 activeBlocks 永远为空 → 「并发车道 0/N 运行中」错误，
+                # 车道也看不到运行时间（progressBar/lastTokenAt 不更新）。
+                # 修复：在 _analyze_one_block 前补发 start，_handle_block_outcome 照常
+                # 触发 done。semaphore 内部 emit 保证只在真正拿到槽位后才登记活跃。
+                ch_range = _fmt_range(block_id, block_chs, block_size)
+                await self._emit({
+                    "chapter": block_id, "status": "start",
+                    "progress": completed_count, "total": total,
+                    "message": f"开始分析{ch_range}..."
+                })
                 success, elapsed, ch_tokens, result, retry_info = await self._analyze_one_block(
                     analyzer, self.file_processor, state, block_id, block_chs,
                     block_size=block_size)
