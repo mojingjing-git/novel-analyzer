@@ -203,6 +203,31 @@ def moderation_hit_from_exception(e) -> bool:
             or is_moderation_message(body_msg) or is_moderation_message(str(e)))
 
 
+def _get_reasoning_tokens(usage) -> int:
+    """从 usage 安全提取 reasoning_tokens，兼容 dict / Pydantic model / None
+
+    2026-08-26 探测回归修复：OpenAI SDK 的 CompletionUsage 与
+    CompletionTokensDetails 都是 Pydantic v2 model，没有 .get() 方法。
+    原代码 (usage.get("completion_tokens_details") or {}).get("reasoning_tokens")
+    在 Pydantic 形态下 AttributeError，导致 probe_thinking_params 所有「真在
+    思考」的候选都炸（只有模型完全禁思考时 completion_tokens_details 为 None
+    才碰巧走通）—— 表现为大部分候选都报「无效」。
+    """
+    if usage is None:
+        return 0
+    # 顶层 usage：可能是 dict 也可能是 Pydantic
+    if isinstance(usage, dict):
+        details = usage.get("completion_tokens_details")
+    else:
+        details = getattr(usage, "completion_tokens_details", None)
+    if details is None:
+        return 0
+    # 嵌套 details：同样两种形态
+    if isinstance(details, dict):
+        return details.get("reasoning_tokens", 0) or 0
+    return getattr(details, "reasoning_tokens", 0) or 0
+
+
 # 探测禁用思考参数用的检测器清单（前端 UI 也用这份，禁删字段）
 # 7 个维度，任一命中即判定模型在思考：
 #   - reasoning_content: Anthropic / GLM / DeepSeek v3.1+ 字段
@@ -426,7 +451,7 @@ class LLMClient:
                 for m in re.finditer(pat, content_str, re.DOTALL | re.IGNORECASE):
                     think_tag_chars += len(m.group(0))
 
-            reasoning_token_count = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens", 0) or 0
+            reasoning_token_count = _get_reasoning_tokens(usage)
 
             # Anthropic 协议 content list 形态
             has_anthropic_thinking_blocks = isinstance(content, list) and any(

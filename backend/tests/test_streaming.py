@@ -509,6 +509,108 @@ class TestChatStreamWithRetry:
         print("✅ test_partial_content_preserved_on_total_failure passed")
 
 
+# ============================ probe_thinking_params Pydantic 兼容 ============================
+
+class TestProbeThinkingParamsPydanticUsage:
+    """2026-08-26 修复回归：probe_thinking_params 必须能处理 OpenAI SDK 的
+    Pydantic CompletionUsage/CompletionTokensDetails，不能因为 .get() 缺失而炸。
+
+    真实 OpenAI SDK v1.x 返回的 usage.completion_tokens_details 是 Pydantic v2
+    model，调用 .get() 会 AttributeError。原代码 (usage.get(...) or {}).get(...)
+    在 Pydantic 形态下挂掉，导致 7 个候选里只有"完全禁用思考"（completion_tokens_details
+    为 None 走 or {} 路径）的 2 个能跑通，其他都误判为"无效"。"""
+
+    async def test_pydantic_completion_tokens_details(self):
+        """Pydantic 形态 usage.completion_tokens_details.reasoning_tokens > 0
+        应该被检测到（不是 AttributeError）"""
+        from backend.core.llm_client import LLMClient
+
+        # 模拟 OpenAI SDK v1.x Pydantic v2 model（无 .get() 方法）
+        class FakeCompletionTokensDetails:
+            def __init__(self, reasoning_tokens):
+                self.reasoning_tokens = reasoning_tokens
+
+        class FakeUsage:
+            def __init__(self, completion_tokens_details):
+                self.prompt_tokens = 10
+                self.completion_tokens = 20
+                self.total_tokens = 30
+                self.completion_tokens_details = completion_tokens_details
+
+        def make_resp(reasoning_tokens):
+            resp = MagicMock()
+            msg = MagicMock()
+            msg.content = "121932631112635269"
+            msg.reasoning_content = None
+            msg.reasoning_details = None
+            resp.choices = [MagicMock(message=msg)]
+            resp.usage = FakeUsage(FakeCompletionTokensDetails(reasoning_tokens))
+            return resp
+
+        fake_client = MagicMock()
+        # 模拟"模型真在思考"场景：基线 + 部分候选 reasoning_tokens=250，
+        # 仅 reasoning_effort:none / reasoning:effort=none 能禁用
+        fake_client.chat.completions.create = AsyncMock(side_effect=[
+            make_resp(250),  # 基线
+            make_resp(250),  # thinking:disabled（对 o-series 无效）
+            make_resp(0),    # reasoning_effort:none（有效）
+            make_resp(250),  # enable_thinking:false（无效）
+            make_resp(250),  # thinking:disabled + reasoning_split（无效）
+            make_resp(250),  # chat_template_kwargs（无效）
+            make_resp(0),    # reasoning:effort=none（有效）
+        ])
+
+        with patch("backend.core.llm_client.AsyncOpenAI", return_value=fake_client):
+            result = await LLMClient.probe_thinking_params(
+                "https://api.test.com", "k", "m3", "auto"
+            )
+
+        # 核心断言 1：基线候选不应报 AttributeError
+        baseline = result["results"][0]
+        assert baseline["error"] == "", (
+            f"基线候选不应报错（Pydantic 形态兼容）：{baseline['error']}"
+        )
+        # 核心断言 2：usage 维度应被识别为真在思考
+        assert baseline["detection_breakdown"]["usage_reasoning_tokens"] is True, (
+            "Pydantic 形态的 reasoning_tokens=250 应被识别"
+        )
+        assert baseline["reasoning_token_count"] == 250
+        # 核心断言 3：默认思考为 True（探测器至少一个命中）
+        assert result["default_thinks"] is True
+        # 核心断言 4：至少探测到一种禁用方式
+        assert result["best"] is not None
+        print("✅ test_pydantic_completion_tokens_details passed")
+
+    def test_helper_handles_all_forms(self):
+        """_get_reasoning_tokens helper：None / dict / Pydantic 形态全覆盖"""
+        from backend.core.llm_client import _get_reasoning_tokens
+
+        # None
+        assert _get_reasoning_tokens(None) == 0
+        # dict 形态（其他 Agent 单测的用法）
+        assert _get_reasoning_tokens({}) == 0
+        assert _get_reasoning_tokens({"completion_tokens_details": None}) == 0
+        assert _get_reasoning_tokens({"completion_tokens_details": {}}) == 0
+        assert _get_reasoning_tokens({
+            "completion_tokens_details": {"reasoning_tokens": 250}
+        }) == 250
+        # Pydantic 形态（真实 OpenAI SDK）
+        class _D:
+            def __init__(self, t): self.reasoning_tokens = t
+        class _U:
+            def __init__(self, d): self.completion_tokens_details = d
+
+        assert _get_reasoning_tokens(_U(None)) == 0
+        assert _get_reasoning_tokens(_U(_D(0))) == 0
+        assert _get_reasoning_tokens(_U(_D(250))) == 250
+        # MagicMock 形态（其他 Agent 单元测试构造）
+        m = MagicMock()
+        m.completion_tokens_details = MagicMock()
+        m.completion_tokens_details.reasoning_tokens = 99
+        assert _get_reasoning_tokens(m) == 99
+        print("✅ test_helper_handles_all_forms passed")
+
+
 # ============================ DetectProvider ============================
 
 class TestDetectProvider:
