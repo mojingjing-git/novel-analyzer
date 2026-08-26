@@ -632,6 +632,9 @@ class AnalysisService:
         self._total_retries = 0
         self._total_failed_tokens = 0
         self._total_cached_tokens = 0
+        # P1-b (2026-08-26)：重置"已见人物"集合，避免上一本书的人物污染新书首次登场判定
+        # （AnalysisService 是进程级单例，__init__ 只跑一次）
+        self._seen_characters = set()
         self._analysis_start_time = time.time()
         self._analysis_end_time = None
         self._runner_task = asyncio.create_task(self._run_queue())

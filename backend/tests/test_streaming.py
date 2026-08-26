@@ -479,6 +479,35 @@ class TestChatStreamWithRetry:
         assert result.content == "success"
         assert call_count[0] == 2
 
+    async def test_partial_content_preserved_on_total_failure(self):
+        """P1-a (2026-08-26) 修复：流式中断后 partial content 必须保留到 final_content
+        失败路径（认证/审核/退避耗尽）返回的 result.content 是下游 recon_partial
+        容错链的唯一输入；如果 _run_stream_attempt 拼好的内容没回写到 final_content，
+        下游拿到的永远是空串，整条残缺 JSON 兜底链就断了。
+
+        场景：1 次温度退火 + 0 次退避，attempt 内部流发出 2 个 content chunk
+        后被 error chunk 中断，触发重试但 backoff 关闭 → 整体失败。"""
+        client = LLMClient(make_config(temperature_max_retries=1, backoff_max_retries=0))
+
+        partial_text_1 = '{"foreshadows":[{"clue":"残缺片段 A'
+
+        async def mock_chat_stream(*args, **kwargs):
+            # 流式 chunk：先发部分内容，然后 error 中断
+            yield StreamChunk(type="content", text=partial_text_1)
+            yield StreamChunk(type="error", error="stream truncated mid-response")
+
+        client.chat_stream = mock_chat_stream
+        client._sleep = AsyncMock()  # 跳过 sleep
+        result = await client.chat_stream_with_retry([{"role": "user", "content": "hi"}])
+
+        # 整体失败（最后一条 error chunk）
+        assert result.success is False
+        # P1-a 核心断言：partial content 必须保留
+        # 修复前 final_content 永远是 ""，修复后是最后 attempt 的拼接结果
+        assert result.content == partial_text_1
+        assert result.content != ""
+        print("✅ test_partial_content_preserved_on_total_failure passed")
+
 
 # ============================ DetectProvider ============================
 

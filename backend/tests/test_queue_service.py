@@ -5,7 +5,7 @@ import asyncio
 import sys
 import tempfile
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
@@ -375,6 +375,45 @@ async def test_on_progress_block_start_publishes():
         await hub.unsubscribe(test_queue)
 
 
+def test_start_resets_seen_characters():
+    """P1-b (2026-08-26) 修复：AnalysisService.start() 必须重置 _seen_characters
+
+    进程级单例：__init__ 只跑一次。如果不重置，上一本书的人物会污染新书
+    的"首次登场"判定（_extract_discovery 用 seen_characters 做求差）。"""
+    svc = object.__new__(AnalysisService)
+    # 模拟上一本书残留的人物集合
+    svc._seen_characters = {"林动", "萧炎", "牧尘"}
+    # is_running = False（_runner_task 为 None）
+    svc._runner_task = None
+    # queue 非空未完成（绕过 start 早返回）
+    svc.queue = MagicMock()
+    svc.queue.is_empty = False
+    svc.queue.is_finished = False
+
+    # 模拟 summary_service 未运行（反向互斥护栏）
+    with patch("backend.services.summary_service.get_summary_service") as mock_get_summary:
+        mock_summary = MagicMock()
+        mock_summary.is_running = False
+        mock_get_summary.return_value = mock_summary
+
+        # 阻止实际创建 asyncio task（避免在测试事件循环里跑真实 _run_queue）
+        with patch("backend.services.queue_service.asyncio.create_task") as mock_create_task:
+            # 关键：_run_queue 是 async 方法，create_task(coro) 才不会触发 "never awaited" 警告
+            def _accept_and_drop(coro):
+                coro.close()  # 关闭协程对象，避免 GC 时抛 RuntimeWarning
+                return MagicMock()
+            mock_create_task.side_effect = _accept_and_drop
+            ok = svc.start()
+
+    # start() 成功进入
+    assert ok is True
+    # 核心断言：_seen_characters 已被清空
+    assert svc._seen_characters == set()
+    assert len(svc._seen_characters) == 0
+    assert "林动" not in svc._seen_characters
+    print("✅ test_start_resets_seen_characters passed")
+
+
 if __name__ == "__main__":
     test_record_chapter_stat_accumulates()
     test_record_chapter_stat_failed_payload()
@@ -391,4 +430,5 @@ if __name__ == "__main__":
     test_extract_discovery_character_dedup()
     test_extract_discovery_empty_or_invalid()
     test_on_progress_block_start_publishes()
+    test_start_resets_seen_characters()
     print("\n🎉 All queue tests passed!")

@@ -1181,6 +1181,12 @@ class LLMClient:
                         ))
             except asyncio.CancelledError:
                 return ("cancelled", attempt_content, attempt_reasoning, last_usage, "用户请求停止")
+            finally:
+                # P1-a (2026-08-26)：同步 attempt_content → final_content
+                # 失败路径（认证/审核/退避耗尽）依赖 final_content 作为残缺 JSON 兜底
+                # 保留最新 attempt 的 partial（含 reasoning）以便重试失败后增量补全
+                final_content = attempt_content
+                final_reasoning = attempt_reasoning
 
             if attempt_error:
                 return ("error", attempt_content, attempt_reasoning, last_usage, attempt_error)
