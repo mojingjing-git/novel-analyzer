@@ -40,4 +40,14 @@ describe('RunDashboard 仪表盘容器', () => {
     const cards = wrapper.findAll('.rd-card')
     expect(cards[1].text()).toContain('5m30s')
   })
+
+  it('根节点套用 .glass-card Win11 风格栏位框（2026-08-26 UI 改造）', () => {
+    // 回归保护：避免后续重构把栏位框误删，导致 RunDashboard 4 个区块失去容器感
+    const wrapper = mount(RunDashboard, {
+      props: { running: false, concurrency: 4 },
+    })
+    const root = wrapper.find('.run-dashboard')
+    expect(root.exists()).toBe(true)
+    expect(root.classes()).toContain('glass-card')
+  })
 })

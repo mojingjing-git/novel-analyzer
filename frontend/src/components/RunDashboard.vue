@@ -94,7 +94,7 @@ const sparklinePoints = computed(() => {
 </script>
 
 <template>
-  <div class="run-dashboard">
+  <div class="glass-card run-dashboard">
     <!-- ① 聚合指标行（4 卡） -->
     <div class="rd-aggregate">
       <div class="rd-card">
@@ -158,11 +158,13 @@ const sparklinePoints = computed(() => {
 </template>
 
 <style scoped>
+/* 根节点带 .glass-card，套用 main.css 的 Win11 卡片基类（背景/边框/圆角/阴影）
+   内边距由本组件自己控制：glass-card 本身无 padding，避免与子组件的内部布局冲突 */
 .run-dashboard {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  padding: 12px 4px;
+  gap: 12px;
+  padding: 16px;
 }
 .rd-aggregate {
   display: grid;
@@ -170,10 +172,10 @@ const sparklinePoints = computed(() => {
   gap: 8px;
 }
 .rd-card {
-  padding: 8px 10px;
-  border-radius: 6px;
-  background: var(--win-bg-secondary, rgba(255,255,255,0.04));
-  border: 1px solid var(--win-border-secondary, rgba(255,255,255,0.08));
+  padding: 10px 12px;
+  border-radius: var(--win-radius-control);
+  background: var(--win-control-alt);
+  border: 1px solid var(--win-stroke);
 }
 .rd-label {
   font-size: 10px;
@@ -200,10 +202,10 @@ const sparklinePoints = computed(() => {
   font-weight: 400;
 }
 .rd-sparkline {
-  padding: 6px 10px;
-  border-radius: 6px;
-  background: var(--win-bg-secondary, rgba(255,255,255,0.04));
-  border: 1px solid var(--win-border-secondary, rgba(255,255,255,0.08));
+  padding: 8px 12px;
+  border-radius: var(--win-radius-control);
+  background: var(--win-control-alt);
+  border: 1px solid var(--win-stroke);
 }
 .rd-sparkline-head {
   display: flex;
