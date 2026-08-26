@@ -80,4 +80,43 @@ describe('LaneView 车道组件', () => {
       expect(r.text()).toContain('空槽')
     })
   })
+
+  it('H17 Phase 3 V2：running 块进度条按 stallWarnSec 归一化（0-100%）', () => {
+    vi.useFakeTimers()
+    const now = Date.now()
+    vi.setSystemTime(now)
+    const active = new Map([
+      [1, { range: '第1-4章', startedAt: now - 240 * 1000 }],  // 已跑 4 分钟
+    ])
+    const wrapper = mount(LaneView, {
+      props: { concurrency: 1, activeBlocks: active, stallWarnSec: 480 },
+    })
+    const bar = wrapper.find('.lane-progress-bar')
+    expect(bar.exists()).toBe(true)
+    // 240/480 = 50%
+    const width = bar.attributes('style') || ''
+    expect(width).toContain('50%')
+    vi.useRealTimers()
+  })
+
+  it('H17 Phase 3 V2：超 stallWarnSec 且无 token_delta → lane-stalled + ⚠ 标记', () => {
+    vi.useFakeTimers()
+    const now = Date.now()
+    vi.setSystemTime(now)
+    const active = new Map([
+      [1, { range: '第1-4章', startedAt: now - 600 * 1000 }],  // 已跑 10 分钟
+    ])
+    // tokenByBlock 中 lastTokenAt 是 8 分钟前（>5 秒阈值）→ 卡死
+    const tokenByBlock = new Map([
+      [1, { outputTokens: 100, lastTokenAt: now - 480 * 1000 }],  // 8 分钟前最后更新
+    ])
+    const wrapper = mount(LaneView, {
+      props: { concurrency: 1, activeBlocks: active, tokenByBlock, stallWarnSec: 480 },
+    })
+    const row = wrapper.find('.lane-row')
+    expect(row.classes()).toContain('lane-stalled')
+    // ⚠ 图标（H17 V2 替代原 ⏳）
+    expect(wrapper.text()).toContain('⚠')
+    vi.useRealTimers()
+  })
 })

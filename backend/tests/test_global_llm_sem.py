@@ -124,7 +124,7 @@ def test_peak_inflight_bounded_by_configured_concurrency(tmp_path, concurrency):
         await asyncio.sleep(0.05)
         return style_return
 
-    with patch.object(runner._llm, 'chat_with_retry', new=fake_chat), \
+    with patch.object(runner._llm, 'chat_auto', new=fake_chat), \
          patch('backend.services.final_summary.extract_style_profile', new=fake_style):
         report = asyncio.run(runner.run())
 

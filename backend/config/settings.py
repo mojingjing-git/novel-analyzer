@@ -188,6 +188,10 @@ class AnalysisConfig:
     foreshadow_recheck_batch_size: int = DEFAULT_FORESHADOW_RECHECK_BATCH_SIZE  # 全书伏笔复检批大小；调大减少调用次数（省 cache 命中价前缀），单批过大可能稀释注意力
     # 内容审核拦截处理：识别为审核拦截的章节重试1次后跳过并标记（不进失败集、不补跑）
     skip_moderation_blocked: bool = True
+    # H17 Phase 3 (2026-08-26)：车道卡死预警阈值（秒）
+    # 车道上跑超过此秒数无进展（无 token_delta）→ lane 变红 + ⚠
+    # 默认 480s（M3 思考模型 5-6 分钟正常生成；再上调）
+    stall_warn_sec: int = 480
     # 知识库限制
     max_compressed_arcs: int = MAX_COMPRESSED_ARCS
     max_recent_summaries: int = MAX_RECENT_SUMMARIES

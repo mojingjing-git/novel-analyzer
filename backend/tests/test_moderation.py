@@ -137,13 +137,17 @@ async def test_retry_once_success():
 
 
 async def test_analyzer_propagates_moderation_error():
-    """analyzer 失败时 retry_info.error 携带标记（pipeline 据此判 skipped）"""
+    """analyzer 失败时 retry_info.error 携带标记（pipeline 据此判 skipped）
+
+    H16 Phase 3 (2026-08-26)：analyzer 改用 chat_auto()，返回 5-tuple（与 chat_with_retry 同）
+    """
     from backend.core.analyzer import NovelAnalyzer
     from backend.config.settings import AppConfig
     from backend.core.moderation import mark_moderation
     analyzer = NovelAnalyzer(AppConfig())
     analyzer.llm_client = MagicMock()
-    analyzer.llm_client.chat_with_retry = AsyncMock(return_value=(
+    # chat_auto 返回 (success, content, error, (prompt_tok, completion_tok), call_stats)
+    analyzer.llm_client.chat_auto = AsyncMock(return_value=(
         False, "", mark_moderation("API错误 (HTTP 400): content policy"), (0, 0),
         {"attempts": 2, "failed_tokens": 0}))
     analyzer.prompt_builder = MagicMock()
@@ -192,7 +196,7 @@ async def test_pipeline_analyze_block_skips_moderation(tmp_path):
     pipeline.file_processor.read_block = AsyncMock(return_value="正文")
 
     analyzer = MagicMock()
-    async def fake_analyze(ch, content, kb, block_size=1):
+    async def fake_analyze(ch, content, kb, block_size=1, book_id=""):
         return None, (10, 10), {"error": mark_moderation("API错误 (HTTP 400): content policy"), "retries": 2}
     analyzer.analyze_chapter = fake_analyze
 
@@ -220,7 +224,7 @@ async def test_pipeline_skips_when_config_off(tmp_path):
     pipeline.file_processor = MagicMock()
     pipeline.file_processor.read_block = AsyncMock(return_value="正文")
     analyzer = MagicMock()
-    async def fake_analyze(ch, content, kb, block_size=1):
+    async def fake_analyze(ch, content, kb, block_size=1, book_id=""):
         return None, (10, 10), {"error": mark_moderation("API错误 (HTTP 400): content policy"), "retries": 2}
     analyzer.analyze_chapter = fake_analyze
     state = pipeline.state

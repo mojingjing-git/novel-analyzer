@@ -24,6 +24,10 @@ const activeBlocks = ref<Map<number, ActiveBlock>>(new Map())
 const finishedBlocks = ref<Map<number, FinishedBlock>>(new Map())
 const discoveries = ref<DiscoveryItem[]>([])
 let discoveryId = 1
+// H17 Phase 3 V2：块级 token 累计（用于车道进度条 + 卡死预警）+ 速率 sparkline 历史
+const tokenByBlock = ref<Map<number, { outputTokens: number; lastTokenAt: number }>>(new Map())
+const rateHistory = ref<number[]>([])
+const RATE_HISTORY_MAX = 30
 // 已完成块保留上限（防止 Map 无限增长）
 const FINISHED_BLOCKS_MAX = 50
 // 章节详情共享的书目与章节号（从独立的工具栏提升到此处，便于两个分栏内容框对齐）
@@ -117,6 +121,24 @@ function onMessage(msg: ProgressMessage) {
                     || ((p.characters as string[] | undefined)?.length ?? 0) > 0,
       }
       discoveries.value = [...discoveries.value, item].slice(-200)
+      break
+    }
+    case 'token_delta': {
+      // H17 Phase 3 V2：实时 token 增量 → 块级累计 + 速率 sparkline
+      const p = (msg as unknown as { payload?: Record<string, unknown> }).payload || {}
+      const d = (p.delta as Record<string, unknown>) || {}
+      const blockId = Number(p.unit_idx ?? -1)
+      const outTokens = Number(d.output_tokens ?? 0)
+      const rate = Number(d.rate_tokens_per_sec ?? 0)
+      if (blockId > 0) {
+        const cur = tokenByBlock.value.get(blockId) || { outputTokens: 0, lastTokenAt: 0 }
+        cur.outputTokens = Math.max(cur.outputTokens, outTokens)  // 累计取最大
+        cur.lastTokenAt = Date.now()
+        tokenByBlock.value = new Map(tokenByBlock.value)
+      }
+      if (rate > 0) {
+        rateHistory.value = [...rateHistory.value, rate].slice(-RATE_HISTORY_MAX)
+      }
       break
     }
     case 'state_change': scheduleRefresh(refresh); break
@@ -248,20 +270,20 @@ const currentBlockSize = computed(() => {
   return runningItem?.block_size || 1
 })
 
-// H17 (2026-08-26) 左面板 tab 切换：运行中默认概览，否则默认详情；用户手动切换后记忆
-const currentTab = ref<'overview' | 'detail'>('detail')
+// H17 (2026-08-26) 左面板 tab：默认「运行概览」（H17 Phase 3 决策：分析器进度信息优先）
+// 用户手动切换后本会话记忆（与 plan 决策 2 一致）
+const currentTab = ref<'overview' | 'detail'>('overview')
 const userSwitchedTab = ref(false)
-const isRunning = computed(() => Boolean(status.value?.running))
-watch([isRunning, userSwitchedTab], ([run, switched]) => {
-  // 仅在用户没手动切过时自动切默认
-  if (!switched) {
-    currentTab.value = run ? 'overview' : 'detail'
-  }
-})
 function switchTab(tab: 'overview' | 'detail') {
   currentTab.value = tab
   userSwitchedTab.value = true
 }
+
+// H17 Phase 3 V2：车道卡死预警阈值（来自 config.analysis.stall_warn_sec）
+const stallWarnSec = computed(() => {
+  // status?.config?.analysis?.stall_warn_sec（队列接口如有暴露）否则回退默认 480
+  return 480
+})
 
 // 设置项 tooltip 字典：只覆盖"非一眼能看出"的字段；状态/操作按钮/进度文字不加
 const tooltips: Record<string, string> = {
@@ -437,7 +459,7 @@ onUnmounted(() => {
             </div>
             <span class="col-sub2">
               <template v-if="currentTab === 'overview'">
-                {{ isRunning ? `运行中 · 车道 ${activeBlocks.size}` : '空闲' }}
+                {{ status?.running ? `运行中 · 车道 ${activeBlocks.size}` : '空闲 · 显示最近活动' }}
               </template>
               <template v-else>
                 {{ detailChapter > 0 ? `正在查看 第 ${detailChapter} 章` : '自动显示最新章节' }}
@@ -458,12 +480,15 @@ onUnmounted(() => {
         </div>
         <RunDashboard
           v-if="currentTab === 'overview'"
-          :running="isRunning"
+          :running="Boolean(status?.running)"
           :concurrency="currentBlockSize"
           :progress="progress"
           :session-tokens="sessionTotal"
           :active-blocks="activeBlocks"
           :finished-blocks="finishedBlocks"
+          :token-by-block="tokenByBlock"
+          :rate-history="rateHistory"
+          :stall-warn-sec="stallWarnSec"
           :discoveries="discoveries"
           class="split-detail"
         />

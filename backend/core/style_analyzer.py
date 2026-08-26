@@ -316,8 +316,12 @@ def _validate_semantic_result(result: dict) -> dict:
 
 
 async def call_llm_semantic(prompt: str, api_config: dict,
-                            token_sink=None) -> Optional[dict]:
-    """调用 LLM 获取语义风格特征（async）；token_sink 可选，接收 (in, out) 元组"""
+                            token_sink=None, book_name: str = "") -> Optional[dict]:
+    """调用 LLM 获取语义风格特征（async）；token_sink 可选，接收 (in, out) 元组
+
+    H16 Phase 3 (2026-08-26)：改用 chat_auto() 按 streaming_enabled 自动选流式/非流式；
+    流式模式下 on_progress 回调 broadcast token_delta 给前端（context="summary_phase_3"）。
+    """
     client = LLMClient(APIConfig(
         base_url=api_config['base_url'],
         api_key=api_config['api_key'],
@@ -330,13 +334,38 @@ async def call_llm_semantic(prompt: str, api_config: dict,
         temperature_max_retries=2,
         backoff_max_retries=1,
         thinking_mode=api_config.get('thinking_mode', {}),
+        streaming_enabled=api_config.get('streaming_enabled', True),
     ))
 
     messages = [
         {"role": "system", "content": "你是专业的中文小说写作风格分析师。输出纯 JSON，不要 Markdown。"},
         {"role": "user", "content": prompt}
     ]
-    success, content, error, tokens, _call_stats = await client.chat_with_retry(messages, max_tokens=20000)
+
+    # H16 Phase 3：流式模式 on_progress broadcast token_delta
+    from ..progress_hub import get_hub
+    import time as _time
+    hub = get_hub()
+    started_at = _time.monotonic()
+
+    async def on_progress(chunk):
+        if chunk.type in ("content", "usage"):
+            elapsed = _time.monotonic() - started_at
+            rate = (chunk.estimated_total_tokens or 0) / max(elapsed, 0.1)
+            await hub.broadcast_token_delta(
+                context="summary_phase_3",
+                session_id=book_name or "unknown",
+                unit_idx=0,  # 风格提取只调一次，unit_idx 固定 0
+                delta={
+                    "output_tokens": chunk.estimated_total_tokens or 0,
+                    "rate_tokens_per_sec": rate,
+                    "elapsed_sec": elapsed,
+                },
+            )
+
+    success, content, error, tokens, _call_stats = await client.chat_auto(
+        messages, max_tokens=20000, on_progress=on_progress,
+    )
     if token_sink:
         try:
             token_sink(tokens)

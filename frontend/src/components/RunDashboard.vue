@@ -1,10 +1,10 @@
 <script setup lang="ts">
 /**
- * RunDashboard 运行中实时仪表盘（H17 / S1）
+ * RunDashboard 运行中实时仪表盘（H17 / S1 + Phase 3 V2 升级）
  *
- * 容器组件：聚合指标 + LaneView + DiscoveryFeed
- * 数据源：父组件传入的 activeBlocks / finishedBlocks / discoveries / tokens / progress
- * 自身订阅 WS（通过 props 传入的 onMessage 回调注册）
+ * 容器组件：聚合指标（含 sparkline）+ LaneView + DiscoveryFeed
+ * 数据源：父组件传入
+ * H17 Phase 3 (2026-08-26)：聚合卡的"本会话输入/输出"改为 token_delta 真实累计
  */
 
 import { computed } from 'vue'
@@ -33,7 +33,7 @@ export interface DiscoveryItem {
 const props = withDefaults(defineProps<{
   /** 是否正在运行（控制显示） */
   running?: boolean
-  /** 并发槽位数（来自 status.concurrency） */
+  /** 并发槽位数 */
   concurrency?: number
   /** 进度 */
   progress?: { current: number; total: number; eta: string }
@@ -41,8 +41,14 @@ const props = withDefaults(defineProps<{
   sessionTokens?: { input: number; output: number } | null
   /** 活跃块 */
   activeBlocks?: Map<number, ActiveBlock>
-  /** 已完成块（保留最近 N 个用于车道占位） */
+  /** 已完成块（最近 N 个用于车道占位） */
   finishedBlocks?: Map<number, FinishedBlock>
+  /** 块级 token 累计（V2：车道进度条 + 卡死预警） */
+  tokenByBlock?: Map<number, { outputTokens: number; lastTokenAt: number }>
+  /** H17 Phase 3 V2：30 点速率 sparkline */
+  rateHistory?: number[]
+  /** 卡死预警阈值（秒） */
+  stallWarnSec?: number
   /** 发现流 */
   discoveries?: DiscoveryItem[]
 }>(), {
@@ -52,6 +58,9 @@ const props = withDefaults(defineProps<{
   sessionTokens: null,
   activeBlocks: () => new Map(),
   finishedBlocks: () => new Map(),
+  tokenByBlock: () => new Map(),
+  rateHistory: () => [],
+  stallWarnSec: 480,
   discoveries: () => [],
 })
 
@@ -60,11 +69,28 @@ const outputTokens = computed(() => props.sessionTokens?.output ?? 0)
 const completed = computed(() => props.progress?.current ?? 0)
 const total = computed(() => props.progress?.total ?? 0)
 const eta = computed(() => props.progress?.eta ?? '—')
+const currentRate = computed(() => {
+  const h = props.rateHistory
+  return h.length > 0 ? h[h.length - 1] : 0
+})
 
 function fmtNum(n: number): string {
   if (n >= 10000) return `${(n / 1000).toFixed(1)}k`
   return String(n)
 }
+
+// Sparkline polyline points（手写 SVG，30 点；H16 plan 决策：不引入 d3-shape）
+const sparklinePoints = computed(() => {
+  const h = props.rateHistory
+  if (h.length === 0) return ''
+  const w = 200, hh = 28, n = 30
+  const max = Math.max(...h, 1)
+  return h.slice(-n).map((v, i) => {
+    const x = (i / (n - 1)) * w
+    const y = hh - (v / max) * hh
+    return `${x.toFixed(1)},${y.toFixed(1)}`
+  }).join(' ')
+})
 </script>
 
 <template>
@@ -98,14 +124,35 @@ function fmtNum(n: number): string {
       </div>
     </div>
 
-    <!-- ② 并发车道 -->
+    <!-- ② 实时速率 sparkline（V2 升级：30 点手写 polyline） -->
+    <div class="rd-sparkline">
+      <div class="rd-sparkline-head">
+        <span class="rd-label">实时输出速率</span>
+        <span class="rd-rate-value">{{ currentRate.toFixed(0) }} tok/s</span>
+      </div>
+      <svg :width="200" :height="28" class="rd-sparkline-svg" v-if="rateHistory.length > 1">
+        <polyline
+          :points="sparklinePoints"
+          fill="none"
+          stroke="var(--win-accent, #4f46e5)"
+          stroke-width="1.5"
+          stroke-linejoin="round"
+          stroke-linecap="round"
+        />
+      </svg>
+      <div v-else class="rd-sparkline-empty">尚无数据</div>
+    </div>
+
+    <!-- ③ 并发车道（H17 Phase 3 V2：进度条 + 卡死预警） -->
     <LaneView
       :concurrency="concurrency"
       :active-blocks="activeBlocks"
       :finished-blocks="finishedBlocks"
+      :token-by-block="tokenByBlock"
+      :stall-warn-sec="stallWarnSec"
     />
 
-    <!-- ③ 发现流 -->
+    <!-- ④ 发现流 -->
     <DiscoveryFeed :items="discoveries" />
   </div>
 </template>
@@ -151,5 +198,34 @@ function fmtNum(n: number): string {
   font-size: 11px;
   color: var(--win-text-tertiary);
   font-weight: 400;
+}
+.rd-sparkline {
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--win-bg-secondary, rgba(255,255,255,0.04));
+  border: 1px solid var(--win-border-secondary, rgba(255,255,255,0.08));
+}
+.rd-sparkline-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 4px;
+}
+.rd-rate-value {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--win-accent, #4f46e5);
+  font-variant-numeric: tabular-nums;
+}
+.rd-sparkline-svg {
+  display: block;
+  width: 100%;
+  height: 28px;
+}
+.rd-sparkline-empty {
+  font-size: 11px;
+  color: var(--win-text-tertiary);
+  text-align: center;
+  padding: 6px 0;
 }
 </style>

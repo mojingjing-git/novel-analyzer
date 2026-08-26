@@ -615,7 +615,9 @@ class AnalysisPipeline:
         temp_kb = await asyncio.to_thread(state.get_kb_snapshot, chapter_limit=block_id)
         t_start = time.time()
         result, ch_tokens, retry_info = await analyzer.analyze_chapter(
-            block_id, content, temp_kb, block_size=block_size)
+            block_id, content, temp_kb, block_size=block_size,
+            # H16 Phase 3：session_id 借用 directory 路径（保证多书并发隔离）
+            book_id=str(self.directory) if self.directory else "")
         elapsed = time.time() - t_start
 
         if result is None:

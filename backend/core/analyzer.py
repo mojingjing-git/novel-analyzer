@@ -2,17 +2,21 @@
 分析引擎（asyncio 版）
 协调LLM调用、结果解析和知识库更新的核心逻辑
 （自旧项目 core/analyzer.py 移植：analyze_chapter 改 async，
-内部 await llm_client.chat_with_retry；验证/解析逻辑零改动）
+内部 await llm_client.chat_with_retry；H16 Phase 3 业务接入 2026-08-26：
+改用 llm_client.chat_auto()，按 self.config.api.streaming_enabled 自动选流式/非流式；
+流式模式下 on_progress 回调 broadcast token_delta 给前端）
 """
 
 import logging
+import time
 from typing import Optional, Tuple
 
 from ..config.settings import AppConfig
 from ..models.analysis_result import AnalysisResult
 from ..models.knowledge import KnowledgeBase
-from .llm_client import LLMClient
+from .llm_client import LLMClient, StreamChunk
 from .prompt_builder import PromptBuilder
+from ..progress_hub import get_hub
 from ..utils.json_utils import extract_json_from_text, safe_parse_json
 
 logger = logging.getLogger(__name__)
@@ -81,7 +85,8 @@ class NovelAnalyzer:
         chapter_number: int,
         chapter_content: str,
         knowledge_base: KnowledgeBase,
-        block_size: int = 1
+        block_size: int = 1,
+        book_id: str = "",  # H16 Phase 3：用于 token_delta 广播的 session_id
     ) -> Tuple[Optional[AnalysisResult], Tuple[int, int], dict]:
         """
         分析单个章节（并发安全版本）
@@ -141,11 +146,32 @@ class NovelAnalyzer:
             # 2. 调用LLM（带重试和温度退火，包含JSON解析验证）
             # 重试归因改用单次调用统计：并发章节共享 LLMClient 时，
             # 客户端全局计数差分会把其它章节的尝试混入本块的 retry_info
-            success, response, error, token_counts, call_stats = await self.llm_client.chat_with_retry(
+            # H16 Phase 3 (2026-08-26)：改用 chat_auto() 按 streaming_enabled 自动选流式/非流式；
+            # 流式模式下 on_progress 回调 broadcast token_delta 给前端。
+            hub = get_hub()
+            block_started_at = time.monotonic()
+
+            async def on_progress(chunk: "StreamChunk") -> None:
+                if chunk.type in ("content", "usage"):
+                    elapsed = time.monotonic() - block_started_at
+                    rate = (chunk.estimated_total_tokens or 0) / max(elapsed, 0.1)
+                    await hub.broadcast_token_delta(
+                        context="analysis",
+                        session_id=book_id or "unknown",
+                        unit_idx=chapter_number,
+                        delta={
+                            "output_tokens": chunk.estimated_total_tokens or 0,
+                            "rate_tokens_per_sec": rate,
+                            "elapsed_sec": elapsed,
+                        },
+                    )
+
+            success, response, error, token_counts, call_stats = await self.llm_client.chat_auto(
                 messages,
                 max_tokens=self.config.api.max_tokens,
                 validate_response=validate_json_response,
-                retry_messages_builder=build_retry_messages
+                retry_messages_builder=build_retry_messages,
+                on_progress=on_progress,
             )
             retry_info = {
                 "retries": max(0, call_stats.get("attempts", 0) - 1),

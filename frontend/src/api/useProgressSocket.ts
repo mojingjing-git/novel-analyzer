@@ -3,7 +3,7 @@
 import { ref, onUnmounted, type Ref } from 'vue'
 
 export interface ProgressMessage {
-  type: 'log' | 'progress' | 'block_done' | 'state_change' | 'token_stats' | 'ping' | 'summary_progress' | 'location_normalization_progress' | 'block_start' | 'discovery'
+  type: 'log' | 'progress' | 'block_done' | 'state_change' | 'token_stats' | 'ping' | 'summary_progress' | 'location_normalization_progress' | 'block_start' | 'discovery' | 'token_delta'
   payload: Record<string, unknown>
 }
 

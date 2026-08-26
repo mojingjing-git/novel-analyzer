@@ -604,16 +604,18 @@ class FinalSummaryRunner:
         self._inflight_count -= 1
         self._llm_sem.release()
 
-    async def _call_llm_summary(self, prompt: str) -> Optional[str]:
-        """第一次调用：产出 Markdown 卷摘要"""
+    async def _call_llm_summary(self, prompt: str, batch_idx: int = 0) -> Optional[str]:
+        """第一次调用：产出 Markdown 卷摘要（H16 Phase 3 改 chat_auto + on_progress broadcast）"""
         messages = [
             {"role": "system", "content": BATCH_SYSTEM_PROMPT},
             {"role": "user", "content": prompt}
         ]
         await self._acquire_llm_slot()
         try:
-            success, content, error, tokens, _call_stats = await self._llm.chat_with_retry(
-                messages, max_tokens=self.config.api.max_tokens, validate_response=None
+            on_progress = self._make_on_progress("summary_phase_1", batch_idx)
+            success, content, error, tokens, _call_stats = await self._llm.chat_auto(
+                messages, max_tokens=self.config.api.max_tokens, validate_response=None,
+                on_progress=on_progress,
             )
         finally:
             self._release_llm_slot()
@@ -623,16 +625,18 @@ class FinalSummaryRunner:
         logger.error(f"卷摘要 LLM 调用失败: {error}")
         return None
 
-    async def _call_llm_final(self, prompt: str) -> Optional[str]:
-        """最终报告调用：使用 FINAL_SYSTEM_PROMPT"""
+    async def _call_llm_final(self, prompt: str, batch_idx: int = 0) -> Optional[str]:
+        """最终报告调用（H16 Phase 3 改 chat_auto + on_progress broadcast）"""
         messages = [
             {"role": "system", "content": FINAL_SYSTEM_PROMPT},
             {"role": "user", "content": prompt}
         ]
         await self._acquire_llm_slot()
         try:
-            success, content, error, tokens, _call_stats = await self._llm.chat_with_retry(
-                messages, max_tokens=self.config.api.max_tokens, validate_response=None
+            on_progress = self._make_on_progress("summary_phase_4", batch_idx)
+            success, content, error, tokens, _call_stats = await self._llm.chat_auto(
+                messages, max_tokens=self.config.api.max_tokens, validate_response=None,
+                on_progress=on_progress,
             )
         finally:
             self._release_llm_slot()
@@ -642,18 +646,20 @@ class FinalSummaryRunner:
         logger.error(f"最终报告 LLM 调用失败: {error}")
         return None
 
-    async def _call_llm_reconciliation(self, prompt: str) -> Optional[dict]:
-        """第二次调用：产出伏笔 reconciliation JSON"""
+    async def _call_llm_reconciliation(self, prompt: str, batch_idx: int = 0) -> Optional[dict]:
+        """第二次调用（H16 Phase 3 改 chat_auto + on_progress broadcast）"""
         messages = [
             {"role": "system", "content": RECONCILIATION_SYSTEM_PROMPT},
             {"role": "user", "content": prompt}
         ]
         await self._acquire_llm_slot()
         try:
-            success, content, error, tokens, _call_stats = await self._llm.chat_with_retry(
+            on_progress = self._make_on_progress("summary_phase_1", batch_idx)
+            success, content, error, tokens, _call_stats = await self._llm.chat_auto(
                 messages, max_tokens=self.config.api.max_tokens,
                 validate_response=validate_reconciliation_json,
-                retry_messages_builder=build_reconciliation_retry_messages
+                retry_messages_builder=build_reconciliation_retry_messages,
+                on_progress=on_progress,
             )
         finally:
             self._release_llm_slot()
@@ -663,18 +669,20 @@ class FinalSummaryRunner:
             return None
         return extract_foreshadow_json(content)
 
-    async def _call_llm_global_recheck(self, prompt: str) -> Optional[dict]:
-        """全书复检调用：使用 GLOBAL_RECHECK_SYSTEM_PROMPT"""
+    async def _call_llm_global_recheck(self, prompt: str, batch_idx: int = 0) -> Optional[dict]:
+        """全书复检调用（H16 Phase 3 改 chat_auto + on_progress broadcast）"""
         messages = [
             {"role": "system", "content": GLOBAL_RECHECK_SYSTEM_PROMPT},
             {"role": "user", "content": prompt}
         ]
         await self._acquire_llm_slot()
         try:
-            success, content, error, tokens, _call_stats = await self._llm.chat_with_retry(
+            on_progress = self._make_on_progress("summary_phase_2", batch_idx)
+            success, content, error, tokens, _call_stats = await self._llm.chat_auto(
                 messages, max_tokens=self.config.api.max_tokens,
                 validate_response=validate_reconciliation_json,
-                retry_messages_builder=build_reconciliation_retry_messages
+                retry_messages_builder=build_reconciliation_retry_messages,
+                on_progress=on_progress,
             )
         finally:
             self._release_llm_slot()
@@ -683,6 +691,32 @@ class FinalSummaryRunner:
             logger.warning(f"全书复检调用失败: {error}")
             return None
         return extract_foreshadow_json(content)
+
+    def _make_on_progress(self, context: str, unit_idx: int):
+        """构造 on_progress 回调：H16 Phase 3 broadcast token_delta 到 ProgressHub"""
+        from ..progress_hub import get_hub
+        from ..core.llm_client import StreamChunk
+        import time as _time
+
+        hub = get_hub()
+        started_at = _time.monotonic()
+        book_id = getattr(self, "book_id", "") or "unknown"
+
+        async def on_progress(chunk: "StreamChunk") -> None:
+            if chunk.type in ("content", "usage"):
+                elapsed = _time.monotonic() - started_at
+                rate = (chunk.estimated_total_tokens or 0) / max(elapsed, 0.1)
+                await hub.broadcast_token_delta(
+                    context=context,
+                    session_id=book_id,
+                    unit_idx=unit_idx,
+                    delta={
+                        "output_tokens": chunk.estimated_total_tokens or 0,
+                        "rate_tokens_per_sec": rate,
+                        "elapsed_sec": elapsed,
+                    },
+                )
+        return on_progress
 
     def _record_tokens(self, category: str, tokens) -> None:
         """累积并发出分类 token 统计（事件循环内调用，无需缓冲）"""
@@ -1400,11 +1434,11 @@ class FinalSummaryRunner:
 
         semaphore = asyncio.Semaphore(min(self.concurrency, len(recheck_batches)))
 
-        async def process_recheck_batch(prompt: str) -> int:
+        async def process_recheck_batch(prompt: str, batch_idx: int) -> int:
             async with semaphore:
                 if self._stop_requested:
                     return 0
-                foreshadow_data = await self._call_llm_global_recheck(prompt)
+                foreshadow_data = await self._call_llm_global_recheck(prompt, batch_idx=batch_idx)
             if foreshadow_data is None:
                 return 0
             local_count = 0
@@ -1431,8 +1465,8 @@ class FinalSummaryRunner:
                         local_count += 1
             return local_count
 
-        tasks = [asyncio.create_task(process_recheck_batch(prompt))
-                 for _, prompt in recheck_batches]
+        tasks = [asyncio.create_task(process_recheck_batch(prompt, batch_idx=i))
+                 for i, (_, prompt) in enumerate(recheck_batches)]
         for coro in asyncio.as_completed(tasks):
             try:
                 batch_resolved = await coro
@@ -1542,7 +1576,7 @@ class FinalSummaryRunner:
                 elapsed = 0.0
                 restored_batch = True
             else:
-                summary_response = await self._call_llm_summary(prompt)
+                summary_response = await self._call_llm_summary(prompt, batch_idx=idx)
                 if self._stop_requested:
                     return None
                 if summary_response is None:
@@ -1565,7 +1599,7 @@ class FinalSummaryRunner:
                     batch_summary=volume_summary,
                     active_foreshadows_block=active_block
                 )
-                foreshadow_data = await self._call_llm_reconciliation(reconciliation_prompt)
+                foreshadow_data = await self._call_llm_reconciliation(reconciliation_prompt, batch_idx=idx)
                 if foreshadow_data is not None:
                     await self._save_checkpoint_batch(idx, ch_start, ch_end, None, foreshadow_data)
             return {
@@ -1679,7 +1713,7 @@ class FinalSummaryRunner:
             style_profile=style_text,
             final_min_words=self.config.analysis.final_report_min_words
         )
-        final_report = await self._call_llm_final(final_prompt)
+        final_report = await self._call_llm_final(final_prompt, batch_idx=0)
         if self._stop_requested:
             # 用户停止：返回 None（状态为已停止），不抛失败
             self._emit_progress({"type": "status", "message": "已停止"})

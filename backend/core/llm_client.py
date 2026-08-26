@@ -15,6 +15,7 @@ import logging
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Tuple, Optional, List, Callable, Awaitable
 from openai import AsyncOpenAI, APITimeoutError, APIError, AuthenticationError
@@ -93,24 +94,36 @@ def detect_provider(config: APIConfig) -> str:
 
 
 class FailureLogger:
-    """失败日志记录器 - 专门记录API调用失败的详细信息（线程安全）"""
+    """失败日志记录器 - 专门记录API调用失败的详细信息（线程安全）
+
+    H15 修复（2026-08-26）：原实现用裸 open('a') 追加，无大小限制；24h-unlink
+    仅在 __init__ 触发一次，长跑不重启文件会一直增长。改用 RotatingFileHandler
+    （10MB × 3），轮转由 logging 体系自动管理，与 analyzer.log/crash.log 策略一致。
+    """
 
     def __init__(self, log_file: str = "api_failures.log"):
         self.log_file = Path(log_file)
         self.failures = []
         self._lock = threading.Lock()
-        self._check_reset()
+        self._logger = self._build_logger()
 
-    def _check_reset(self):
-        """如果日志文件最后修改时间超过24小时，清空重新开始"""
-        if self.log_file.exists():
-            mtime = self.log_file.stat().st_mtime
-            if time.time() - mtime > 86400:
-                try:
-                    self.log_file.unlink()
-                    logger.info("api_failures.log 超过24小时，已重置")
-                except OSError:
-                    pass  # 文件被占用，跳过
+    def _build_logger(self) -> logging.Logger:
+        """构造带 RotatingFileHandler(10MB × 3) 的专用 logger，避免与别处句柄冲突。"""
+        flog = logging.getLogger("api_failures")
+        flog.setLevel(logging.INFO)
+        flog.propagate = False
+        if not any(
+            getattr(h, "baseFilename", "") == str(self.log_file)
+            for h in flog.handlers
+        ):
+            rfh = RotatingFileHandler(
+                str(self.log_file), encoding="utf-8",
+                maxBytes=10 * 1024 * 1024, backupCount=3,
+            )
+            # 简洁格式：每行一条 JSON 记录，便于外部脚本直接 grep/jq
+            rfh.setFormatter(logging.Formatter("%(message)s"))
+            flog.addHandler(rfh)
+        return flog
 
     def record_failure(
         self,
@@ -134,15 +147,11 @@ class FailureLogger:
         }
         with self._lock:
             self.failures.append(failure)
-            self._write_to_file(failure)
-
-    def _write_to_file(self, failure: dict):
-        """追加写入失败记录到文件（须在 _lock 内调用）"""
-        try:
-            with open(self.log_file, 'a', encoding='utf-8') as f:
-                f.write(json.dumps(failure, ensure_ascii=False) + "\n")
-        except Exception as e:
-            logger.error(f"写入失败日志出错: {e}")
+            try:
+                # 走 logging：单一文件流、自动轮转、单实例锁保护
+                self._logger.info(json.dumps(failure, ensure_ascii=False))
+            except Exception as e:
+                logger.error(f"写入失败日志出错: {e}")
 
     def get_summary(self) -> dict:
         """获取失败统计摘要（线程安全）"""
@@ -192,6 +201,26 @@ def moderation_hit_from_exception(e) -> bool:
         body_msg = str(err_inner.get("message", "")) if isinstance(err_inner, dict) else str(body)
     return (is_moderation_code(e_code) or is_moderation_code(body_code)
             or is_moderation_message(body_msg) or is_moderation_message(str(e)))
+
+
+# 探测禁用思考参数用的检测器清单（前端 UI 也用这份，禁删字段）
+# 7 个维度，任一命中即判定模型在思考：
+#   - reasoning_content: Anthropic / GLM / DeepSeek v3.1+ 字段
+#   - reasoning_details: MiniMax M3 + reasoning_split=true
+#   - think_tags: <think>...</think> （DeepSeek R1 / M3 默认 / QwQ / Qwen3）
+#   - thinking_tags: <thinking>...</thinking>
+#   - reasoning_tag: <reasoning>...</reasoning>
+#   - usage_reasoning_tokens: OpenAI o-series 隐藏 thinking（仅在 usage 计费字段）
+#   - anthropic_thinking_blocks: Anthropic 协议 content list 形态
+_THINKING_DETECTORS: List[Tuple[str, str]] = [
+    ("reasoning_content", "message.reasoning_content 字段（GLM/DeepSeek v3.1+）"),
+    ("reasoning_details", "message.reasoning_details 字段（M3+reasoning_split）"),
+    ("think_tags", "content 含 <think>...</think>（DeepSeek R1 / M3 / QwQ / Qwen3）"),
+    ("thinking_tags", "content 含 <thinking>...</thinking>"),
+    ("reasoning_tag", "content 含 <reasoning>...</reasoning>"),
+    ("usage_reasoning_tokens", "usage.completion_tokens_details.reasoning_tokens > 0（OpenAI o-series）"),
+    ("anthropic_thinking_blocks", "content 是 list 且含 type=thinking block（Anthropic）"),
+]
 
 
 class LLMClient:
@@ -299,18 +328,32 @@ class LLMClient:
         """探测当前端点实际认哪个禁用思考参数（OpenAI 兼容端点）。
 
         对每个候选参数发一次微请求（小 prompt，max_tokens=1024，30s 超时，
-        不走重试链/失败日志），判定依据：
-        - content 非空 且 reasoning_content 为空 → 该参数有效
-        - reasoning_content 有内容 → 思考仍在，无效
-        - content 为空但 reasoning 有内容（MiniMax 式拆字段坑）→ 无效且有害
-        - 基线请求就无思考 → 模型默认不思考，无需禁用
+        不走重试链/失败日志）。**多模式检测**（任一命中即判定模型在思考）：
+
+        1. ``reasoning_content`` 字段非空（Anthropic / GLM / DeepSeek v3.1+）
+        2. ``reasoning_details`` 字段非空（M3 + reasoning_split=true）
+        3. content 含 ``<think>...</think>`` 标签（DeepSeek R1 / M3 默认 / QwQ / Qwen3）
+        4. content 含 ``<thinking>...</thinking>`` 标签
+        5. content 含 ``<reasoning>...</reasoning>`` 标签
+        6. ``usage.completion_tokens_details.reasoning_tokens > 0``（OpenAI o-series 隐藏 thinking）
+        7. content 是 list 且含 ``type=thinking`` block（Anthropic 协议 content list 形态）
+
+        判定标准：基线请求**任一**模式命中 → 模型默认开启思考；
+        候选参数请求**所有**模式都未命中 → 该参数有效（关闭了思考）。
 
         anthropic 协议无需探测（官方参数即 thinking:disabled）。
 
-        返回: {
-          "results": [{"param", "thinking_mode", "reasoning_chars", "content_chars", "worked", "error"}...],
-          "best": {"thinking_mode": dict} 或 None,
+        返回结构: {
+          "results": [
+            {
+              "param", "thinking_mode",
+              "reasoning_chars", "content_chars", "think_tag_chars", "reasoning_token_count",
+              "worked", "error", "detection_breakdown": {7 个布尔}
+            }...
+          ],
+          "best": {"thinking_mode": dict, "param": str} | None,
           "default_thinks": bool,
+          "default_detection_breakdown": {7 个布尔},
           "note": str
         }
         """
@@ -320,34 +363,97 @@ class LLMClient:
                     "param": "thinking disabled（anthropic 官方）",
                     "thinking_mode": {"thinking": {"type": "disabled"}},
                     "reasoning_chars": 0, "content_chars": 0,
+                    "think_tag_chars": 0, "reasoning_token_count": 0,
                     "worked": True, "error": "",
+                    "detection_breakdown": {k: False for k, _ in _THINKING_DETECTORS},
                 }],
-                "best": {"thinking_mode": {"thinking": {"type": "disabled"}}},
+                "best": {"thinking_mode": {"thinking": {"type": "disabled"}}, "param": "thinking disabled（anthropic 官方）"},
                 "default_thinks": True,
+                "default_detection_breakdown": {k: False for k, _ in _THINKING_DETECTORS},
                 "note": "anthropic 协议官方禁用思考参数即 thinking:disabled，无需探测",
             }
 
         client = AsyncOpenAI(base_url=base_url, api_key=api_key if api_key else "empty")
         prompt = "计算 123456789 * 987654321 的结果，只输出数字。"
 
+        # 候选参数：覆盖 2025-2026 主流厂商的禁用 thinking 语法
         candidates = [
             {"param": "无参数（基线）", "thinking_mode": None, "extra": {}},
+            # 现有三个
             {"param": "thinking: disabled", "thinking_mode": {"thinking": {"type": "disabled"}},
              "extra": {"extra_body": {"thinking": {"type": "disabled"}}}},
             {"param": "reasoning_effort: none", "thinking_mode": {"reasoning_effort": "none"},
              "extra": {"extra_body": {"reasoning_effort": "none"}}},
             {"param": "enable_thinking: false", "thinking_mode": {"enable_thinking": False},
              "extra": {"extra_body": {"enable_thinking": False}}},
+            # 新增：MiniMax M3 完整关闭（thinking + reasoning_split 联合）
+            {"param": "thinking: disabled + reasoning_split",
+             "thinking_mode": {"thinking": {"type": "disabled"}, "reasoning_split": True},
+             "extra": {"extra_body": {"thinking": {"type": "disabled"}, "reasoning_split": True}}},
+            # 新增：Qwen3 / GLM vLLM 走 chat_template_kwargs
+            {"param": "chat_template_kwargs: enable_thinking=false",
+             "thinking_mode": {"chat_template_kwargs": {"enable_thinking": False}},
+             "extra": {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}},
+            # 新增：OpenAI Responses 风格
+            {"param": "reasoning: effort=none",
+             "thinking_mode": {"reasoning": {"effort": "none"}},
+             "extra": {"extra_body": {"reasoning": {"effort": "none"}}}},
         ]
 
         logger.info(f"开始探测禁用思考参数 - Model: {model}, 端点: {base_url}, "
                     f"候选 {len(candidates)} 个（并发发送，各 30s 超时）")
 
+        def _detect(msg, usage: dict) -> tuple:
+            """返回 (any_detected, breakdown_dict, reasoning_chars, content_chars, think_tag_chars, reasoning_token_count)"""
+            content = getattr(msg, "content", None) or ""
+            content_str = content if isinstance(content, str) else ""  # list 形态（Anthropic）走 _anthropic_thinking_blocks
+            content_chars = len(content_str.strip())
+
+            reasoning = getattr(msg, "reasoning_content", None) or ""
+            # 防御：MagicMock 默认返回的 reasoning_content 是 Mock 实例（len 会爆），强制 str
+            reasoning_chars = len(str(reasoning).strip()) if reasoning else 0
+
+            reasoning_details = getattr(msg, "reasoning_details", None)
+            # 防御：MagicMock 会让 reasoning_details 返回 Mock 实例（非 None），视为无值
+            if isinstance(reasoning_details, (dict, list, str)):
+                has_reasoning_details = bool(reasoning_details)
+            else:
+                has_reasoning_details = False
+
+            # think tag 字符数（用于诊断）
+            think_tag_chars = 0
+            for pat in (r"<think>.*?</think>", r"<thinking>.*?</thinking>", r"<reasoning>.*?</reasoning>"):
+                for m in re.finditer(pat, content_str, re.DOTALL | re.IGNORECASE):
+                    think_tag_chars += len(m.group(0))
+
+            reasoning_token_count = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens", 0) or 0
+
+            # Anthropic 协议 content list 形态
+            has_anthropic_thinking_blocks = isinstance(content, list) and any(
+                isinstance(b, dict) and b.get("type") == "thinking" for b in content
+            )
+
+            breakdown = {
+                "reasoning_content": bool(reasoning_chars),
+                "reasoning_details": has_reasoning_details,
+                "think_tags": bool(re.search(r"<think>.*?</think>", content_str, re.DOTALL | re.IGNORECASE)),
+                "thinking_tags": bool(re.search(r"<thinking>.*?</thinking>", content_str, re.DOTALL | re.IGNORECASE)),
+                "reasoning_tag": bool(re.search(r"<reasoning>.*?</reasoning>", content_str, re.DOTALL | re.IGNORECASE)),
+                "usage_reasoning_tokens": reasoning_token_count > 0,
+                "anthropic_thinking_blocks": has_anthropic_thinking_blocks,
+            }
+            return any(breakdown.values()), breakdown, reasoning_chars, content_chars, think_tag_chars, reasoning_token_count
+
         async def probe_one(cand: dict) -> dict:
-            reasoning_chars = 0
-            content_chars = 0
-            worked = False
-            error = ""
+            empty_breakdown = {k: False for k, _ in _THINKING_DETECTORS}
+            result = {
+                "param": cand["param"],
+                "thinking_mode": cand["thinking_mode"],
+                "reasoning_chars": 0, "content_chars": 0,
+                "think_tag_chars": 0, "reasoning_token_count": 0,
+                "worked": False, "error": "",
+                "detection_breakdown": dict(empty_breakdown),
+            }
             t0 = time.time()
             try:
                 resp = await client.chat.completions.create(
@@ -359,44 +465,48 @@ class LLMClient:
                     **cand["extra"],
                 )
                 msg = resp.choices[0].message
-                content = msg.content or ""
-                reasoning = getattr(msg, "reasoning_content", None) or ""
-                content_chars = len(content.strip())
-                reasoning_chars = len(reasoning.strip())
+                usage = getattr(resp, "usage", None)
+                # Pydantic / TypedDict 兼容：usage 可能是 dict 或对象
+                usage_dict = usage if isinstance(usage, dict) else (vars(usage) if usage else {})
+                detected, breakdown, r_chars, c_chars, tag_chars, tok_count = _detect(msg, usage_dict)
+                result.update({
+                    "reasoning_chars": r_chars,
+                    "content_chars": c_chars,
+                    "think_tag_chars": tag_chars,
+                    "reasoning_token_count": tok_count,
+                    "detection_breakdown": breakdown,
+                })
                 if cand["thinking_mode"] is None:
-                    worked = None  # 基线不判定
-                elif content_chars > 0 and reasoning_chars == 0:
-                    worked = True
-                elif content_chars == 0 and reasoning_chars > 0:
-                    worked = False  # 内容被思考字段抢走（MiniMax 式拆字段坑）
-                    error = "content 为空、思考全在 reasoning_content"
+                    result["worked"] = None  # 基线不判定
                 else:
-                    worked = False
+                    # 候选参数有效 = 所有检测模式都未命中
+                    if not detected:
+                        result["worked"] = True
+                    elif c_chars == 0 and r_chars > 0:
+                        # 旧版"MiniMax 拆字段坑"告警
+                        result["error"] = "content 为空、思考全在 reasoning_content"
             except Exception as e:
-                error = f"{type(e).__name__}: {str(e)[:120]}"
+                result["error"] = f"{type(e).__name__}: {str(e)[:120]}"
             dt = time.time() - t0
             if cand["thinking_mode"] is None:
-                logger.info(f"探测[{cand['param']}] 完成（{dt:.1f}s）: 思考 {reasoning_chars} 字 / "
-                            f"内容 {content_chars} 字（基线{'' if reasoning_chars else '，默认无思考'}）")
+                logger.info(f"探测[{cand['param']}] 完成（{dt:.1f}s）: 思考 {result['reasoning_chars']} 字 / "
+                            f"内容 {result['content_chars']} 字 / think_tag {result['think_tag_chars']} 字 / "
+                            f"reasoning_tokens {result['reasoning_token_count']} / "
+                            f"detected={any(result['detection_breakdown'].values())}")
             else:
-                verdict = "✅ 有效" if worked else "❌ 无效"
-                logger.info(f"探测[{cand['param']}] 完成（{dt:.1f}s）: 思考 {reasoning_chars} 字 / "
-                            f"内容 {content_chars} 字 → {verdict}"
-                            + (f"，原因: {error}" if error else ""))
-            return {
-                "param": cand["param"],
-                "thinking_mode": cand["thinking_mode"],
-                "reasoning_chars": reasoning_chars,
-                "content_chars": content_chars,
-                "worked": worked,
-                "error": error,
-            }
+                verdict = "✅ 有效" if result["worked"] else "❌ 无效"
+                logger.info(f"探测[{cand['param']}] 完成（{dt:.1f}s）: 思考 {result['reasoning_chars']} 字 / "
+                            f"内容 {result['content_chars']} 字 / think_tag {result['think_tag_chars']} 字 / "
+                            f"reasoning_tokens {result['reasoning_token_count']} → {verdict}"
+                            + (f"，原因: {result['error']}" if result['error'] else ""))
+            return result
 
-        # 4 个候选并发发送，总耗时 ≈ 单个最慢请求
+        # 所有候选并发发送
         results = list(await asyncio.gather(*(probe_one(c) for c in candidates)))
 
         baseline = results[0]
-        default_thinks = bool(baseline["reasoning_chars"])
+        default_thinks = any(baseline["detection_breakdown"].values())
+        default_breakdown = baseline["detection_breakdown"]
         best = None
         note = ""
         if not default_thinks:
@@ -407,7 +517,11 @@ class LLMClient:
                     best = {"thinking_mode": r["thinking_mode"], "param": r["param"]}
                     break
             if best is None:
-                note = "未探测到有效的禁用思考参数（该端点/模型可能不支持关闭思考）"
+                # 分情况给 note：M2.x 系类是 known limitation
+                # 这里没有 model → provider 映射，保守给通用提示
+                note = ("未探测到有效的禁用思考参数。可能是：①M2.x 系类官方不支持（"
+                        "MiniMax M2/M2.5/M2.7 等思考强制开启）；②需要尝试更多参数组合。"
+                        "考虑临时切到同厂商其他模型（如 M3）或非思考模型。")
 
         if best:
             logger.info(f"探测完成: 默认思考={default_thinks}, 推荐参数=[{best['param']}] → "
@@ -415,7 +529,13 @@ class LLMClient:
         else:
             logger.warning(f"探测完成: 默认思考={default_thinks}, 未命中有效参数 - {note}")
 
-        return {"results": results, "best": best, "default_thinks": default_thinks, "note": note}
+        return {
+            "results": results,
+            "best": best,
+            "default_thinks": default_thinks,
+            "default_detection_breakdown": default_breakdown,
+            "note": note,
+        }
 
     def _build_anthropic_payload(self, messages: List[dict], temperature: float, max_tokens: int) -> dict:
         """Anthropic /v1/messages 载荷构造：system 提取为顶层参数，相邻同角色消息合并。"""
@@ -1285,6 +1405,44 @@ class LLMClient:
         logger.error("=" * 60)
         return _build_result(False, final_content, final_msg,
                              last_consumed_tokens[0], last_consumed_tokens[1])
+
+    async def chat_auto(
+        self,
+        messages: List[dict],
+        max_tokens: Optional[int] = None,
+        validate_response: Optional[Callable] = None,
+        retry_messages_builder: Optional[Callable] = None,
+        on_progress: Optional[Callable[[StreamChunk], Awaitable[None]]] = None,
+    ) -> Tuple[bool, str, str, Tuple[int, int], dict]:
+        """根据 self.config.streaming_enabled 自动选 chat_with_retry / chat_stream_with_retry
+
+        H16 Phase 3 (2026-08-26) 业务接入统一入口：
+        - streaming_enabled=True（默认）→ chat_stream_with_retry（流式，每 chunk 回调 on_progress）
+        - streaming_enabled=False → chat_with_retry（旧非流式 API，on_progress 忽略）
+
+        返回值与 chat_with_retry 一致（兼容现有 4 个调用方）：
+        (success, content, error, (prompt_tokens, completion_tokens), call_stats)
+        """
+        if self.config.streaming_enabled:
+            result = await self.chat_stream_with_retry(
+                messages, max_tokens=max_tokens,
+                validate_response=validate_response,
+                retry_messages_builder=retry_messages_builder,
+                on_progress=on_progress,
+            )
+            return (
+                result.success,
+                result.content,
+                result.error,
+                (result.prompt_tokens, result.completion_tokens),
+                result.call_stats,
+            )
+        # 非流式：on_progress 被忽略（保持接口一致）
+        return await self.chat_with_retry(
+            messages, max_tokens=max_tokens,
+            validate_response=validate_response,
+            retry_messages_builder=retry_messages_builder,
+        )
 
     @staticmethod
     def _is_429(error: str) -> bool:
