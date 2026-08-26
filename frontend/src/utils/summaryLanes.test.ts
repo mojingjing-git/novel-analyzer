@@ -43,7 +43,7 @@ describe('applySummaryProgress 把 summary_progress 翻译成 LaneView 块', () 
     expect(a2.newActive.size).toBe(1)
   })
 
-  it('batch_done：把对应合成块从 active 移到 finished（ok=true）', () => {
+  it('batch_done：把对应合成块从 active 移到 finished（ok=true，range 带 /total）', () => {
     // 先合成 batch 阶段
     let active = new Map()
     let finished = new Map()
@@ -62,7 +62,7 @@ describe('applySummaryProgress 把 summary_progress 翻译成 LaneView 块', () 
     expect(r.changed).toBe(true)
     expect(r.newActive.has(900003)).toBe(false)
     expect(r.newFinished.get(900003)?.ok).toBe(true)
-    expect(r.newFinished.get(900003)?.range).toBe('卷3')
+    expect(r.newFinished.get(900003)?.range).toBe('卷3/12')
     // 其他 11 卷还在 active
     expect(r.newActive.size).toBe(11)
   })
@@ -173,5 +173,74 @@ describe('applySummaryProgress 把 summary_progress 翻译成 LaneView 块', () 
     )
     expect(r.changed).toBe(false)
     expect(r.newActive.size).toBe(1)
+  })
+
+  it('batch_failed 保留 /totalBatches 后缀（range=卷X/N）', () => {
+    let active = new Map()
+    let finished = new Map()
+    const init = applySummaryProgress(
+      { type: 'phase', phase: 'batch', total_batches: 12 },
+      active, finished,
+    )
+    active = init.newActive
+    finished = init.newFinished
+    const r = applySummaryProgress(
+      { type: 'batch_failed', batch: 4, total_batches: 12, message: '卷4 失败' },
+      active, finished,
+    )
+    expect(r.newFinished.get(900004)?.range).toBe('卷4/12')
+    expect(r.newFinished.get(900004)?.ok).toBe(false)
+  })
+
+  it('batch_done 不传 total_batches 时退化为卷X（不抛错）', () => {
+    let active = new Map()
+    let finished = new Map()
+    const init = applySummaryProgress(
+      { type: 'phase', phase: 'batch', total_batches: 12 },
+      active, finished,
+    )
+    active = init.newActive
+    finished = init.newFinished
+    const r = applySummaryProgress(
+      { type: 'batch_done', batch: 5 },  // 缺 total_batches
+      active, finished,
+    )
+    expect(r.newFinished.get(900005)?.range).toBe('卷5')
+  })
+
+  it('用户停止：type=status + message 含"已停止" → 残留合成块以 ok=false 移到 finished', () => {
+    // 模拟 batch 阶段跑了一些，用户突然点停止
+    let active = new Map()
+    let finished = new Map()
+    const init = applySummaryProgress(
+      { type: 'phase', phase: 'batch', total_batches: 12 },
+      active, finished,
+    )
+    active = init.newActive
+    finished = init.newFinished
+
+    const r = applySummaryProgress(
+      { type: 'status', message: '已停止' },
+      active, finished,
+    )
+    expect(r.changed).toBe(true)
+    expect(r.newActive.size).toBe(0)
+    // 12 个合成块应全部以 ok=false 移到 finished（不再转圈显示"运行中"）
+    let stopCount = 0
+    for (const info of r.newFinished.values()) {
+      if (info.ok === false) stopCount++
+    }
+    expect(stopCount).toBe(12)
+  })
+
+  it('phase=recheck + total_batches=5 现在会合成 5 个块（修了死代码）', () => {
+    const r = applySummaryProgress(
+      { type: 'phase', phase: 'recheck', total_batches: 5 },
+      new Map(), new Map(),
+    )
+    expect(r.changed).toBe(true)
+    expect(r.newActive.size).toBe(5)
+    expect(r.newActive.get(910001)?.range).toBe('伏笔复检批1/5')
+    expect(r.newActive.get(910005)?.range).toBe('伏笔复检批5/5')
   })
 })

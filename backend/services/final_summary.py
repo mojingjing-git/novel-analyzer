@@ -1397,10 +1397,6 @@ class FinalSummaryRunner:
             return
 
         logger.info(f"开始全书伏笔复检：{len(recheck_items)}个活跃伏笔")
-        self._emit_progress({
-            "type": "phase", "phase": "recheck", "phase_label": "全书伏笔复检",
-            "message": f"[阶段2/4] 全书伏笔复检（{len(recheck_items)}个活跃伏笔）..."
-        })
         full_text = "\n\n".join(volume_summaries)
         recheck_batch_size = max(1, int(self.config.analysis.foreshadow_recheck_batch_size or 40))
         total_rechecked = 0
@@ -1427,6 +1423,17 @@ class FinalSummaryRunner:
                     active_foreshadows_block='\n'.join(lines)
                 )
                 recheck_batches.append((batch_items, recheck_prompt))
+
+        # H17 P3 V2 修复（2026-08-26）：phase 事件后移到 recheck_batches 构造后，
+        # 补 total_batches 字段。修复前 phase 事件在 batches 之前就发了，
+        # 前端 LaneView 兼容层 applySummaryProgress 看到 totalBatches=0 直接跳过
+        # recheck 合成，910001-910999 id 范围是死代码 → 阶段 2/4 全书伏笔复检
+        # （可能跑很久）时 LaneView 全空。
+        self._emit_progress({
+            "type": "phase", "phase": "recheck", "phase_label": "全书伏笔复检",
+            "total_batches": len(recheck_batches),
+            "message": f"[阶段2/4] 全书伏笔复检（{len(recheck_items)}个活跃伏笔）..."
+        })
 
         if not recheck_batches:
             logger.warning("复检计划为空（全部超预算跳过），结束全书复检")

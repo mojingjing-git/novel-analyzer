@@ -72,9 +72,11 @@ export function applySummaryProgress(
         const next = new Map(active)
         const nextFinished = new Map(finished)
         next.delete(blockId)
+        // range 补 total_batches 后缀（"卷3/12"），没传 total_batches 时退化为 "卷3"
+        const totalLabel = totalBatches > 0 ? `${batchIdx}/${totalBatches}` : `${batchIdx}`
         nextFinished.set(blockId, {
           ok: ptype === 'batch_done',
-          range: `卷${batchIdx}`,
+          range: `卷${totalLabel}`,
         })
         return { changed: true, newActive: next, newFinished: nextFinished }
       }
@@ -89,6 +91,23 @@ export function applySummaryProgress(
       for (const [id, info] of next) {
         if (id >= 900000) {
           nextFinished.set(id, { ok: true, range: info.range })
+          next.delete(id)
+        }
+      }
+      return { changed: true, newActive: next, newFinished: nextFinished }
+    }
+  }
+
+  // 用户主动停止：后端只发 {"type": "status", "message": "已停止"}，
+  // 不会发 complete。残留的合成块会一直留在 active 转圈（elapsed 一直涨），
+  // 整行"运行中"但实际 LLM 已经停了。这里把 ≥900000 的活动块以 ok=false 移到 finished。
+  if (ptype === 'status' && typeof p.message === 'string' && p.message.includes('已停止')) {
+    if (active.size > 0) {
+      const next = new Map(active)
+      const nextFinished = new Map(finished)
+      for (const [id, info] of next) {
+        if (id >= 900000) {
+          nextFinished.set(id, { ok: false, range: info.range })
           next.delete(id)
         }
       }
