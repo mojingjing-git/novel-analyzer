@@ -265,9 +265,31 @@ def _chapter_regex_for_mode(options: SplitOptions, lines: List[str]) -> tuple:
     """
     if options.mode == "custom" and options.pattern and options.pattern.strip():
         try:
-            return re.compile(options.pattern, re.MULTILINE), "自定义正则"
-        except re.error:
-            logger.warning("自定义正则编译失败，回退自动检测")
+            custom_rx = re.compile(options.pattern, re.MULTILINE)
+        except re.error as e:
+            # 正则语法错误，回退自动检测（之前行为：编译失败也回退）
+            logger.warning(f"自定义正则编译失败 ({e})，回退自动检测")
+        else:
+            # P4 修复（2026-08-27）：编译成功但在前 N 行 0 命中，也回退 auto
+            # 之前会沉默地把整本书当 1 章，split_report.txt 显示「总章节数 1」，
+            # GUI 上看起来「切分成功」但用户拿到的是 1 个 2MB 的伪章节。
+            # 真实案例：用户 mode=custom + 第X回 pattern（书用「章」不用「回」），
+            # 或者 mode=custom + min_words=10000（其他章节都不到 10000 字被过滤）。
+            # 复用 _chapter_regex_for_mode 的 scan_lines 做命中统计：
+            sample = lines[: options.scan_lines]
+            hits = sum(
+                1 for ln in sample
+                if ln.strip() and len(ln.strip()) <= 60 and custom_rx.match(ln.strip())
+            )
+            if hits > 0:
+                return custom_rx, "自定义正则"
+            # 0 命中：可能 pattern 错了（用户写了「第X回」但书是「第X章」），
+            # 也可能书前 N 行恰好没章节标题（罕见）。无论哪种，回退 auto 都比
+            # 把整本书当 1 章更友好。
+            logger.warning(
+                f"自定义正则在前 {options.scan_lines} 行 0 命中 (pattern={options.pattern!r})，"
+                f"回退自动检测")
+            # fall through to auto detection
 
     # 自动检测：对每个候选正则在前 N 行打分，选出主导格式用于展示
     scores: Dict[str, int] = {}
@@ -448,10 +470,22 @@ def split_text(content: str, options: Optional[SplitOptions] = None) -> SplitRes
 
     # 最小字数：跳过 or 合并短章
     if options.min_words > 0:
+        pre_filter_count = len(blocks)
         if options.merge_tiny:
             blocks = _merge_tiny(blocks, options.min_words)
         else:
             blocks = [b for b in blocks if b.word_count >= options.min_words or b.num is None]
+        # P4 修复（2026-08-27）：min_words 过滤后剩余章节过少时直接报错，
+        # 避免「切分成功」但只切出 1 章的沉默失败。
+        # 真实案例：《从姑获鸟开始》6.3MB 切出 768 章，仅第 1 章 (20568 字) 超过
+        # min_words=10000 阈值，其余 767 章 < 10000 字全被过滤 → 剩 1 章。
+        # 阈值定 5 章：低于 5 章基本不可能是用户期望的"长篇切分"。
+        if len(blocks) < 5 and pre_filter_count >= 5:
+            raise ValueError(
+                f"min_words={options.min_words} 过高：切出 {pre_filter_count} 个章节，"
+                f"过滤后仅剩 {len(blocks)} 个（阈值过滤了 {pre_filter_count - len(blocks)} 个）。"
+                f"网文章节通常 2000-5000 字，建议把 min_words 调到 200-500，"
+                f"或设为 0 不过滤。")
 
     # 超大章自动拆分
     if options.max_words > 0:

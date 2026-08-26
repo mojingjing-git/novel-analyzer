@@ -19,7 +19,8 @@ type BatchResult = {
 const files = ref<FileItem[]>([])
 const opts = reactive({
   mode: 'auto' as 'auto' | 'custom',
-  pattern: '第[一二三四五六七八九十百千零\\d]+章',
+  // 自定义模式下的章节正则（空 = 让后端走自动检测，避免用户用错的 pattern 导致整本书被切成一章）
+  pattern: '',
   use_volume: true,
   min_words: 0,
   merge_tiny: false,
