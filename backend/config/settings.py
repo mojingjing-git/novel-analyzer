@@ -141,6 +141,7 @@ class APIConfig:
     summary_model: str = ""      # 最终总结专用模型；空=跟随 model（复用同一 base_url/api_key，重型任务可切 M3 等）
     summary_thinking_mode: dict = field(default_factory=dict)  # 最终总结专用思考控制；空=跟随 thinking_mode
     provider: str = "auto"       # 协议格式：auto=自动检测 / openai=OpenAI兼容 / anthropic=Anthropic /v1/messages
+    streaming_enabled: bool = True  # H16：true=流式 chat_stream_with_retry / false=回退 chat_with_retry（旧 API）
 
 
 @dataclass
