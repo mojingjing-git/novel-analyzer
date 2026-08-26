@@ -63,8 +63,9 @@ watch(
 </template>
 
 <style scoped>
-/* Win11 浅色控制台：与 .glass-card 同色，配 Cascadia Code 等宽字体；
-   状态色通过 .log-icon 上的 badge-* token 传达，不再用白字+暗底 */
+/* Win11 浅色控制台：与 .glass-card 同色（不再覆盖 background，让 glass-card
+   的 --win-layer 透出，与 RunDashboard 的 4 个指标卡外框颜色完全一致），
+   配 Cascadia Code 等宽字体；状态色通过 .log-icon 上的 badge-* token 传达 */
 .log-console {
   padding: 12px;
   overflow-y: auto;
@@ -72,7 +73,6 @@ watch(
   font-size: 12px;
   line-height: 1.55;
   max-height: 320px;
-  background: var(--win-control-alt);
 }
 
 .log-empty {

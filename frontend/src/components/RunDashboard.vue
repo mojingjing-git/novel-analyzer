@@ -47,6 +47,10 @@ const props = withDefaults(defineProps<{
   tokenByBlock?: Map<number, { outputTokens: number; lastTokenAt: number }>
   /** H17 Phase 3 V2：30 点速率 sparkline */
   rateHistory?: number[]
+  /** H17 P3 V2 修复（2026-08-26）：所有活跃 block 的聚合速率（tok/s）
+   * 修复前 currentRate 是 rateHistory 最后一个值 = 某一个 block 的瞬时速率，
+   * 4 路并发时显示的是单 block 速率，不是系统总吞吐。 */
+  aggregateRate?: number
   /** 卡死预警阈值（秒） */
   stallWarnSec?: number
   /** 发现流 */
@@ -60,6 +64,7 @@ const props = withDefaults(defineProps<{
   finishedBlocks: () => new Map(),
   tokenByBlock: () => new Map(),
   rateHistory: () => [],
+  aggregateRate: 0,
   stallWarnSec: 480,
   discoveries: () => [],
 })
@@ -69,14 +74,22 @@ const outputTokens = computed(() => props.sessionTokens?.output ?? 0)
 const completed = computed(() => props.progress?.current ?? 0)
 const total = computed(() => props.progress?.total ?? 0)
 const eta = computed(() => props.progress?.eta ?? '—')
+// H17 P3 V2 修复：当前显示用 aggregateRate（所有活跃 block 聚合），
+// rateHistory 仍驱动 sparkline 历史曲线
 const currentRate = computed(() => {
+  if (props.aggregateRate !== undefined && props.aggregateRate > 0) {
+    return props.aggregateRate
+  }
   const h = props.rateHistory
   return h.length > 0 ? h[h.length - 1] : 0
 })
 
 function fmtNum(n: number): string {
   if (n >= 10000) return `${(n / 1000).toFixed(1)}k`
-  return String(n)
+  // P2 修复（2026-08-26）：Math.round 去掉 CountUp 动画中间帧的浮点
+  // 修复前 CountUp 在 t<1 时 display = from + delta * eased（浮点），
+  // String() 直接输出 "12.999759744828719" 这种 18 位小数
+  return String(Math.round(n))
 }
 
 // Sparkline polyline points（手写 SVG，30 点；H16 plan 决策：不引入 d3-shape）

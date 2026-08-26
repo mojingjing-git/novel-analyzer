@@ -26,10 +26,26 @@ const discoveries = ref<DiscoveryItem[]>([])
 let discoveryId = 1
 // H17 Phase 3 V2：块级 token 累计（用于车道进度条 + 卡死预警）+ 速率 sparkline 历史
 const tokenByBlock = ref<Map<number, { outputTokens: number; lastTokenAt: number }>>(new Map())
+// H17 P3 V2 修复（2026-08-26）：per-block 最新速率（key=blockId），
+// 用作「当前所有活跃 block 的聚合速率」基础。修复前 currentRate 是
+// rateHistory 最后一项 = 某个 block 瞬时速率，4 路并发时显示是单 block。
+// block_done 时清理对应 blockId 的速率，避免聚合时把已结束 block 的尾速算进去。
+const rateByBlock = ref<Map<number, number>>(new Map())
 const rateHistory = ref<number[]>([])
 const RATE_HISTORY_MAX = 30
 // 已完成块保留上限（防止 Map 无限增长）
 const FINISHED_BLOCKS_MAX = 50
+// H17 P3 V2：活跃 block 聚合速率（tok/s）= sum(活跃 block 的 rateByBlock)
+// 注意：filter + reduce 在 computed 中会随 activeBlocks/rateByBlock 自动重算
+const aggregateRate = computed(() => {
+  let total = 0
+  for (const [blockId, rate] of rateByBlock.value.entries()) {
+    if (activeBlocks.value.has(blockId)) {
+      total += rate
+    }
+  }
+  return total
+})
 // 章节详情共享的书目与章节号（从独立的工具栏提升到此处，便于两个分栏内容框对齐）
 const detailBookId = ref('')
 const detailChapter = ref(0)
@@ -93,6 +109,10 @@ function onMessage(msg: ProgressMessage) {
       if (blockId > 0) {
         activeBlocks.value.delete(blockId)
         activeBlocks.value = new Map(activeBlocks.value)
+        // H17 P3 V2 修复（2026-08-26）：清理已完成 block 的速率，
+        // 否则 aggregateRate 会把刚结束 block 的尾速算进"当前聚合"
+        rateByBlock.value.delete(blockId)
+        rateByBlock.value = new Map(rateByBlock.value)
         finishedBlocks.value.set(blockId, {
           ok: Boolean(p.ok),
           range: String(p.range ?? `block ${blockId}`),
@@ -135,6 +155,10 @@ function onMessage(msg: ProgressMessage) {
         cur.outputTokens = Math.max(cur.outputTokens, outTokens)  // 累计取最大
         cur.lastTokenAt = Date.now()
         tokenByBlock.value = new Map(tokenByBlock.value)
+        // H17 P3 V2 修复（2026-08-26）：维护 per-block 最新速率
+        // 注意：rate 可能 < 0 / = 0（停止 / 出错），也照更新以反映"该 block 当前不输出"
+        rateByBlock.value.set(blockId, rate)
+        rateByBlock.value = new Map(rateByBlock.value)
       }
       if (rate > 0) {
         rateHistory.value = [...rateHistory.value, rate].slice(-RATE_HISTORY_MAX)
@@ -488,6 +512,7 @@ onUnmounted(() => {
           :finished-blocks="finishedBlocks"
           :token-by-block="tokenByBlock"
           :rate-history="rateHistory"
+          :aggregate-rate="aggregateRate"
           :stall-warn-sec="stallWarnSec"
           :discoveries="discoveries"
           class="split-detail"

@@ -50,4 +50,39 @@ describe('RunDashboard 仪表盘容器', () => {
     expect(root.exists()).toBe(true)
     expect(root.classes()).toContain('glass-card')
   })
+
+  it('P2 修复：fmtNum 对小数四舍五入，去掉 CountUp 动画中间帧的浮点（2026-08-26）', async () => {
+    // 修复前 fmtNum('12.999759744828719') = "12.999759744828719"（CountUp 动画 600ms 期间
+    // 任意一帧的 display 都是浮点，被 String() 完整输出 18 位）
+    // 修复后必须 Math.round → "13"
+    const wrapper = mount(RunDashboard, {
+      props: {
+        running: true,
+        progress: { current: 12.999759744828719, total: 100, eta: '' },
+      },
+    })
+    // 等待 CountUp 动画完成（默认 600ms）再断言
+    await new Promise((r) => setTimeout(r, 700))
+    const cards = wrapper.findAll('.rd-card')
+    // 第一张卡 = 已完成
+    expect(cards[0].text()).toContain('13')
+    // 修复前的 bug 表现
+    expect(cards[0].text()).not.toContain('12.999')
+  })
+
+  it('P3 V2 修复：aggregateRate 优先于 rateHistory 最后一项（2026-08-26）', () => {
+    // 4 路并发时 rateHistory 末尾只是某个 block 的瞬时速率，aggregateRate
+    // 才是 sum(活跃 block 速率) = 系统总吞吐。修复前 currentRate 取 rateHistory[-1]，
+    // 4 路并发时显示的是单 block 速率，不是聚合。
+    const wrapper = mount(RunDashboard, {
+      props: {
+        running: true,
+        rateHistory: [10, 12, 11],  // 末尾是单个 block 的速率 = 11
+        aggregateRate: 44,           // 4 个活跃 block 各 11 tok/s，合计 44
+      },
+    })
+    // 找实时输出速率的右侧大数字
+    const rateValue = wrapper.find('.rd-rate-value')
+    expect(rateValue.text()).toContain('44')
+  })
 })
