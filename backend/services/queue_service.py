@@ -115,6 +115,41 @@ def _load_path(s: str) -> Path:
     return PROJECT_ROOT / p
 
 
+def _format_eta(seconds: float) -> str:
+    """把剩余秒数格式化为最易读的 2 段中文（X 时 Y 分 / X 分 Y 秒 / X 秒）
+
+    设计：与"小红点/进度条"等简明 UI 保持一致（Win11 任务栏 ETA 也用 2 段）。
+    """
+    if seconds < 0 or seconds != seconds or seconds == float("inf"):
+        return ""
+    s = int(round(seconds))
+    if s <= 0:
+        return ""
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    if h > 0:
+        return f"{h}时{m:02d}分"
+    if m > 0:
+        return f"{m}分{sec:02d}秒"
+    return f"{sec}秒"
+
+
+def _compute_eta(start_time: float, current: int, total: int, now: float) -> str:
+    """根据全程平均速率外推剩余时间，格式化为 UI 友好字符串。
+
+    返回空字符串表示"暂无法估算"（刚开始、已完成、参数非法）。
+    设计：全程平均比滑动窗口更稳——并发场景（concurrency≥4）下进度
+    事件频率高，全程平均反映稳态速率，初期几块慢启动会被后续稳态
+    拉平；不用滑动窗口避免复杂度。
+    """
+    if not start_time or current <= 0 or total <= current:
+        return ""
+    elapsed = max(now - start_time, 0.1)
+    rate = current / elapsed
+    remaining_sec = (total - current) / max(rate, 1e-6)
+    return _format_eta(remaining_sec)
+
+
 @dataclass
 class QueueItem:
     """队列中的一个小说任务"""
@@ -777,8 +812,11 @@ class AnalysisService:
                 level = "error" if status in ("failed", "failed_summary") else "info"
                 await hub.log(message, level=level)
             if "progress" in payload and "total" in payload:
-                item.completed_chapters = payload["progress"]
-                await hub.progress(payload["progress"], payload["total"])
+                current = payload["progress"]
+                total = payload["total"]
+                item.completed_chapters = current
+                eta_str = _compute_eta(item.start_time, current, total, time.time())
+                await hub.progress(current, total, eta=eta_str)
 
             # H17: block_start 转发（带章范围文本 message 复用现有"开始分析第X-Y章..."）
             if status == "start":
