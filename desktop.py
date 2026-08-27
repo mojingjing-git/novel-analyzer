@@ -278,16 +278,42 @@ class Api:
             pass
 
     def toggle_maximize(self):
-        """最大化 / 还原窗口（标题栏按钮）"""
-        import webview
+        """最大化 / 还原窗口（标题栏按钮）
+
+        pywebview 的 win.maximized 是构造参数（始终等于初始值 False，不反映
+        当前状态），win.restore() 注释也说"Restore minimized window"——用于
+        unmaximize 不可靠。直接用 ctypes 调 Win32 IsZoomed + ShowWindow：
+        - IsZoomed(hwnd) 真实查询当前窗口状态（最大化/正常）
+        - ShowWindow(SW_MAXIMIZE=3 / SW_RESTORE=9) 切到目标状态
+        两个 API 都是线程安全的，无需 marshal 到 UI 线程（Form.WindowState
+        setter 才有这个限制，Win32 窗口级 API 不受）。
+        """
+        import ctypes
+        hwnd = _get_hwnd()
+        if hwnd is None:
+            return
+        user32 = ctypes.windll.user32
+        SW_MAXIMIZE = 3
+        SW_RESTORE = 9
+        if user32.IsZoomed(hwnd):
+            user32.ShowWindow(hwnd, SW_RESTORE)
+        else:
+            user32.ShowWindow(hwnd, SW_MAXIMIZE)
+
+    def is_maximized(self) -> bool:
+        """查询窗口是否处于最大化状态（前端 resize 时调以同步 UI 状态）
+
+        前端用 innerWidth vs screen.width 启发式判定不可靠（用户拖窗口到
+        接近屏宽时会误判为最大化），需要后端用 Win32 IsZoomed 真实查询。
+        """
+        import ctypes
+        hwnd = _get_hwnd()
+        if hwnd is None:
+            return False
         try:
-            win = webview.windows[0]
-            if getattr(win, "maximized", False):
-                win.restore()
-            else:
-                win.maximize()
+            return bool(ctypes.windll.user32.IsZoomed(hwnd))
         except Exception:
-            pass
+            return False
 
     def close(self):
         """关闭窗口（标题栏按钮）：任务运行中先弹确认"""
@@ -308,6 +334,32 @@ class Api:
             win.move(int(win.x + dx), int(win.y + dy))
         except Exception:
             pass
+
+
+def _get_hwnd() -> int | None:
+    """从 pywebview Window 拿到 Win32 窗口句柄（hwnd），不可用时返回 None
+
+    pywebview 的 Window 对象要等 webview.start() 之后 .native 才会被赋值；
+    frameless 模式下 .native 仍是 WinForms Form，其 .Handle 属性就是
+    Control.Handle 包装的 IntPtr。getattr 容错是为了处理 webview.start()
+    之前的早期调用（如 pywebviewready 事件后立刻触发的情况）。
+    """
+    import webview
+    try:
+        win = webview.windows[0]
+    except (IndexError, AttributeError):
+        return None
+    native = getattr(win, "native", None)
+    if native is None:
+        return None
+    handle = getattr(native, "Handle", None)
+    if handle is None:
+        return None
+    try:
+        hwnd = int(handle.ToInt64() if hasattr(handle, "ToInt64") else handle)
+    except Exception:
+        return None
+    return hwnd if hwnd != 0 else None
 
 
 def main():

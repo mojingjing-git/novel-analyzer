@@ -39,8 +39,8 @@ const wvApi = () => (window as unknown as { pywebview?: { api?: Record<string, u
 function winMin() { void (wvApi()?.minimize as (() => void) | undefined)?.() }
 function winMax() {
   void (wvApi()?.toggle_maximize as (() => void) | undefined)?.()
-  // pywebview 没有 maximize/resize 事件，乐观切换；失败时 resized 事件会纠正
-  isMaximized.value = !isMaximized.value
+  // 乐观切换：resize 事件会同步后端真实状态做纠正
+  void refreshMaximizedFromBackend()
 }
 function winClose() { void (wvApi()?.close as (() => void) | undefined)?.() }
 function winTitlebarDblClick() {
@@ -75,24 +75,27 @@ function onTitlebarUp() {
   window.removeEventListener('mouseup', onTitlebarUp)
 }
 
-// 监听窗口 resize：framleless 模式下 pywebview 没有原生 maximize 事件，
-// 但全屏时窗口尺寸会变成屏幕尺寸——以"窗口宽==屏宽 且 窗口高>=屏高-任务栏"作为
-// 启发式判定，简单可靠。
-function refreshMaximizedFromSize() {
-  const w = window.innerWidth
-  const h = window.innerHeight
-  if (typeof screen !== 'undefined') {
-    // 任务栏通常吃掉 40-80px，所以高度阈值放宽到 屏高 - 100
-    const screenLike = w >= screen.width - 2 && h >= screen.height - 100
-    isMaximized.value = screenLike
+// 同步 isMaximized：走后端 Win32 IsZoomed(hwnd) 真实查询。
+// 前端启发式（innerWidth vs screen.width）会因 Aero Snap 接近全屏尺寸误判，
+// 不可靠；后端用 ctypes 直查 Win32 窗口状态，是唯一权威来源。
+async function refreshMaximizedFromBackend() {
+  const fn = wvApi()?.is_maximized as (() => Promise<boolean> | boolean) | undefined
+  if (!fn) return
+  try {
+    const v = await fn()
+    isMaximized.value = !!v
+  } catch {
+    // 后端暂不可用（如窗口未就绪），保持现状
   }
 }
+// 窗口尺寸变化时（包括用户拖到屏幕边缘自动 max、双击 max、点按钮 max/restore
+// 触发的 Win32 resize）都要同步状态。用 rAF 节流避免 resize 风暴时频繁 IPC。
 let _resizeRaf = 0
 function onWindowResize() {
   if (_resizeRaf) return
   _resizeRaf = requestAnimationFrame(() => {
     _resizeRaf = 0
-    refreshMaximizedFromSize()
+    void refreshMaximizedFromBackend()
   })
 }
 
@@ -102,11 +105,11 @@ onMounted(() => {
   // AppLayout 为常驻布局，采样失败则窗口控制整个会话缺失。
   window.addEventListener('pywebviewready', () => {
     isDesktop.value = !!wvApi()
-    refreshMaximizedFromSize()
+    void refreshMaximizedFromBackend()
   })
-  // 监听窗口尺寸变化以同步 isMaximized（framleless 模式无原生事件）
+  // 监听窗口尺寸变化以同步 isMaximized（任何 max/restore 路径都会触发 Win32 resize）
   window.addEventListener('resize', onWindowResize)
-  refreshMaximizedFromSize()
+  void refreshMaximizedFromBackend()
 
   if (new URLSearchParams(window.location.search).get('collapsed') === '1') {
     collapsed.value = true
