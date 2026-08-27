@@ -916,7 +916,20 @@ class AnalysisService:
             logger.warning(f"《{item.name}》token 统计落盘失败: {e}")
 
     def _archive_item(self, item: QueueItem) -> None:
-        """归档整个小说目录到 base_dir/分析结果/（失败仅标记，不影响主流程）"""
+        """归档整个书目录到 base_dir/分析结果/（失败仅标记，不影响主流程）
+
+        P5d 修复（2026-08-27）：shutil.move 成功后必须更新 item.workspace_dir 和
+        item.blocks_dir 指向新位置，否则：
+        - _books 缓存的 path 仍是旧路径（已搬走）
+        - get_book_path 命中旧路径后 path.exists() False → 返回 None
+        - 后续 _auto_summary_done_books 调 summary.start(book_id) 抛
+          "书目不存在: 《xxx》"，即使归档后的书目录实际存在
+        真实案例: 《大王饶命》分析完成后归档到 workspace/分析结果/《大王饶命》/，
+        但 item.workspace_dir 还指向 workspace/《大王饶命》/（已不存在），
+        auto_summary 报"书目不存在"。
+
+        同步调 save_queue 把新路径持久化到磁盘，重启后也是对的。
+        """
         try:
             archive_root = item.workspace_dir.parent / "分析结果"
             archive_root.mkdir(parents=True, exist_ok=True)
@@ -924,6 +937,10 @@ class AnalysisService:
             if target.exists():
                 raise FileExistsError(f"归档目标已存在: {target}")
             shutil.move(str(item.workspace_dir), str(target))
+            # 关键：更新 item 的路径引用，否则后续 _books 缓存旧路径
+            item.workspace_dir = target
+            item.blocks_dir = target / "blocks"
+            self.save_queue()  # 持久化新路径（重启后也对）
             logger.info(f"《{item.name}》已归档到 {target}")
         except Exception as e:
             item.archive_failed = True
