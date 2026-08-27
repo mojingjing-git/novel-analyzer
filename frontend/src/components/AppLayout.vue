@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, RouterView } from 'vue-router'
 import Icon from './Icon.vue'
 
@@ -9,6 +9,8 @@ const isDark = ref(false)
 const collapsed = ref(false)
 // 桌面端（pywebview）才渲染窗口控制按钮
 const isDesktop = ref(false)
+// 窗口最大化状态（仅桌面端，切换 maximize/restore 按钮图标）
+const isMaximized = ref(false)
 
 const navItems = [
   { path: '/', label: '分析队列', icon: 'queue' },
@@ -35,10 +37,21 @@ function toggleTheme() {
 // 窗口控制（桌面 pywebview）。浏览器内不存在 pywebview，按钮不渲染。
 const wvApi = () => (window as unknown as { pywebview?: { api?: Record<string, unknown> } })?.pywebview?.api
 function winMin() { void (wvApi()?.minimize as (() => void) | undefined)?.() }
-function winMax() { void (wvApi()?.toggle_maximize as (() => void) | undefined)?.() }
+function winMax() {
+  void (wvApi()?.toggle_maximize as (() => void) | undefined)?.()
+  // pywebview 没有 maximize/resize 事件，乐观切换；失败时 resized 事件会纠正
+  isMaximized.value = !isMaximized.value
+}
 function winClose() { void (wvApi()?.close as (() => void) | undefined)?.() }
+function winTitlebarDblClick() {
+  // frameless 模式下没有 Win32 系统标题栏，双击最大化/还原由前端接管
+  winMax()
+}
 
 // 标题栏拖拽移动窗口（桌面端）：按下记录起点，移动按增量调用 pywebview move
+// 注意：frameless + double-click 同时存在会冲突——浏览器对原生标题栏的双击放大是默认行为，
+// 但本应用是 WebView2 + 自定义标题栏，dblclick 不会自动触发 maximize；用 Vue 的
+// @dblclick 显式接管即可。
 let dragState: { sx: number; sy: number; lastX: number; lastY: number } | null = null
 function onTitlebarDown(e: MouseEvent) {
   const api = wvApi()
@@ -62,11 +75,39 @@ function onTitlebarUp() {
   window.removeEventListener('mouseup', onTitlebarUp)
 }
 
+// 监听窗口 resize：framleless 模式下 pywebview 没有原生 maximize 事件，
+// 但全屏时窗口尺寸会变成屏幕尺寸——以"窗口宽==屏宽 且 窗口高>=屏高-任务栏"作为
+// 启发式判定，简单可靠。
+function refreshMaximizedFromSize() {
+  const w = window.innerWidth
+  const h = window.innerHeight
+  if (typeof screen !== 'undefined') {
+    // 任务栏通常吃掉 40-80px，所以高度阈值放宽到 屏高 - 100
+    const screenLike = w >= screen.width - 2 && h >= screen.height - 100
+    isMaximized.value = screenLike
+  }
+}
+let _resizeRaf = 0
+function onWindowResize() {
+  if (_resizeRaf) return
+  _resizeRaf = requestAnimationFrame(() => {
+    _resizeRaf = 0
+    refreshMaximizedFromSize()
+  })
+}
+
 onMounted(() => {
   isDesktop.value = !!wvApi()
   // P2：WebView2/pywebview 可能晚于挂载注入（官方要求监听 pywebviewready）；
   // AppLayout 为常驻布局，采样失败则窗口控制整个会话缺失。
-  window.addEventListener('pywebviewready', () => { isDesktop.value = !!wvApi() })
+  window.addEventListener('pywebviewready', () => {
+    isDesktop.value = !!wvApi()
+    refreshMaximizedFromSize()
+  })
+  // 监听窗口尺寸变化以同步 isMaximized（framleless 模式无原生事件）
+  window.addEventListener('resize', onWindowResize)
+  refreshMaximizedFromSize()
+
   if (new URLSearchParams(window.location.search).get('collapsed') === '1') {
     collapsed.value = true
   }
@@ -76,12 +117,21 @@ onMounted(() => {
     document.documentElement.classList.add('dark')
   }
 })
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', onWindowResize)
+  if (_resizeRaf) cancelAnimationFrame(_resizeRaf)
+})
 </script>
 
 <template>
   <div class="layout-root">
-    <!-- 一体化标题栏（48px，Mica，可拖拽移动窗口） -->
-    <header class="titlebar mica-surface" @mousedown="onTitlebarDown">
+    <!-- 一体化标题栏（48px，Mica，可拖拽移动窗口，双击切换最大化） -->
+    <header
+      class="titlebar mica-surface"
+      @mousedown="onTitlebarDown"
+      @dblclick="winTitlebarDblClick"
+    >
       <div class="titlebar-brand">
         <div class="logo-mark logo-mark-sm">
           <Icon name="queue" :size="16" />
@@ -90,7 +140,9 @@ onMounted(() => {
       </div>
       <div v-if="isDesktop" class="titlebar-controls">
         <button class="tb-btn" title="最小化" @click="winMin"><Icon name="minus" :size="10" /></button>
-        <button class="tb-btn" title="最大化 / 还原" @click="winMax"><Icon name="square" :size="9" /></button>
+        <button class="tb-btn" :title="isMaximized ? '还原' : '最大化'" @click="winMax">
+          <Icon :name="isMaximized ? 'restore' : 'maximize'" :size="9" />
+        </button>
         <button class="tb-btn tb-close" title="关闭" @click="winClose"><Icon name="x" :size="10" /></button>
       </div>
     </header>
@@ -150,7 +202,9 @@ onMounted(() => {
   height: 100%;
 }
 
-/* ===== 一体化标题栏（48px，Mica，可拖拽） ===== */
+/* ===== 一体化标题栏（48px，Mica，可拖拽） =====
+   frameless 模式下整个 WebView2 客户区都是我们的，标题栏底部加 1px 极淡分割线
+   区分主内容区；Mica 模式下 backdrop 会透出，分割线依然可见。 */
 .titlebar {
   height: 48px;
   flex-shrink: 0;
@@ -158,6 +212,10 @@ onMounted(() => {
   align-items: center;
   justify-content: space-between;
   user-select: none;
+  border-bottom: 1px solid var(--win-divider, rgba(0, 0, 0, 0.06));
+}
+html.dark .titlebar {
+  border-bottom-color: rgba(255, 255, 255, 0.08);
 }
 .titlebar-brand {
   display: flex;

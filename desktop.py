@@ -388,6 +388,7 @@ def main():
         min_size=(960, 700),
         text_select=True,
         js_api=Api(port),
+        frameless=True,  # 隐藏系统标题栏，由前端 48px 一体化标题栏接管（VSCode/Discord 同款）
         transparent=True,  # Win11 Mica：WebView2 底色透明，让 DWM 背景透出（见 _apply_win11_backdrop）
     )
 

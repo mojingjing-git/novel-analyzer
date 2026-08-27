@@ -68,6 +68,8 @@ const ICONS: Record<string, string> = {
   minus: '<line x1="5" y1="12" x2="19" y2="12"/>',
   square: '<rect x="5" y="5" width="14" height="14" rx="1.5"/>',
   maximize: '<rect x="5" y="5" width="14" height="14" rx="1.5"/>',
+  // 还原 - 后方方块 + 前方方块叠加（Win11 标准 restore 视觉）
+  restore: '<rect x="9" y="9" width="11" height="11" rx="1.5"/><rect x="4" y="4" width="11" height="11" rx="1.5"/>',
 }
 
 const path = computed(() => ICONS[props.name] || ICONS.info || '')
