@@ -85,14 +85,14 @@ function onMessage(msg: ProgressMessage) {
   switch (msg.type) {
     case 'progress':
       progress.value = {
-        current: msg.payload.current as number,
-        total: msg.payload.total as number,
-        eta: (msg.payload.eta as string) || '',
+        current: msg.payload.current,
+        total: msg.payload.total,
+        eta: msg.payload.eta || '',
       }
       break
     case 'block_start': {
       // H17: 块开始 → 活跃块登记
-      const p = (msg as unknown as { payload?: Record<string, unknown> }).payload || {}
+      const p = msg.payload
       const blockId = Number(p.chapter ?? 0)
       if (blockId > 0) {
         activeBlocks.value.set(blockId, {
@@ -106,7 +106,7 @@ function onMessage(msg: ProgressMessage) {
     }
     case 'block_done': {
       // H17: 块完成 → 移出活跃 + 登记 finished（用于车道占位视觉）
-      const p = (msg as unknown as { payload?: Record<string, unknown> }).payload || {}
+      const p = msg.payload
       const blockId = Number(p.chapter ?? 0)
       if (blockId > 0) {
         activeBlocks.value.delete(blockId)
@@ -131,7 +131,7 @@ function onMessage(msg: ProgressMessage) {
     }
     case 'discovery': {
       // H17: 发现流 append-only
-      const p = (msg as unknown as { payload?: Record<string, unknown> }).payload || {}
+      const p = msg.payload
       const item: DiscoveryItem = {
         id: discoveryId++,
         ts: Date.now(),
@@ -147,8 +147,8 @@ function onMessage(msg: ProgressMessage) {
     }
     case 'token_delta': {
       // H17 Phase 3 V2：实时 token 增量 → 块级累计 + 速率 sparkline
-      const p = (msg as unknown as { payload?: Record<string, unknown> }).payload || {}
-      const d = (p.delta as Record<string, unknown>) || {}
+      const p = msg.payload
+      const d = p.delta
       const blockId = Number(p.unit_idx ?? -1)
       const outTokens = Number(d.output_tokens ?? 0)
       const rate = Number(d.rate_tokens_per_sec ?? 0)
@@ -175,7 +175,7 @@ function onMessage(msg: ProgressMessage) {
       // summary 事件合成为 block_start/block_done 喂给现有 activeBlocks/finishedBlocks，
       // LaneView 就能用同一组件显示最终总结阶段的 LLM 调用。
       // 合成逻辑全部抽到 utils/summaryLanes.ts（可独立 vitest）。
-      const p = (msg as unknown as { payload?: Record<string, unknown> }).payload || {}
+      const p = msg.payload
       const ptype = String(p.type ?? '')
       const phase = String(p.phase ?? '')
       const phaseLabel: Record<string, string> = {

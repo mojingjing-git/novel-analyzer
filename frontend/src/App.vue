@@ -8,21 +8,21 @@ import { useLogStore } from './composables/useLogStore'
 useProgressSocket((msg: ProgressMessage) => {
   const store = useLogStore()
   if (msg.type === 'log') {
-    const level = (msg.payload.level as string) || 'info'
-    const text = msg.payload.text as string
-    const category = (msg.payload.category as string) || 'analysis'
+    const level = msg.payload.level || 'info'
+    const text = msg.payload.text
+    const category = msg.payload.category || 'analysis'
     // source：后端已标记 python/business；旧后端未标记时按文本兜底识别技术日志，
     // 保证"简化日志"面板不混入 Python 内部日志
-    const payloadSource = msg.payload.source as string | undefined
+    const payloadSource = msg.payload.source
     const source = payloadSource
       ?? (/\s\[(INFO|WARN|ERROR|DEBUG)\]\s/.test(text) ? 'python' : 'business')
-    store.add(text, level as 'info' | 'warn' | 'error' | 'state', category, source)
+    store.add(text, level, category, source)
   } else if (msg.type === 'state_change') {
-    const state = msg.payload.state as string
-    const detail = (msg.payload.detail as string) ?? ''
+    const state = msg.payload.state
+    const detail = msg.payload.detail ?? ''
     store.add(`状态: ${state} - ${detail}`, 'state', 'system', 'event')
   } else if (msg.type === 'block_done') {
-    const ch = msg.payload.chapter as number
+    const ch = msg.payload.chapter
     const ok = msg.payload.ok
     const elapsed = Number(msg.payload.elapsed) || 0
     if (ok) {

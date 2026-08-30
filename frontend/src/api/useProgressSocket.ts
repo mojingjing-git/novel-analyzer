@@ -2,10 +2,103 @@
 // 全应用共享一个 WebSocket 连接，避免页面切换时断开重连丢失消息
 import { ref, onUnmounted, type Ref } from 'vue'
 
-export interface ProgressMessage {
-  type: 'log' | 'progress' | 'block_done' | 'state_change' | 'token_stats' | 'ping' | 'summary_progress' | 'location_normalization_progress' | 'block_start' | 'discovery' | 'token_delta'
-  payload: Record<string, unknown>
+// ============ WS 事件协议（与 backend/ws_events.py 镜像，wire 契约见该文件）============
+
+export interface WSLogPayload {
+  level: 'info' | 'warn' | 'error'
+  text: string
+  source: 'business' | 'python'
+  category: string
 }
+
+export interface WSProgressPayload {
+  current: number
+  total: number
+  eta: string
+}
+
+export interface WSBlockStartPayload {
+  chapter: number   // block_id（块起始章号）
+  range: string
+  progress: number
+  total: number
+  ts: number        // 服务端 epoch 秒
+}
+
+export interface WSBlockDonePayload {
+  chapter: number
+  ok: boolean
+  range: string
+  elapsed?: number | null
+  tokens?: number | number[] | null  // 续跑补发路径为 (0,0) 元组 → JSON 数组
+}
+
+export interface WSDiscoveryPayload {
+  events: number
+  foreshadows: string[]
+  characters: string[]
+  unresolved: string[]
+}
+
+export interface WSTokenStatsPayload {
+  category: string
+  input_tokens: number
+  output_tokens: number
+  current_tokens?: number
+  source?: 'summary'
+}
+
+export interface WSTokenDeltaPayload {
+  context: string
+  session_id: string
+  unit_idx: number
+  delta: { output_tokens: number; rate_tokens_per_sec: number; elapsed_sec?: number }
+  timestamp: number
+}
+
+export interface WSStateChangePayload {
+  state: string  // 12 值全集见 backend/ws_events.py 的 WSState
+  detail: string
+}
+
+/** 最终总结进度（final_summary._emit_progress 透传 + book_id/batches_done 注入）。
+ *  子类型 status/phase/batch_done/batch_failed/ledger_updated/complete 字段互异，故全 optional */
+export interface WSSummaryProgressPayload {
+  type: string
+  phase?: string
+  phase_label?: string
+  batch?: number
+  total_batches?: number
+  batches_done?: number
+  elapsed?: number
+  message?: string
+  book_id?: string
+  counts?: Record<string, number>
+}
+
+/** 地点归一化进度（后端有广播、前端当前以 REST 轮询为准，此类型备用） */
+export interface WSLocationNormProgressPayload {
+  type: string
+  phase?: string
+  batch_idx?: number
+  error?: string
+  message?: string
+  book_id?: string
+  batches_done?: number
+}
+
+export type ProgressMessage =
+  | { type: 'log'; payload: WSLogPayload }
+  | { type: 'progress'; payload: WSProgressPayload }
+  | { type: 'block_start'; payload: WSBlockStartPayload }
+  | { type: 'block_done'; payload: WSBlockDonePayload }
+  | { type: 'discovery'; payload: WSDiscoveryPayload }
+  | { type: 'token_stats'; payload: WSTokenStatsPayload }
+  | { type: 'token_delta'; payload: WSTokenDeltaPayload }
+  | { type: 'state_change'; payload: WSStateChangePayload }
+  | { type: 'summary_progress'; payload: WSSummaryProgressPayload }
+  | { type: 'location_normalization_progress'; payload: WSLocationNormProgressPayload }
+  | { type: 'ping' }
 
 export interface LogEntry {
   id: number

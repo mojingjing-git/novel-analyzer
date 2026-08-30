@@ -11,6 +11,8 @@
 //   style 阶段  : 920001         (单次 LLM)
 //   report 阶段 : 930001         (单次 LLM)
 
+import type { WSSummaryProgressPayload } from '../api/useProgressSocket'
+
 export interface SummaryLaneBlock {
   range: string
   startedAt: number
@@ -25,7 +27,7 @@ export type SummaryLaneFinished = Map<number, { ok: boolean; range: string }>
  * 注意：调用者负责保证返回的 Map 引用被替换为 new Map() 触发响应式。
  */
 export function applySummaryProgress(
-  p: Record<string, unknown>,
+  p: WSSummaryProgressPayload,
   active: SummaryLaneBlocks,
   finished: SummaryLaneFinished,
 ): { changed: boolean; newActive: SummaryLaneBlocks; newFinished: SummaryLaneFinished } {
