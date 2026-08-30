@@ -34,20 +34,18 @@ if errorlevel 8 (
   exit /b 1
 )
 
-rem 2) 本地安装依赖（仅首次；后续复用 LOCAL_BUILD\node_modules）
-if not exist "%LOCAL_BUILD%\node_modules" (
-  echo 正在安装前端依赖（首次较慢，需联网）...
-  pushd "%LOCAL_BUILD%"
-  call %NPM_CMD% install >> "%RUN_LOG%" 2>&1
-  set NPM_ERR=!ERRORLEVEL!
+rem 2) 本地安装依赖（每次 build 强制刷新，避免 dev 依赖变更后 build 失败）
+echo 正在安装/更新前端依赖...
+pushd "%LOCAL_BUILD%"
+call %NPM_CMD% install >> "%RUN_LOG%" 2>&1
+set NPM_ERR=!ERRORLEVEL!
+popd
+if not "!NPM_ERR!"=="0" (
+  echo [%date% %time%] npm install 失败 >> "%RUN_LOG%"
+  echo npm install 失败，详见 build.log（通常是无外网/代理拦截 npm registry）。
   popd
-  if not "!NPM_ERR!"=="0" (
-    echo [%date% %time%] npm install 失败 >> "%RUN_LOG%"
-    echo npm install 失败，详见 build.log（通常是无外网/代理拦截 npm registry）。
-    popd
-    pause
-    exit /b 1
-  )
+  pause
+  exit /b 1
 )
 
 rem 3) 本地构建
