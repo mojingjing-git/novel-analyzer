@@ -254,6 +254,22 @@ export interface GraphEdge {
   weight: number
 }
 
+export interface ForeshadowRankItem {
+  id: string
+  description: string
+  composite_score: number
+  importance: string
+  confidence: number
+  status: string
+  first_seen_chapter: number
+  last_seen_chapter: number
+  span: number
+  evidence_count: number
+  evidence_chapters: number[]
+  resolution: string | null
+  resolved_chapter: number | null
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     headers: { 'Content-Type': 'application/json' },
@@ -427,6 +443,11 @@ export const api = {
 
   // 可视化
   getTimeline: (book_id: string) => request<{ events: unknown[]; foreshadows: unknown[]; category_map_loaded?: boolean }>(`/api/viz/timeline/${seg(book_id)}`),
+  getForeshadowRanking: (book_id: string) => request<{
+    book_id: string
+    total: number
+    ranking: ForeshadowRankItem[]
+  }>(`/api/books/${seg(book_id)}/foreshadow_ranking`),
   getForeshadowCategories: () => request<{
     schema_version: number
     fallback: string

@@ -861,18 +861,25 @@ class FinalSummaryRunner:
         # 去重（5 元组 + importance 透传）
         catalog = deduplicate_foreshadows(categorized)
 
-        # 综合排序：importance * 100 + confidence * 10 + evidence_count
+        # 综合排序：importance * 100 + confidence * 10 + evidence_count(≤50) + span(≤49)
+        # 组合因子：evidence_count 捕捉"被反复检测"，span 捕捉"跨章时间范围"
+        # 两者各贡献一半权重，避免单一因子的结构性歧视
         imp_order = {"高": 3, "中": 2, "低": 1}
         conf_order = {"高": 3, "中": 2, "低": 1}
         for c in catalog:
-            c["_sort_key"] = (
+            evidence_count = len(c.get("evidence_chapters", []))
+            span = c.get("last_seen", 0) - c.get("first_seen", 0)
+            score = (
                 imp_order.get(c.get("importance", "中"), 0) * 100
                 + conf_order.get(c.get("confidence", "中"), 0) * 10
-                + min(len(c.get("evidence_chapters", [])), 99)
+                + min(evidence_count, 50)
+                + min(span, 49)
             )
+            c["_sort_key"] = score
+            c["composite_score"] = score  # 保留到 catalog 条目，供前端展示
         catalog.sort(key=lambda c: c["_sort_key"], reverse=True)
         for c in catalog:
-            c.pop("_sort_key", None)
+            c.pop("_sort_key", None)  # 临时排序键仍删除；composite_score 保留
 
         # 分层截断：importance=高 全部保留到 max_high，中 截到 max_mid
         high_items = [c for c in catalog if c.get("importance") == "高"]
@@ -889,20 +896,25 @@ class FinalSummaryRunner:
         max_mid = a.max_foreshadow_catalog_mid
         if max_high == -1 or len(high_items) <= max_high:
             truncated.extend(high_items)
+            high_kept = len(high_items)
         else:
             truncated.extend(high_items[:max_high])
+            high_kept = max_high
             logger.info(f"高 importance 截断: {len(high_items)} -> {max_high}")
         if len(mid_items) <= max_mid:
             truncated.extend(mid_items)
+            mid_kept = len(mid_items)
         else:
             truncated.extend(mid_items[:max_mid])
+            mid_kept = max_mid
             logger.info(f"中 importance 截断: {len(mid_items)} -> {max_mid}")
         truncated.extend(other_items)
 
         self._next_foreshadow_id = len(truncated) + 1
         logger.info(
             f"伏笔总表构建完成：{len(all_clues)} 条原始 -> {len(categorized)} 条过滤 -> "
-            f"{len(truncated)} 条入总表（高 {len(high_items)}, 中 {len(mid_items)}, "
+            f"{len(truncated)} 条入总表（高 {high_kept}/{len(high_items)}, "
+            f"中 {mid_kept}/{len(mid_items)}, "
             f"其他 {len(other_items)}）"
         )
         return truncated
@@ -1526,7 +1538,9 @@ class FinalSummaryRunner:
                     first_seen_chapter=cat["first_seen"], first_seen_batch=0,
                     last_seen_chapter=cat["last_seen"], last_seen_batch=0,
                     evidence_chapters=cat["evidence_chapters"],
-                    confidence=0.8, source_type='catalog_scan'
+                    confidence=0.8, source_type='catalog_scan',
+                    composite_score=cat.get("composite_score", 0),
+                    importance=cat.get("importance", "中"),
                 ))
                 added += 1
         logger.info(f"伏笔总表同步到账本: {added} 条新增，{len(existing_ids)} 条已存在")

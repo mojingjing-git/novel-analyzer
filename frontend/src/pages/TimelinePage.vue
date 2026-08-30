@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, computed, onMounted } from 'vue'
 import BookSelector from '../components/BookSelector.vue'
-import { api } from '../api/client'
+import { api, type ForeshadowRankItem } from '../api/client'
 
 interface TimelineEvent {
   chapter: number
@@ -28,9 +28,10 @@ interface CategoryDef {
 }
 
 const bookId = ref('')
-const mode = ref<'events' | 'foreshadows'>('events')
+const mode = ref<'events' | 'foreshadows' | 'ranking'>('events')
 const events = ref<TimelineEvent[]>([])
 const foreshadows = ref<Foreshadow[]>([])
+const ranking = ref<ForeshadowRankItem[]>([])
 const minImportance = ref<'低' | '中' | '高'>('低')
 
 const categories = ref<CategoryDef[]>([])
@@ -53,17 +54,27 @@ let timelineSeq = 0
 
 watch(bookId, async () => {
   const seq = ++timelineSeq
-  if (!bookId.value) { events.value = []; foreshadows.value = []; return }
+  if (!bookId.value) { events.value = []; foreshadows.value = []; ranking.value = []; return }
   try {
     const res = await api.getTimeline(bookId.value)
     if (seq !== timelineSeq) return   // 已切到别的书：丢弃过期响应
     events.value = res.events as TimelineEvent[]
     foreshadows.value = res.foreshadows as Foreshadow[]
+    // 排行数据（可能 404，静默处理）
+    try {
+      const rankRes = await api.getForeshadowRanking(bookId.value)
+      if (seq !== timelineSeq) return
+      ranking.value = rankRes.ranking
+    } catch {
+      if (seq !== timelineSeq) return
+      ranking.value = []  // 账本不存在，排行为空
+    }
   } catch (e) {
     if (seq !== timelineSeq) return
     // 切书失败必须清空：否则残留上一本书的数据被误当成当前书（F-1）
     events.value = []
     foreshadows.value = []
+    ranking.value = []
     console.error('加载时间线失败，已清空:', e)
   }
 })
@@ -155,19 +166,22 @@ const categoryStats = computed(() => {
     <div v-if="bookId" class="flex gap-2 flex-wrap items-center">
       <button @click="mode = 'events'" class="glass-pill" :class="{ 'is-active': mode === 'events' }">事件时间线 ({{ filteredEvents.length }})</button>
       <button @click="mode = 'foreshadows'" class="glass-pill" :class="{ 'is-active': mode === 'foreshadows' }">伏笔时间线 ({{ filteredForeshadows.length }})</button>
-      <span class="text-sm ml-2" style="color: var(--win-text-secondary)">最低重要度:</span>
-      <select v-model="minImportance" class="glass-select" style="width: 92px">
-        <option value="低">全部</option>
-        <option value="中">中及以上</option>
-        <option value="高">只看高</option>
-      </select>
-      <button
-        v-if="mode === 'foreshadows'"
-        @click="showCategoryFilter = !showCategoryFilter"
-        class="glass-pill"
-        :class="{ 'is-active': showCategoryFilter }"
-        :title="'按伏笔分类筛选（已选 ' + selectedCategories.size + '/' + categories.length + '）'"
-      >分类筛选 ({{ selectedCategories.size }})</button>
+      <button @click="mode = 'ranking'" class="glass-pill" :class="{ 'is-active': mode === 'ranking' }">伏笔排行 ({{ ranking.length }})</button>
+      <template v-if="mode !== 'ranking'">
+        <span class="text-sm ml-2" style="color: var(--win-text-secondary)">最低重要度:</span>
+        <select v-model="minImportance" class="glass-select" style="width: 92px">
+          <option value="低">全部</option>
+          <option value="中">中及以上</option>
+          <option value="高">只看高</option>
+        </select>
+        <button
+          v-if="mode === 'foreshadows'"
+          @click="showCategoryFilter = !showCategoryFilter"
+          class="glass-pill"
+          :class="{ 'is-active': showCategoryFilter }"
+          :title="'按伏笔分类筛选（已选 ' + selectedCategories.size + '/' + categories.length + '）'"
+        >分类筛选 ({{ selectedCategories.size }})</button>
+      </template>
     </div>
     <div
       v-if="mode === 'foreshadows' && showCategoryFilter && categories.length"
@@ -194,6 +208,35 @@ const categoryStats = computed(() => {
       </div>
     </div>
     <div v-if="!bookId" class="glass-card p-8 text-center text-sm" style="color: var(--win-text-disabled)">请选择书目</div>
+    <div v-else-if="mode === 'ranking'" class="space-y-2">
+      <div v-if="ranking.length === 0" class="glass-card p-8 text-center text-sm" style="color: var(--win-text-disabled)">
+        暂无排行数据，请先运行最终总结
+      </div>
+      <div v-for="(item, idx) in ranking" :key="item.id" class="tl-card">
+        <div class="flex items-start gap-3">
+          <span class="text-xs font-medium mt-0.5 shrink-0" style="color: var(--win-text-disabled)">#{{ idx + 1 }}</span>
+          <div class="flex-1">
+            <p style="color: var(--win-text-primary)">{{ item.description }}</p>
+            <div class="mt-1.5 text-xs flex gap-3 flex-wrap items-center" style="color: var(--win-text-secondary)">
+              <span>分数: <strong>{{ item.composite_score }}</strong></span>
+              <span>跨度: ch{{ item.first_seen_chapter }}→ch{{ item.last_seen_chapter }} ({{ item.span }}章)</span>
+              <span>检测: {{ item.evidence_count }}次</span>
+              <span v-if="item.status === 'active'" class="status-tag badge-blue" style="font-size: 11px">活跃</span>
+              <span v-else-if="item.status === 'resolved'" class="status-tag badge-green" style="font-size: 11px">已回收</span>
+              <span v-else-if="item.status === 'dormant'" class="status-tag badge-gray" style="font-size: 11px">休眠</span>
+              <span v-if="item.evidence_count <= 1 && item.span === 0" class="status-tag badge-orange" style="font-size: 11px">⚠️ 仅检测1次</span>
+            </div>
+          </div>
+          <div class="shrink-0 flex flex-col items-end gap-1">
+            <span class="glass-badge" :class="importanceBadge[item.importance] || 'badge-gray'">{{ item.importance }}</span>
+            <!-- 分数条 -->
+            <div class="w-20 h-1.5 rounded-full overflow-hidden" style="background: var(--win-stroke)">
+              <div class="h-full rounded-full" :style="{ width: Math.min(item.composite_score / 4, 100) + '%', background: 'var(--win-accent)' }"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
     <div v-else-if="chapters.length === 0" class="glass-card p-8 text-center text-sm" style="color: var(--win-text-disabled)">暂无数据</div>
     <div v-else class="space-y-3">
       <div v-for="[ch, group] in chapters" :key="ch" class="flex gap-3">

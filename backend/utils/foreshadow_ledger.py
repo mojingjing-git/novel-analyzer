@@ -17,7 +17,8 @@ logger = logging.getLogger(__name__)
 # Schema 版本号
 # v1: 初始版本
 # v2: ForeshadowItem 新增 needs_review 可选字段（向后兼容，旧 v1 JSON 仍可加载）
-SCHEMA_VERSION = 2
+# v3: ForeshadowItem 新增 composite_score + importance（向后兼容，旧 v2 JSON 仍可加载）
+SCHEMA_VERSION = 3
 
 # 休眠阈值
 # DORMANT_BATCH_THRESHOLD 已废弃（2026-08-13）：批次阈值相对批次数（10-20 批）不可达，
@@ -46,6 +47,8 @@ class ForeshadowItem:
     confidence: float = 0.8                # 置信度 0-1
     notes: List[str] = field(default_factory=list)  # 备注
     needs_review: bool = False             # 是否需要人工复核（低置信度 / 存疑时标记）
+    composite_score: int = 0               # 组合因子分数（imp×100 + conf×10 + evi≤50 + span≤49）
+    importance: str = "中"                 # 重要度（高/中/低，从 catalog 同步）
 
     @classmethod
     def from_dict(cls, data: dict) -> 'ForeshadowItem':

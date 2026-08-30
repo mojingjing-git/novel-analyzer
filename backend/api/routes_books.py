@@ -114,6 +114,77 @@ async def get_book_ledger(book_id: str) -> dict:
         raise HTTPException(status_code=500, detail="账本读取失败")
 
 
+@router.get("/{book_id}/foreshadow_ranking")
+async def get_foreshadow_ranking(book_id: str) -> dict:
+    """伏笔排行：按组合因子分数从大到小排列"""
+    output_dir = book_service.get_output_dir(book_id)
+    if output_dir is None:
+        raise HTTPException(status_code=404, detail=f"书目不存在: {book_id}")
+
+    ledger_path = output_dir / "foreshadow_ledger.json"
+    if not ledger_path.exists():
+        raise HTTPException(status_code=404, detail="伏笔账本不存在，请先运行最终总结")
+
+    try:
+        data = json.loads(ledger_path.read_text(encoding="utf-8"))
+        items = data.get("items", [])
+
+        # 计算排行数据
+        ranking = []
+        for item in items:
+            evidence_count = len(item.get("evidence_chapters", []))
+            first_seen = item.get("first_seen_chapter", 0)
+            last_seen = item.get("last_seen_chapter", 0)
+            span = last_seen - first_seen
+            score = item.get("composite_score", 0)
+
+            # 旧数据（schema v2）没有 composite_score，实时计算
+            if score == 0 and item.get("importance"):
+                imp_order = {"高": 3, "中": 2, "低": 1}
+                conf_val = item.get("confidence", 0.8)
+                # float confidence → string
+                if conf_val >= 0.8:
+                    conf_str = "高"
+                elif conf_val >= 0.5:
+                    conf_str = "中"
+                else:
+                    conf_str = "低"
+                score = (
+                    imp_order.get(item.get("importance", "中"), 0) * 100
+                    + imp_order.get(conf_str, 0) * 10
+                    + min(evidence_count, 50)
+                    + min(span, 49)
+                )
+
+            ranking.append({
+                "id": item.get("id", ""),
+                "description": item.get("description", ""),
+                "composite_score": score,
+                "importance": item.get("importance", "中"),
+                "confidence": item.get("confidence", 0.8),
+                "status": item.get("status", "active"),
+                "first_seen_chapter": first_seen,
+                "last_seen_chapter": last_seen,
+                "span": span,
+                "evidence_count": evidence_count,
+                "evidence_chapters": item.get("evidence_chapters", []),
+                "resolution": item.get("resolution"),
+                "resolved_chapter": item.get("resolved_chapter"),
+            })
+
+        # 按分数降序
+        ranking.sort(key=lambda x: x["composite_score"], reverse=True)
+
+        return {
+            "book_id": book_id,
+            "total": len(ranking),
+            "ranking": ranking,
+        }
+    except Exception as e:
+        logger.error(f"读取伏笔排行失败: {e}")
+        raise HTTPException(status_code=500, detail="排行读取失败")
+
+
 @router.get("/{book_id}/token_stats")
 async def get_book_token_stats(book_id: str) -> dict:
     """读取该书落盘的 token 统计（分析 token_stats.json + 总结 summary_token_stats.json）"""
