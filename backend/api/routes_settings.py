@@ -68,7 +68,7 @@ async def preview_models(req: ModelPreviewRequest) -> dict:
 async def probe_thinking(req: ModelPreviewRequest) -> dict:
     """探测当前端点认哪个禁用思考参数（微请求，不写配置）。
     空字段回退到已保存配置。"""
-    from backend.core.llm_client import LLMClient
+    from backend.core.llm_probe import probe_thinking_params
     service = get_service()
     config = service.config_manager.load()
     if req.base_url:
@@ -78,7 +78,7 @@ async def probe_thinking(req: ModelPreviewRequest) -> dict:
     if req.provider:
         config.api.provider = req.provider
     try:
-        return await LLMClient.probe_thinking_params(
+        return await probe_thinking_params(
             config.api.base_url, config.api.api_key, config.api.model, config.api.provider)
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))

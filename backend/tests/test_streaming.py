@@ -22,6 +22,7 @@ from backend.core.llm_client import (
     LLMClient, StreamChunk, StreamResult,
     detect_provider,
 )
+from backend.core.llm_probe import probe_thinking_params
 
 
 # ============================ fixtures ============================
@@ -560,8 +561,8 @@ class TestProbeThinkingParamsPydanticUsage:
             make_resp(0),    # reasoning:effort=none（有效）
         ])
 
-        with patch("backend.core.llm_client.AsyncOpenAI", return_value=fake_client):
-            result = await LLMClient.probe_thinking_params(
+        with patch("backend.core.llm_probe.AsyncOpenAI", return_value=fake_client):
+            result = await probe_thinking_params(
                 "https://api.test.com", "k", "m3", "auto"
             )
 
@@ -583,7 +584,7 @@ class TestProbeThinkingParamsPydanticUsage:
 
     def test_helper_handles_all_forms(self):
         """_get_reasoning_tokens helper：None / dict / Pydantic 形态全覆盖"""
-        from backend.core.llm_client import _get_reasoning_tokens
+        from backend.core.llm_probe import _get_reasoning_tokens
 
         # None
         assert _get_reasoning_tokens(None) == 0
