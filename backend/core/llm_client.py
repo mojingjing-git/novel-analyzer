@@ -13,7 +13,6 @@ import asyncio
 import inspect
 import logging
 import threading
-from dataclasses import dataclass, field
 from typing import Tuple, Optional, List, Callable, Awaitable
 from openai import AsyncOpenAI, APITimeoutError, APIError, AuthenticationError
 import anthropic
@@ -24,48 +23,12 @@ from ..core.moderation import (
     mark_moderation, is_moderation_code, is_moderation_message, is_moderation_error,
 )
 from .llm_failure_logger import _get_failure_logger
+from .llm_stream import (
+    StreamChunk, StreamResult,
+    parse_anthropic_response, parse_anthropic_stream_event, parse_openai_stream_event,
+)
 
 logger = logging.getLogger(__name__)
-
-
-# H16 (2026-08-26)：流式 LLM 调用数据结构
-@dataclass
-class StreamChunk:
-    """流式响应的一个 chunk
-
-    字段说明：
-    - type: "content" | "reasoning" | "usage" | "error"
-    - text: type=content 时的增量文本
-    - reasoning_text: type=reasoning 时的思考链增量（M2.7 等思考型模型）
-    - estimated_total_tokens: 累计输出 token 估算（字符数 / 4，含 reasoning）
-      **重要**：在 chat_stream_with_retry 内部由调用方维护累计值，传入时
-      已是累计值，前端直接用作动画的 target_value
-    - usage_*: type=usage 时的真实 usage（OpenAI 最后一个 chunk、Anthropic 每 chunk）
-    - is_final: 是否最后一个 chunk（用于结束标志）
-    - error: type=error 时的错误消息
-    """
-    type: str = ""
-    text: str = ""
-    reasoning_text: str = ""
-    estimated_total_tokens: int = 0
-    usage_prompt_tokens: int = 0
-    usage_completion_tokens: int = 0
-    usage_cached_tokens: int = 0
-    is_final: bool = False
-    error: str = ""
-
-
-@dataclass
-class StreamResult:
-    """流式调用结束后的最终结果（与 chat() 返回值字段对齐）"""
-    success: bool
-    content: str
-    error: str
-    prompt_tokens: int
-    completion_tokens: int
-    cached_tokens: int
-    reasoning_chars: int  # 思考链总字符数（被剥离的）
-    call_stats: dict = field(default_factory=dict)  # {"attempts": N, "failed_tokens": M}
 
 
 def detect_provider(config: APIConfig) -> str:
@@ -250,21 +213,6 @@ class LLMClient:
                 payload.update(anthro_extra)
         return payload
 
-    @staticmethod
-    def _parse_anthropic_response(response) -> Tuple[str, int, int, int]:
-        """Anthropic 响应解析：拼接 text block，丢弃 thinking block。
-        返回 (content, input_tokens, output_tokens, cache_read_tokens)"""
-        text_parts: List[str] = []
-        for block in response.content:
-            btype = getattr(block, "type", None)
-            if btype == "text":
-                text_parts.append(getattr(block, "text", "") or "")
-        content = "".join(text_parts)
-        usage = getattr(response, "usage", None)
-        prompt_tokens = getattr(usage, "input_tokens", 0) or 0
-        completion_tokens = getattr(usage, "output_tokens", 0) or 0
-        cached_tokens = getattr(usage, "cache_read_input_tokens", 0) or 0
-        return content, prompt_tokens, completion_tokens, cached_tokens
 
     async def chat(
         self,
@@ -338,7 +286,7 @@ class LLMClient:
                 self._request_count += 1
 
             if self.provider == "anthropic":
-                content, prompt_tokens, completion_tokens, cached_tokens = self._parse_anthropic_response(response)
+                content, prompt_tokens, completion_tokens, cached_tokens = parse_anthropic_response(response)
                 # total 口径对齐 OpenAI usage.total_tokens（OpenAI 的 total 含缓存命中部分）
                 total_tokens = prompt_tokens + completion_tokens + cached_tokens
                 if not content:
@@ -614,7 +562,7 @@ class LLMClient:
                         if self._stop_requested:
                             await stream.close()
                             return
-                        chunk = self._parse_anthropic_stream_event(event)
+                        chunk = parse_anthropic_stream_event(event)
                         if chunk:
                             yield chunk
                     # 收尾：补一个 usage chunk
@@ -662,7 +610,7 @@ class LLMClient:
                         if hasattr(stream, "close"):
                             await stream.close()
                         return
-                    chunk = self._parse_openai_stream_event(event)
+                    chunk = parse_openai_stream_event(event)
                     if chunk:
                         yield chunk
         except asyncio.CancelledError:
@@ -673,74 +621,6 @@ class LLMClient:
             error_msg = f"流式调用异常: {type(e).__name__}: {str(e)}"
             logger.warning(error_msg)
             yield StreamChunk(type="error", error=error_msg)
-
-    def _parse_openai_stream_event(self, event) -> Optional[StreamChunk]:
-        """OpenAI 流式事件 → StreamChunk
-
-        事件类型：
-        - 有 choices[0].delta.content：内容 chunk
-        - 有 choices[0].delta.reasoning_content：思考链 chunk（M2.7 等）
-        - 无 choices 但有 usage：usage-only chunk（最后一个，stream_options=include_usage 才有）
-        """
-        if not getattr(event, "choices", None):
-            if getattr(event, "usage", None):
-                u = event.usage
-                cached = 0
-                ptd = getattr(u, "prompt_tokens_details", None)
-                if ptd is not None:
-                    cached = getattr(ptd, "cached_tokens", 0) or 0
-                cached = cached or getattr(u, "prompt_cache_hit_tokens", 0) or 0
-                return StreamChunk(
-                    type="usage",
-                    usage_prompt_tokens=u.prompt_tokens or 0,
-                    usage_completion_tokens=u.completion_tokens or 0,
-                    usage_cached_tokens=cached,
-                    is_final=True,
-                )
-            return None
-
-        choice = event.choices[0]
-        delta = getattr(choice, "delta", None)
-        if not delta:
-            return None
-
-        text = getattr(delta, "content", "") or ""
-        reasoning = getattr(delta, "reasoning_content", "") or ""
-
-        if reasoning:
-            return StreamChunk(type="reasoning", reasoning_text=reasoning)
-        if text:
-            return StreamChunk(type="content", text=text)
-        return None
-
-    def _parse_anthropic_stream_event(self, event) -> Optional[StreamChunk]:
-        """Anthropic 流式事件 → StreamChunk
-
-        事件类型：
-        - content_block_delta(type=text)：内容 chunk
-        - content_block_delta(type=thinking)：思考链 chunk
-        - message_delta.usage：增量 usage（每 chunk 都有）
-        """
-        etype = getattr(event, "type", "")
-        if etype == "content_block_delta":
-            delta = getattr(event, "delta", None)
-            if not delta:
-                return None
-            dtype = getattr(delta, "type", "")
-            if dtype == "text":
-                return StreamChunk(type="content", text=getattr(delta, "text", "") or "")
-            if dtype == "thinking":
-                return StreamChunk(type="reasoning", reasoning_text=getattr(delta, "thinking", "") or "")
-        elif etype == "message_delta":
-            usage = getattr(event, "usage", None)
-            if usage:
-                return StreamChunk(
-                    type="usage",
-                    usage_completion_tokens=getattr(usage, "output_tokens", 0) or 0,
-                    is_final=False,
-                )
-        return None
-
     @staticmethod
     async def _call_validate_response(validate_fn, content: str, timeout: float = 30.0):
         """兼容同步/异步 validate_response；30s 超时（与 chat_with_retry 风格一致）

@@ -14,7 +14,8 @@ from typing import Optional, Tuple
 from ..config.settings import AppConfig
 from ..models.analysis_result import AnalysisResult
 from ..models.knowledge import KnowledgeBase
-from .llm_client import LLMClient, StreamChunk
+from .llm_client import LLMClient
+from .llm_stream import StreamChunk
 from .prompt_builder import PromptBuilder
 from ..progress_hub import get_hub
 from ..utils.json_utils import extract_json_from_text, safe_parse_json

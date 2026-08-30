@@ -97,7 +97,8 @@ def test_anthropic_response_parsing():
     resp.usage.input_tokens = 100
     resp.usage.output_tokens = 50
     resp.usage.cache_read_input_tokens = 30
-    content, pt, ct, cached = client._parse_anthropic_response(resp)
+    from backend.core.llm_stream import parse_anthropic_response
+    content, pt, ct, cached = parse_anthropic_response(resp)
     assert content == '{"core_events": []} 补充'
     assert (pt, ct, cached) == (100, 50, 30)
     print("✅ test_anthropic_response_parsing passed")
@@ -486,6 +487,7 @@ def test_anthropic_total_tokens_include_cache():
     resp.usage.input_tokens = 100
     resp.usage.output_tokens = 50
     resp.usage.cache_read_input_tokens = 30
-    _c, pt, ct, cached = client._parse_anthropic_response(resp)
+    from backend.core.llm_stream import parse_anthropic_response
+    _c, pt, ct, cached = parse_anthropic_response(resp)
     assert (pt, ct, cached) == (100, 50, 30)
     print("✅ test_anthropic_total_tokens_include_cache passed")

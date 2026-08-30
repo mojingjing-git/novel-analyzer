@@ -18,9 +18,10 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from backend.config.settings import APIConfig
-from backend.core.llm_client import (
-    LLMClient, StreamChunk, StreamResult,
-    detect_provider,
+from backend.core.llm_client import LLMClient, detect_provider
+from backend.core.llm_stream import (
+    StreamChunk, StreamResult,
+    parse_openai_stream_event,
 )
 from backend.core.llm_probe import probe_thinking_params
 
@@ -88,7 +89,7 @@ class TestParseOpenAIStreamEvent:
         choice = MagicMock()
         choice.delta = delta
         ev = make_event(choices=[choice])
-        chunk = client._parse_openai_stream_event(ev)
+        chunk = parse_openai_stream_event(ev)
         assert chunk is not None
         assert chunk.type == "content"
         assert chunk.text == "hello"
@@ -99,7 +100,7 @@ class TestParseOpenAIStreamEvent:
         choice = MagicMock()
         choice.delta = delta
         ev = make_event(choices=[choice])
-        chunk = client._parse_openai_stream_event(ev)
+        chunk = parse_openai_stream_event(ev)
         assert chunk is not None
         assert chunk.type == "reasoning"
         assert chunk.reasoning_text == "thinking..."
@@ -107,7 +108,7 @@ class TestParseOpenAIStreamEvent:
     def test_usage_only_chunk(self):
         client = LLMClient(make_config())
         ev = make_usage_event(prompt=100, completion=50, cached=10)
-        chunk = client._parse_openai_stream_event(ev)
+        chunk = parse_openai_stream_event(ev)
         assert chunk is not None
         assert chunk.type == "usage"
         assert chunk.usage_prompt_tokens == 100
@@ -121,13 +122,13 @@ class TestParseOpenAIStreamEvent:
         choice = MagicMock()
         choice.delta = delta
         ev = make_event(choices=[choice])
-        assert client._parse_openai_stream_event(ev) is None
+        assert parse_openai_stream_event(ev) is None
 
     def test_no_choices_no_usage_returns_none(self):
         client = LLMClient(make_config())
         ev = make_event()
         ev.usage = None
-        assert client._parse_openai_stream_event(ev) is None
+        assert parse_openai_stream_event(ev) is None
 
 
 # ============================ chat_stream 流式基础 ============================

@@ -695,7 +695,7 @@ class FinalSummaryRunner:
     def _make_on_progress(self, context: str, unit_idx: int):
         """构造 on_progress 回调：H16 Phase 3 broadcast token_delta 到 ProgressHub"""
         from ..progress_hub import get_hub
-        from ..core.llm_client import StreamChunk
+        from ..core.llm_stream import StreamChunk
         import time as _time
 
         hub = get_hub()
