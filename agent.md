@@ -319,7 +319,7 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 #### pipeline.py（1177行）
 - **职责**：全书分析总调度器
 - **关键类**：`AnalysisPipeline`
-- **关键方法**：`run()`、`_serial_warmup()`、`_streaming_concurrent()`、`_failure_retry()`、`_async_rolling()`、`_flush_checkpoint()`、`_analyze_one_block()`（预热/并发/补跑三路径共用入口，try/finally 登记 `_inflight_blocks` 在途块）、`inflight_blocks()`（真实在途快照，供 status 端点给前端车道对账）
+- **关键方法**：`run()`（三阶段——串行预热→流式并发→补跑——自初始提交起就全部内联于单方法，经 `_worker`/`_async_rolling` 嵌套闭包共享可变计数与 rolling/检查点交错；**刻意取舍，勿拆成"阶段方法"**——拆分只会把共享状态摊到 self 或 context 对象上）、`_analyze_one_block()`（预热/并发/补跑三路径共用入口，try/finally 登记 `_inflight_blocks` 在途块）、`inflight_blocks()`（真实在途快照，供 status 端点给前端车道对账）。⚠️ 本行曾虚构 `_serial_warmup()`/`_streaming_concurrent()`/`_failure_retry()`/`_flush_checkpoint()` 四个不存在的方法名，2026-08-31 已修正
 - **异常兜底**：`_worker` 与 `analyze_block_with_progress` 内包 try/except——异常带原 block_id 发 failed + 补 `state.add_failed`（否则消费循环兜底固定发 chapter:0 被前端忽略 = 车道泄漏，且异常会冲出 run() 整书标 failed）
 - **补发限速**：断点续跑补发 block_done 每 50 条 `sleep(0)` 让出事件循环（千章级续跑 ~2700 条消息会打满 WS 每连接队列触发丢最旧）
 - **进度广播**：通过 `ProgressHub` WebSocket 推送 log/progress/block_done/state_change/token_stats
