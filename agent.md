@@ -26,7 +26,10 @@
 │   ├── app.py                    # FastAPI 工厂（CORS、静态文件、路由注册、生命周期）
 │   ├── core/                     # 核心分析引擎
 │   │   ├── pipeline.py           # 主分析流水线（三阶段）
-│   │   ├── llm_client.py         # LLM 客户端（双协议、温退火、三分竞争）
+│   │   ├── llm_client.py         # LLM 客户端主类（双协议调用 + 三层重试链 + 三分竞争）
+│   │   ├── llm_probe.py          # 禁用思考参数探测（probe_thinking_params 多模式检测）
+│   │   ├── llm_failure_logger.py # API 失败日志记录器（FailureLogger 单例，RotatingFileHandler）
+│   │   ├── llm_stream.py         # 流式数据结构（StreamChunk/StreamResult）+ 双协议事件/响应解析
 │   │   ├── analyzer.py           # 单章分析引擎
 │   │   ├── prompt_builder.py     # Prompt 构建器（9路上下文注入）
 │   │   ├── knowledge_base.py     # 知识库管理器（增量合并、缓存、快照隔离）
@@ -206,7 +209,7 @@
 - 最多 3 轮串行重试失败块
 - 每轮只重试上一轮标记为失败的块
 
-### 4.3 LLM 客户端（llm_client.py）
+### 4.3 LLM 客户端（llm_client.py + llm_probe/llm_failure_logger/llm_stream）
 
 **三层重试链：**
 1. 温度退火：`temp_max_retries` 次，温度 = max(0, 初始 - attempt × step)
@@ -328,13 +331,28 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 - **进度广播**：通过 `ProgressHub` WebSocket 推送 log/progress/block_done/state_change/token_stats
 - **停止机制**：`self._stop_requested` + `self.analyzer.stop()` + `self.rolling_client.request_stop()`
 
-#### llm_client.py（1020行）
-- **职责**：统一封装 OpenAI/Anthropic 双协议 LLM 调用
+#### llm_client.py（1291行，2026-08-31 拆分后主类）
+- **职责**：统一封装 OpenAI/Anthropic 双协议 LLM 调用与重试核心
 - **关键类**：`LLMClient`
-- **关键方法**：`chat()`、`chat_with_retry()`、`list_models()`、`probe_thinking_params()`、`detect_provider()`
+- **关键方法**：`chat()`、`chat_with_retry()`（温度退火+指数退避+429 三层）、`chat_stream()`/`chat_stream_with_retry()`（H16 流式）、`chat_auto()`、`list_models()`、`detect_provider()`
 - **KV Cache 统计**：读取 `prompt_tokens_details.cached_tokens`
 - **审核识别**：`moderation_hit_from_exception()` 统一判定；审核拦截需连续 3 次命中才短路退出重试链（瞬时误判多给一轮温度尝试）
-- **FailureLogger**：线程安全，`RotatingFileHandler(10MB × 3)` 轮转，每行 JSON 便于 `jq`/grep；记录温度/错误类型/等待时长；重试等待统一经 `_sleep()` 封装
+- **重试等待**：统一经 `_sleep()` 封装；失败记录走 `llm_failure_logger._get_failure_logger()`
+- ⚠️ 单测 patch 注意：`AsyncOpenAI` 的 patch 目标是 `backend.core.llm_client.AsyncOpenAI`（test_config_robustness/test_streaming 流式路径）；probe 相关 patch 在 `backend.core.llm_probe`
+
+#### llm_probe.py（277行）
+- **`probe_thinking_params(base_url, api_key, model, provider, max_tokens)`**：多模式探测端点实际认哪个禁用思考参数（7 维检测器 `_THINKING_DETECTORS`，任一命中即判定在思考；基线命中 + 候选全未命中 = 参数有效）
+- `_get_reasoning_tokens()`：usage Pydantic/dict 双形态安全提取（全库仅 probe 使用）
+- 自建 AsyncOpenAI 探针客户端，不走重试链/失败日志；单测 patch 目标 `backend.core.llm_probe.AsyncOpenAI`（test_anthropic_provider ×9 + test_streaming ×1）
+- `_THINKING_DETECTORS` 字段清单与前端 SettingsPage 的分项展示是**手工镜像**关系，禁删字段
+
+#### llm_failure_logger.py（104行）
+- **FailureLogger**：线程安全，`RotatingFileHandler(10MB × 3)` 轮转，每行 JSON 便于 `jq`/grep；记录温度/错误类型/等待时长
+- 进程级单例 `failure_logger` + `_get_failure_logger()`；`reset()` 供跨书清空
+
+#### llm_stream.py（133行）
+- **StreamChunk/StreamResult**：H16 流式调用数据结构（analyzer/final_summary/test_streaming 导入方）
+- **`parse_openai_stream_event()`/`parse_anthropic_stream_event()`/`parse_anthropic_response()`**：双协议事件/响应解析纯函数（方法体无 self，自实例方法转正）
 
 #### analyzer.py（223行）
 - **职责**：单章分析引擎

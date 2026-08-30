@@ -272,6 +272,15 @@
 - 拆分前 subagent 对照代码复审，吸收 3 处修正（routes_analysis 生产导入不能破 / AnalysisStats 补 freeze+baseline / 每步绑定测试改造）；三步各自提交后全量 pytest 420 passed，`from backend.app import app` 导入冒烟通过
 - **未动**：自动总结/归档编排（与分析-总结互斥锁纠缠，等有功能需求时再拆）
 
+## 2026-08-31 llm_client 拆分（1761 行 → 4 模块，主类 1291 行）
+
+- **`llm_failure_logger.py`（104 行）**：FailureLogger 类 + 进程级单例 + `_get_failure_logger()` 原样随迁（纯 stdlib；全仓仅 llm_client 内部使用，零测试改动）
+- **`llm_probe.py`（277 行）**：`probe_thinking_params` 多模式思考检测 + `_THINKING_DETECTORS` + `_get_reasoning_tokens`（全库仅 probe 使用）转模块函数；LLMClient 删除该 staticmethod。调用方同步：routes_settings probe 端点、test_anthropic_provider 9 处（函数级导入/调用/AsyncOpenAI patch 字符串）、test_streaming 1 处（复审纠正：:563 的 patch 实为 probe 用途而非流式测试）
+- **`llm_stream.py`（133 行）**：StreamChunk/StreamResult 数据类 + 三个解析纯函数（`parse_openai_stream_event`/`parse_anthropic_stream_event`/`parse_anthropic_response`，方法体无 self）转正；llm_client 三个调用点、analyzer 导入、final_summary 延迟导入、test_streaming 5 处 + test_anthropic_provider 2 处方法调用同步改写
+- **llm_client.py 保留**：LLMClient 类 + chat/chat_with_retry/chat_stream_with_retry/chat_auto 重试核心（与 self 状态深度集成，机械拆分有行为风险——刻意不动）；AsyncOpenAI/AsyncAnthropic 导入必须留在本文件（流式路径的 patch 依赖）
+- 拆分前 subagent 对照代码复审，吸收 2 处遗漏调用点；三步各自提交后全量 pytest 420 passed，`from backend.app import app` 导入冒烟通过
+- **未动**：`moderation_hit_from_exception`（18 行，迁移价值低）、`_build_anthropic_payload`（读 self.config 保留为方法）、`detect_provider`（测试直接导入，留 llm_client）
+
 ## 2026-08-31 工作区清理
 
 - 删除已被完全取代的两份整仓备份：`小说分析器 - 副本`（332MB）+ `小说分析器 - 归一化兜底版`（358MB）。删除前验证：基线提交 cae160a 在主仓历史内、两份备份全部改动/新增文件在主仓均有对应（内容已被后续正式实现覆盖）；`代码版本/`（git 化前手动版本档案）与 `数据产物/`（分析结果归档）保留
