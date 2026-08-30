@@ -4,13 +4,9 @@
 统一的进度通道，替代旧项目的 Qt 信号槽。分析任务通过 ProgressHub.publish()
 发布消息，所有连接的 WebSocket 客户端都会收到。
 
-消息格式（对齐旧 Qt 信号）：
-    {"type": "log",          "payload": {"level": "info", "text": "..."}}
-    {"type": "progress",     "payload": {"current": 10, "total": 100, "eta": "..."}}
-    {"type": "block_done",   "payload": {"chapter": 5, "ok": true}}
-    {"type": "state_change", "payload": {"state": "running|stopped|done", "detail": "..."}}
-    {"type": "token_stats",  "payload": {"category": "chapter", "input_tokens": 100, "output_tokens": 50}}
-    {"type": "token_delta",  "payload": {"context": "analysis", "session_id": "...", "unit_idx": N, "delta": {...}, "timestamp": ...}}
+**wire 协议的唯一权威定义在 backend/ws_events.py**（WSType/WSState/
+PipelineStatus 常量 + payload 契约 + 工厂函数）；本文件只是广播管道，
+新增消息类型请先在 ws_events.py 登记。
 """
 
 import asyncio
@@ -18,6 +14,14 @@ import logging
 import queue as thread_queue
 import time
 from typing import Any, Dict, Set
+
+from .ws_events import (
+    WSType,
+    log_event,
+    progress_event,
+    state_change_event,
+    token_delta_event,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -103,9 +107,9 @@ class ProgressHub:
 
                 def _droppable_rank(m: Dict[str, Any]) -> int:
                     t = m.get("type")
-                    if t == "token_delta":
+                    if t == WSType.TOKEN_DELTA:
                         return 0
-                    if t == "log":
+                    if t == WSType.LOG:
                         return 1
                     return 2
 
@@ -127,19 +131,13 @@ class ProgressHub:
         # source="business"：业务事件消息（队列/总结/状态提示等），
         # 与 HubLogHandler 转发的 python 技术日志区分（见 LogConsole 简化模式）
         # category：来源分类（如 summary），前端可据此按页面过滤显示
-        await self.publish({
-            "type": "log",
-            "payload": {"level": level, "text": text, "source": "business", "category": category},
-        })
+        await self.publish(log_event(level, text, source="business", category=category))
 
     async def progress(self, current: int, total: int, eta: str = "") -> None:
-        await self.publish({"type": "progress", "payload": {"current": current, "total": total, "eta": eta}})
-
-    async def block_done(self, chapter: int, ok: bool = True) -> None:
-        await self.publish({"type": "block_done", "payload": {"chapter": chapter, "ok": ok}})
+        await self.publish(progress_event(current, total, eta))
 
     async def state_change(self, state: str, detail: str = "") -> None:
-        await self.publish({"type": "state_change", "payload": {"state": state, "detail": detail}})
+        await self.publish(state_change_event(state, detail))
 
     async def broadcast_token_delta(
         self,
@@ -160,16 +158,7 @@ class ProgressHub:
             delta: {output_tokens, rate_tokens_per_sec, elapsed_sec, eta_sec?, ...}
         """
         channel_key = f"{context}:{session_id}:{unit_idx}"
-        msg = {
-            "type": "token_delta",
-            "payload": {
-                "context": context,
-                "session_id": session_id,
-                "unit_idx": unit_idx,
-                "delta": delta,
-                "timestamp": time.time(),
-            },
-        }
+        msg = token_delta_event(context, session_id, unit_idx, delta, time.time())
         await self._token_throttler.emit(channel_key, msg)
 
 
@@ -215,10 +204,7 @@ class HubLogHandler(logging.Handler):
             category = ""
             if record.name.startswith(("backend.services.final_summary", "backend.services.summary_service")):
                 category = "summary"
-            self._q.put_nowait({
-                "type": "log",
-                "payload": {"level": level, "text": msg, "source": "python", "category": category},
-            })
+            self._q.put_nowait(log_event(level, msg, source="python", category=category))
         except thread_queue.Full:
             pass  # 队列满时丢弃，不阻塞业务线程
         except Exception:

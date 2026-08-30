@@ -10,6 +10,11 @@ save_queue 不在此层——其调用点都在 AnalysisService 方法里。
 import time
 from typing import List, Optional
 
+from ..ws_events import (
+    PipelineStatus,
+    block_done_event, block_start_event, discovery_event,
+)
+
 # H17 (2026-08-26) 发现流提取
 # 停用词表：过滤"众人/他们/旁白"等指代词，避免"新人物"列表噪音
 # 上线后从 api_failures / 用户反馈迭代词表；独立常量好改
@@ -114,7 +119,7 @@ def make_pipeline_callbacks(hub, item, stats, seen_characters):
         status = payload.get("status", "")
         message = payload.get("message", "")
         if message:
-            level = "error" if status in ("failed", "failed_summary") else "info"
+            level = "error" if status in (PipelineStatus.FAILED, PipelineStatus.FAILED_SUMMARY) else "info"
             await hub.log(message, level=level)
         if "progress" in payload and "total" in payload:
             current = payload["progress"]
@@ -124,31 +129,25 @@ def make_pipeline_callbacks(hub, item, stats, seen_characters):
             await hub.progress(current, total, eta=eta_str)
 
         # H17: block_start 转发（带章范围文本 message 复用现有"开始分析第X-Y章..."）
-        if status == "start":
-            await hub.publish({
-                "type": "block_start",
-                "payload": {
-                    "chapter": payload.get("chapter", 0),  # block_id（块起始章号）
-                    "range": message,
-                    "progress": payload.get("progress", 0),
-                    "total": payload.get("total", 0),
-                    "ts": time.time(),
-                },
-            })
+        if status == PipelineStatus.START:
+            await hub.publish(block_start_event(
+                chapter=payload.get("chapter", 0),  # block_id（块起始章号）
+                range_text=message,
+                progress=payload.get("progress", 0),
+                total=payload.get("total", 0),
+                ts=time.time(),
+            ))
 
         # skipped（内容审核拦截）也必须转发：否则前端已登记的 start 车道
         # 收不到 done，activeBlocks 永久泄漏（车道堆叠修复）
-        if status in ("done", "failed", "skipped"):
-            await hub.publish({
-                "type": "block_done",
-                "payload": {
-                    "chapter": payload.get("chapter", 0),
-                    "ok": status == "done",
-                    "range": message,  # H17: 失败/完成 message 含章范围
-                    "elapsed": payload.get("elapsed"),
-                    "tokens": payload.get("tokens"),
-                },
-            })
+        if status in (PipelineStatus.DONE, PipelineStatus.FAILED, PipelineStatus.SKIPPED):
+            await hub.publish(block_done_event(
+                chapter=payload.get("chapter", 0),
+                ok=status == PipelineStatus.DONE,
+                range_text=message,  # H17: 失败/完成 message 含章范围
+                elapsed=payload.get("elapsed"),
+                tokens=payload.get("tokens"),
+            ))
             # 记录每章统计（失败块同样计入：重试成本不可因失败而归零）
             stats.record_chapter(payload)
 
@@ -157,7 +156,7 @@ def make_pipeline_callbacks(hub, item, stats, seen_characters):
                 result = payload.get("result")
                 discovery = _extract_discovery(result, seen_characters)
                 if discovery:
-                    await hub.publish({"type": "discovery", "payload": discovery})
+                    await hub.publish(discovery_event(**discovery))
 
     async def on_token_stats(payload: dict) -> None:
         # 累积分类 token 统计（实现在 analysis_stats.AnalysisStats）

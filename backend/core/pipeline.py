@@ -31,6 +31,7 @@ from .knowledge_base import KnowledgeBaseManager
 from .llm_client import LLMClient
 from .memory_state import MemoryState
 from ..core.moderation import is_moderation_error
+from ..ws_events import PipelineStatus
 from ..utils.export_utils import export_summary_report
 from ..utils.json_utils import extract_json_from_text, safe_parse_json
 
@@ -334,7 +335,7 @@ class AnalysisPipeline:
                     # 每连接 WS 队列（maxsize=1000）触发丢最旧，挤掉真实 block_done
                     await asyncio.sleep(0)
                 await self._emit({
-                    "status": "done",
+                    "status": PipelineStatus.DONE,
                     "chapter": bid,
                     "progress": idx,
                     "total": total,
@@ -435,7 +436,7 @@ class AnalysisPipeline:
                     completed_block_ids, state)
                 _rolling_state["last_chapter"] = new_last
                 await self._emit({
-                    "chapter": 0, "status": "rolling_updated",
+                    "chapter": 0, "status": PipelineStatus.ROLLING_UPDATED,
                     "progress": completed_count, "total": total,
                     "message": f"全书主线摘要已更新（纳入到第{new_last}章）"
                 })
@@ -461,7 +462,7 @@ class AnalysisPipeline:
                 # 触发 done。semaphore 内部 emit 保证只在真正拿到槽位后才登记活跃。
                 ch_range = _fmt_range(block_id, block_chs, block_size)
                 await self._emit({
-                    "chapter": block_id, "status": "start",
+                    "chapter": block_id, "status": PipelineStatus.START,
                     "progress": completed_count, "total": total,
                     "message": f"开始分析{ch_range}..."
                 })
@@ -501,7 +502,7 @@ class AnalysisPipeline:
                 error_msg = f"块分析异常: {e}"
                 logger.error(error_msg, exc_info=True)
                 await self._emit({
-                    "chapter": 0, "status": "failed", "progress": completed_count,
+                    "chapter": 0, "status": PipelineStatus.FAILED, "progress": completed_count,
                     "total": total, "message": error_msg
                 })
                 continue
@@ -517,7 +518,7 @@ class AnalysisPipeline:
                 _rolling_pending_ids.clear()
                 _completed_since_rolling = 0
                 await self._emit({
-                    "chapter": 0, "status": "rolling_started",
+                    "chapter": 0, "status": PipelineStatus.ROLLING_STARTED,
                     "progress": completed_count, "total": total,
                     "message": f"全书主线摘要更新中（后台，已完成{completed_count}块）..."
                 })
@@ -580,7 +581,7 @@ class AnalysisPipeline:
         if failed_chapters:
             await self._emit({
                 "chapter": 0,
-                "status": "failed_summary",
+                "status": PipelineStatus.FAILED_SUMMARY,
                 "progress": total_analyzed,
                 "total": total,
                 "message": f"失败章节: {', '.join(str(c) for c in failed_chapters)}"
@@ -709,7 +710,7 @@ class AnalysisPipeline:
 
         if emit_start:
             await self._emit({
-                "chapter": block_id, "status": "start",
+                "chapter": block_id, "status": PipelineStatus.START,
                 "progress": progress_count, "total": total,
                 "message": f"{prefix}开始分析{ch_range}..."
             })
@@ -732,7 +733,7 @@ class AnalysisPipeline:
             logger.error(f"{prefix}块{block_id}分析异常: {e}", exc_info=True)
             self.state.add_failed(block_id, f"块分析异常: {e}")
             await self._emit({
-                "chapter": block_id, "status": "failed",
+                "chapter": block_id, "status": PipelineStatus.FAILED,
                 "progress": completed_count, "total": total,
                 "retries": 0, "failed_tokens": 0,
                 "message": f"{prefix}{ch_range}分析异常",
@@ -763,7 +764,7 @@ class AnalysisPipeline:
             if isinstance(result_dict, dict):
                 result_dict.pop("raw_response", None)
             await self._emit({
-                "chapter": block_id, "status": "done",
+                "chapter": block_id, "status": PipelineStatus.DONE,
                 "result": result_dict,
                 "progress": completed_count, "total": total, "elapsed": elapsed,
                 "tokens": ch_tokens[0] + ch_tokens[1],
@@ -780,13 +781,13 @@ class AnalysisPipeline:
             if retry_info.get("moderation_skip"):
                 # 内容审核拦截跳过：单独状态（非失败），进度不计、不触发 block_done 失败
                 await self._emit({
-                    "chapter": block_id, "status": "skipped",
+                    "chapter": block_id, "status": PipelineStatus.SKIPPED,
                     "progress": completed_count, "total": total,
                     "message": f"{prefix}{ch_range} 内容审核拦截，已跳过"
                 })
                 return False, completed_count
             await self._emit({
-                "chapter": block_id, "status": "failed",
+                "chapter": block_id, "status": PipelineStatus.FAILED,
                 "progress": completed_count, "total": total,
                 "retries": retry_info.get("retries", 0),
                 "failed_tokens": retry_info.get("failed_tokens", 0),
@@ -1001,7 +1002,7 @@ class AnalysisPipeline:
                 rolling_client, output_dir, _rolling_state["last_chapter"],
                 retried_block_ids, state)
             await self._emit({
-                "chapter": 0, "status": "rolling_updated",
+                "chapter": 0, "status": PipelineStatus.ROLLING_UPDATED,
                 "progress": completed_count, "total": total,
                 "message": "[补跑后] 全书主线摘要已更新"
             })
