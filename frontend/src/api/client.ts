@@ -73,14 +73,18 @@ export interface ProbeThinkingItem {
   thinking_mode: Record<string, unknown> | null
   reasoning_chars: number
   content_chars: number
+  think_tag_chars: number
+  reasoning_token_count: number
   worked: boolean | null
   error: string
+  detection_breakdown: Record<string, boolean>
 }
 
 export interface ProbeThinkingResult {
   results: ProbeThinkingItem[]
   best: { thinking_mode: Record<string, unknown>; param: string } | null
   default_thinks: boolean
+  default_detection_breakdown: Record<string, boolean>
   note: string
 }
 

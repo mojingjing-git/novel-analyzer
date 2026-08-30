@@ -271,6 +271,194 @@ async def test_probe_thinking_anthropic_skip():
     assert result["best"]["thinking_mode"] == {"thinking": {"type": "disabled"}}
     print("✅ test_probe_thinking_anthropic_skip passed")
 
+
+# =============================================================================
+# v2 多模式检测测试（2026-08-26）— 覆盖 M3 / QwQ / DeepSeek R1 / OpenAI o-series / Anthropic
+# =============================================================================
+
+def _make_probe_resp(content, reasoning_content="", reasoning_details=None, usage_dict=None):
+    """构造 probe_thinking 用的 mock response 对象"""
+    resp = MagicMock()
+    msg = MagicMock()
+    msg.content = content
+    msg.reasoning_content = reasoning_content
+    msg.reasoning_details = reasoning_details
+    resp.choices = [MagicMock(message=msg)]
+    usage = MagicMock()
+    usage.completion_tokens_details = (usage_dict or {}).get("completion_tokens_details")
+    resp.usage = usage
+    return resp
+
+
+def _patch_all_probe_candidates(fake_client, resp):
+    """让所有候选都返回同一 resp（用于基线/参数统一场景）"""
+    fake_client.chat.completions.create = AsyncMock(return_value=resp)
+
+
+async def test_probe_v2_detects_think_tags_in_content():
+    """v2 #1: M3 / DeepSeek R1 / QwQ — thinking 嵌 content 的 <think> 形式必须被检测"""
+    from backend.core.llm_client import LLMClient
+
+    fake_client = MagicMock()
+    # 基线：think 嵌 content
+    baseline = _make_probe_resp(
+        "<think>用户在问 123456789 * 987654321，我算一下。</think>\n121932631112635269"
+    )
+    # 候选参数：thinking:disabled 后 think 标签消失
+    no_think = _make_probe_resp("121932631112635269")
+    # side_effect 按调用顺序返回不同 resp
+    fake_client.chat.completions.create = AsyncMock(side_effect=[
+        baseline,  # 基线
+        no_think,  # thinking:disabled
+        no_think,  # reasoning_effort:none
+        no_think,  # enable_thinking:false
+        no_think,  # thinking:disabled + reasoning_split
+        baseline,  # chat_template_kwargs:enable_thinking=false → Qwen3 不认此格式
+        no_think,  # reasoning:effort=none
+    ])
+
+    with patch("backend.core.llm_client.AsyncOpenAI", return_value=fake_client):
+        result = await LLMClient.probe_thinking_params("https://api.test.com", "k", "m3", "auto")
+
+    # 基线必须识别为 thinking
+    assert result["default_thinks"] is True, "M3 嵌 <think> 应该被识别为 thinking"
+    base_breakdown = result["default_detection_breakdown"]
+    assert base_breakdown["think_tags"] is True, "think_tags 维度必须命中"
+    assert base_breakdown["reasoning_content"] is False, "M3 默认不暴露 reasoning_content 字段"
+    assert base_breakdown["usage_reasoning_tokens"] is False, "无 usage 数据时不命中"
+
+    # 最佳参数应该是 thinking:disabled
+    assert result["best"] is not None
+    assert result["best"]["thinking_mode"] == {"thinking": {"type": "disabled"}}
+    print("✅ test_probe_v2_detects_think_tags_in_content passed")
+
+
+async def test_probe_v2_detects_usage_reasoning_tokens():
+    """v2 #2: OpenAI o-series 风格 — 完全隐藏 thinking 但 usage.reasoning_tokens > 0"""
+    from backend.core.llm_client import LLMClient
+
+    fake_client = MagicMock()
+    # 基线：content 只有数字但 usage 报 reasoning_tokens
+    baseline = _make_probe_resp(
+        "121932631112635269",
+        usage_dict={"completion_tokens_details": {"reasoning_tokens": 250}},
+    )
+    # 参数有效：usage 报 0
+    no_thinking = _make_probe_resp(
+        "121932631112635269",
+        usage_dict={"completion_tokens_details": {"reasoning_tokens": 0}},
+    )
+    fake_client.chat.completions.create = AsyncMock(side_effect=[
+        baseline,
+        baseline,  # thinking:disabled 对 o-series 无效
+        no_thinking,  # reasoning_effort:none 有效
+        baseline,  # enable_thinking:false 无效
+        baseline,  # thinking:disabled + reasoning_split
+        baseline,  # chat_template_kwargs
+        no_thinking,  # reasoning:effort=none 有效
+    ])
+
+    with patch("backend.core.llm_client.AsyncOpenAI", return_value=fake_client):
+        result = await LLMClient.probe_thinking_params("https://api.test.com", "k", "o1", "auto")
+
+    assert result["default_thinks"] is True
+    assert result["default_detection_breakdown"]["usage_reasoning_tokens"] is True
+    assert result["default_detection_breakdown"]["think_tags"] is False
+    # 第一个有效参数应该是 reasoning_effort:none
+    assert result["best"]["thinking_mode"] == {"reasoning_effort": "none"}
+    print("✅ test_probe_v2_detects_usage_reasoning_tokens passed")
+
+
+async def test_probe_v2_detects_anthropic_thinking_blocks():
+    """v2 #3: Anthropic 协议 — content 是 list 且含 type=thinking block"""
+    from backend.core.llm_client import LLMClient
+
+    fake_client = MagicMock()
+    # Anthropic 协议 mock：content 是 list
+    baseline = MagicMock()
+    msg = MagicMock()
+    msg.content = [
+        {"type": "thinking", "thinking": "让我算一下..."},
+        {"type": "text", "text": "121932631112635269"},
+    ]
+    msg.reasoning_content = None
+    msg.reasoning_details = None
+    baseline.choices = [MagicMock(message=msg)]
+    baseline.usage = MagicMock()
+    baseline.usage.completion_tokens_details = None
+
+    # OpenAI 协议探测路径通常不命中 anthropic_thinking_blocks（因为 list 形态被当作异常）
+    # 这里只验证 detection_breakdown 的 anthropic_thinking_blocks 维度计算逻辑
+    fake_client.chat.completions.create = AsyncMock(return_value=baseline)
+
+    with patch("backend.core.llm_client.AsyncOpenAI", return_value=fake_client):
+        result = await LLMClient.probe_thinking_params("https://api.test.com", "k", "m", "auto")
+
+    # OpenAI 协议探测会把 content 列表里的 thinking block 识别为 anthropic_thinking_blocks
+    # 同时 content_str 提取空 → content_chars=0
+    # 但 baseline['reasoning_chars'] 是 0 → default_thinks 应基于 anthropic_thinking_blocks 命中
+    assert result["default_detection_breakdown"]["anthropic_thinking_blocks"] is True
+    assert result["default_thinks"] is True
+    print("✅ test_probe_v2_detects_anthropic_thinking_blocks passed")
+
+
+async def test_probe_v2_all_patterns_clean_means_works():
+    """v2 #4: 当所有 7 个检测模式都未命中时 → 参数有效"""
+    from backend.core.llm_client import LLMClient
+
+    fake_client = MagicMock()
+    # 基线和所有候选：纯 content，无任何 thinking 标记
+    clean = _make_probe_resp("121932631112635269")
+    # 但基线应该"无 thinking"（让 default_thinks=False，这样会跳过 best 寻找，
+    # 但仍要验证 worked 逻辑对 clean resp 的判断）
+    fake_client.chat.completions.create = AsyncMock(return_value=clean)
+
+    with patch("backend.core.llm_client.AsyncOpenAI", return_value=fake_client):
+        result = await LLMClient.probe_thinking_params("https://api.test.com", "k", "m", "auto")
+
+    assert result["default_thinks"] is False
+    # 所有 7 个 detection_breakdown 维度都应 False
+    for k, v in result["default_detection_breakdown"].items():
+        assert v is False, f"基线无 thinking 时 {k} 应为 False"
+    # 没有 best（因为 default 不思考）
+    assert result["best"] is None
+    assert "无需禁用" in result["note"]
+    print("✅ test_probe_v2_all_patterns_clean_means_works passed")
+
+
+async def test_probe_v2_returns_breakdown_for_each_candidate():
+    """v2 #5: 每个候选的 detection_breakdown 都要返回（前端展示用）"""
+    from backend.core.llm_client import LLMClient
+
+    fake_client = MagicMock()
+    # 基线有 thinking；thinking:disabled 候选也有 thinking（说明该参数对该模型无效）
+    baseline = _make_probe_resp("<think>...think...</think>\nanswer")
+    still_thinking = _make_probe_resp("<think>...still thinking...</think>\nanswer2")
+    fake_client.chat.completions.create = AsyncMock(side_effect=[
+        baseline,  # 基线
+        still_thinking,  # thinking:disabled 无效
+        still_thinking,  # reasoning_effort:none 无效
+        still_thinking,  # enable_thinking:false 无效
+        still_thinking,  # thinking+reasoning_split 无效
+        still_thinking,  # chat_template_kwargs 无效
+        still_thinking,  # reasoning:effort=none 无效
+    ])
+
+    with patch("backend.core.llm_client.AsyncOpenAI", return_value=fake_client):
+        result = await LLMClient.probe_thinking_params("https://api.test.com", "k", "m2.7", "auto")
+
+    assert result["default_thinks"] is True
+    assert result["best"] is None, "所有参数都无效时 best 应为 None"
+    # 每个 result 都必须有 detection_breakdown
+    for r in result["results"]:
+        assert "detection_breakdown" in r
+        assert len(r["detection_breakdown"]) == 7, "应有 7 个检测维度"
+        assert "think_tag_chars" in r
+        assert "reasoning_token_count" in r
+    # note 应提示 M2.x 系类 known limitation
+    assert "M2.x" in result["note"] or "不支持" in result["note"]
+    print("✅ test_probe_v2_returns_breakdown_for_each_candidate passed")
+
 def test_anthropic_payload_whitelist():
     """#4: thinking_mode 只放行 thinking 键，enable_thinking 残留不得透传"""
     client = LLMClient(make_config(

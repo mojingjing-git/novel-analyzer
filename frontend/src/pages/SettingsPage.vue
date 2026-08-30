@@ -244,13 +244,35 @@ function setThinkingMode(val: string) {
 // 自动探测禁用思考参数（发微请求实测当前端点认哪个参数）
 const probeBusy = ref(false)
 const probeResult = ref<{
-  results: { param: string; thinking_mode: Record<string, unknown> | null; reasoning_chars: number; content_chars: number; worked: boolean | null; error: string }[]
+  results: {
+    param: string
+    thinking_mode: Record<string, unknown> | null
+    reasoning_chars: number
+    content_chars: number
+    think_tag_chars: number
+    reasoning_token_count: number
+    worked: boolean | null
+    error: string
+    detection_breakdown: Record<string, boolean>
+  }[]
   best: { thinking_mode: Record<string, unknown>; param: string } | null
   default_thinks: boolean
+  default_detection_breakdown: Record<string, boolean>
   note: string
 } | null>(null)
 const probeError = ref('')
 const dynamicThinkingOptions = ref<{ value: string; label: string }[]>([])
+
+// 检测维度中文名（与后端 _THINKING_DETECTORS 对应）
+const PROBE_DETECTOR_LABELS: Record<string, string> = {
+  reasoning_content: 'message.reasoning_content',
+  reasoning_details: 'message.reasoning_details',
+  think_tags: 'content 含 <think>',
+  thinking_tags: 'content 含 <thinking>',
+  reasoning_tag: 'content 含 <reasoning>',
+  usage_reasoning_tokens: 'usage.reasoning_tokens>0',
+  anthropic_thinking_blocks: 'content list + type=thinking',
+}
 
 async function runProbeThinking() {
   if (!config.value) return
@@ -380,16 +402,35 @@ onMounted(load)
           {{ probeBusy ? '探测中...' : '自动探测' }}
         </button>
       </div>
-      <div v-if="probeResult" class="ml-32 space-y-1 text-xs">
+      <div v-if="probeResult" class="ml-32 space-y-2 text-xs">
         <p v-if="probeResult.note" :class="probeResult.best || !probeResult.default_thinks ? 'glass-tinted-green px-2 py-1 rounded' : 'glass-tinted-red px-2 py-1 rounded'">
           {{ probeResult.note }}
         </p>
+        <!-- 基线检测详情：展开式 7 维度列表 -->
+        <details v-if="probeResult.default_detection_breakdown && Object.values(probeResult.default_detection_breakdown).some(v => v)" class="px-2 py-1 rounded" style="background: var(--win-layer-soft, var(--win-layer))">
+          <summary style="cursor: pointer; color: var(--win-warning)">
+            ⚠ 基线检测到 thinking 痕迹（点击展开分项详情）
+          </summary>
+          <div class="mt-1 space-y-0.5 pl-3">
+            <div v-for="(hit, key) in probeResult.default_detection_breakdown" :key="key" class="flex gap-2">
+              <span v-if="hit" style="color: var(--win-warning)">●</span>
+              <span v-else style="color: var(--win-text-disabled)">○</span>
+              <span :style="hit ? 'color: var(--win-text-primary)' : 'color: var(--win-text-disabled)'">
+                {{ PROBE_DETECTOR_LABELS[key] || key }}
+              </span>
+            </div>
+          </div>
+        </details>
         <div v-for="r in probeResult.results" :key="r.param" class="flex gap-2 items-center flex-wrap">
           <span class="w-40 shrink-0" style="color: var(--win-text-secondary)">{{ r.param }}</span>
-          <span v-if="r.worked === true" class="pm-ok" style="color: var(--win-success)">✓ 有效</span>
+          <span v-if="r.worked === true" style="color: var(--win-success)">✓ 有效</span>
           <span v-else-if="r.worked === false" style="color: var(--win-danger)">✗ 无效</span>
           <span v-else style="color: var(--win-text-disabled)">基线</span>
-          <span style="color: var(--win-text-disabled)">思考 {{ r.reasoning_chars }}字 / 内容 {{ r.content_chars }}字</span>
+          <span style="color: var(--win-text-disabled)">
+            思考 {{ r.reasoning_chars }}字 / 内容 {{ r.content_chars }}字
+            <template v-if="r.think_tag_chars > 0"> / 标签 {{ r.think_tag_chars }}字</template>
+            <template v-if="r.reasoning_token_count > 0"> / tokens {{ r.reasoning_token_count }}</template>
+          </span>
           <span v-if="r.error" style="color: var(--win-danger)">{{ r.error }}</span>
         </div>
       </div>
