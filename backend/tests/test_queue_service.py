@@ -9,12 +9,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
+from backend.services.pipeline_events import _DISCOVERY_STOP_WORDS, _extract_discovery
 from backend.services.queue_manager import QueueItem, QueueManager
 from backend.services.analysis_stats import AnalysisStats
-from backend.services.queue_service import (
-    AnalysisService,
-    _extract_discovery, _DISCOVERY_STOP_WORDS,
-)
+from backend.services.queue_service import AnalysisService
 
 
 def test_queue_item_roundtrip():

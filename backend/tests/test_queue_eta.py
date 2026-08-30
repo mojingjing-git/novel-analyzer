@@ -8,7 +8,7 @@
 import math
 import pytest
 
-from backend.services.queue_service import _format_eta, _compute_eta
+from backend.services.pipeline_events import _format_eta, _compute_eta
 
 
 # ===== _format_eta =====

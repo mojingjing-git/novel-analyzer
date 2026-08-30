@@ -1,8 +1,8 @@
 """
 队列服务：分析运行编排层（AnalysisService 单例）
 - 持有当前 AnalysisPipeline，进度回调经 pipeline_events 转发到 ProgressHub（WebSocket 广播）
-- 队列管理（QueueItem/QueueManager）已拆至 queue_manager.py
-- token 统计累加与 WS 事件翻译分别见 analysis_stats.py / pipeline_events.py
+- 队列管理（QueueItem/QueueManager）见 queue_manager.py
+- token 统计累加见 analysis_stats.py；WS 事件翻译见 pipeline_events.py
 """
 
 import asyncio
@@ -10,103 +10,16 @@ import logging
 import shutil
 import time
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import Optional, Dict, Any
 
 from ..config.settings import AppConfig, ConfigManager
 from ..core.pipeline import AnalysisPipeline
 from ..progress_hub import get_hub
 from .analysis_stats import AnalysisStats
+from .pipeline_events import make_pipeline_callbacks
 from .queue_manager import CONFIG_FILE, PROJECT_ROOT, QUEUE_STATE_FILE, QueueItem, QueueManager
 
 logger = logging.getLogger(__name__)
-
-# H17 (2026-08-26) 发现流提取
-# 停用词表：过滤"众人/他们/旁白"等指代词，避免"新人物"列表噪音
-# 上线后从 api_failures / 用户反馈迭代词表；独立常量好改
-_DISCOVERY_STOP_WORDS = frozenset({
-    "众人", "他们", "对方", "旁白", "自己", "他", "她", "它", "我", "你",
-    "我们", "你们", "它们", "她们", "他们俩", "他们三人", "某人", "何人",
-    "此人", "那人", "大家", "无名", "路人", "某人影",
-})
-
-
-def _extract_discovery(result: Optional[dict], seen_characters: set) -> Optional[dict]:
-    """从块结果提取发现流摘要（plan Task 1.2）
-
-    4 类：
-    - core_events 数
-    - 新伏笔（foreshadowing[].clue 截 24 字，最多 5 条）
-    - 新人物（首次登场：seen_characters 集合求差，最多 5 条）
-    - 遗留悬念（cross_block.unresolved_questions 截 24 字，最多 2 条）
-
-    跨块伏笔去重明确不做（plan 决策 5）。
-    续跑后人物"全量首次"是已知限制（plan 标注 Open Question）。
-    """
-    if not isinstance(result, dict):
-        return None
-    core_events = result.get("core_events") or []
-    foreshadowing = result.get("foreshadowing") or []
-    cross_block = result.get("cross_block") or {}
-    unresolved = cross_block.get("unresolved_questions") or []
-
-    # 新人物：core_events[].characters 逗号/顿号分隔 → 拆词 → 过滤停用词/长度 → 已见集合求差
-    new_characters: List[str] = []
-    for ev in core_events:
-        chars_str = ev.get("characters", "")
-        if not chars_str:
-            continue
-        for name in str(chars_str).replace("、", ",").split(","):
-            name = name.strip()
-            if not name or len(name) < 2 or len(name) > 8:
-                continue
-            if name in _DISCOVERY_STOP_WORDS:
-                continue
-            if name in seen_characters:
-                continue
-            new_characters.append(name)
-            seen_characters.add(name)
-
-    return {
-        "events": len(core_events),
-        "foreshadows": [str(f.get("clue", ""))[:24] for f in foreshadowing][:5],
-        "characters": new_characters[:5],
-        "unresolved": [str(q)[:24] for q in unresolved][:2],
-    }
-
-
-def _format_eta(seconds: float) -> str:
-    """把剩余秒数格式化为最易读的 2 段中文（X 时 Y 分 / X 分 Y 秒 / X 秒）
-
-    设计：与"小红点/进度条"等简明 UI 保持一致（Win11 任务栏 ETA 也用 2 段）。
-    """
-    if seconds < 0 or seconds != seconds or seconds == float("inf"):
-        return ""
-    s = int(round(seconds))
-    if s <= 0:
-        return ""
-    h, rem = divmod(s, 3600)
-    m, sec = divmod(rem, 60)
-    if h > 0:
-        return f"{h}时{m:02d}分"
-    if m > 0:
-        return f"{m}分{sec:02d}秒"
-    return f"{sec}秒"
-
-
-def _compute_eta(start_time: float, current: int, total: int, now: float) -> str:
-    """根据全程平均速率外推剩余时间，格式化为 UI 友好字符串。
-
-    返回空字符串表示"暂无法估算"（刚开始、已完成、参数非法）。
-    设计：全程平均比滑动窗口更稳——并发场景（concurrency≥4）下进度
-    事件频率高，全程平均反映稳态速率，初期几块慢启动会被后续稳态
-    拉平；不用滑动窗口避免复杂度。
-    """
-    if not start_time or current <= 0 or total <= current:
-        return ""
-    elapsed = max(now - start_time, 0.1)
-    rate = current / elapsed
-    remaining_sec = (total - current) / max(rate, 1e-6)
-    return _format_eta(remaining_sec)
 
 
 class AnalysisService:
@@ -179,8 +92,10 @@ class AnalysisService:
         return self.stats.session_snapshot(running=self.is_running, cached_tokens=cached_tokens)
 
     def _record_chapter_stat(self, payload: dict) -> None:
-        """记录每章统计（含重试成本），委托 stats（保留方法垫片：on_progress 闭包
-        与测试拦截点都经此名字）"""
+        """记录每章统计（委托 stats.record_chapter）。
+
+        生产路径已迁移：pipeline_events 回调直接调 stats.record_chapter；
+        此垫片仅剩测试拦截点用途。"""
         self.stats.record_chapter(payload)
 
     @property
@@ -376,66 +291,10 @@ class AnalysisService:
         await hub.log(f"开始分析《{item.name}》（共{item.total_chapters}章）")
         await hub.state_change("running", f"分析中: {item.name}")
 
-        async def on_progress(payload: dict) -> None:
-            """pipeline 进度 → WS 消息（type 对齐旧 Qt 信号）
-
-            H17 (2026-08-26) 改造：
-            - status=start → 转发 block_start（带 range 文本）
-            - block_done 补 range 字段
-            - status=done 且 result 存在 → publish discovery
-            """
-            status = payload.get("status", "")
-            message = payload.get("message", "")
-            if message:
-                level = "error" if status in ("failed", "failed_summary") else "info"
-                await hub.log(message, level=level)
-            if "progress" in payload and "total" in payload:
-                current = payload["progress"]
-                total = payload["total"]
-                item.completed_chapters = current
-                eta_str = _compute_eta(item.start_time, current, total, time.time())
-                await hub.progress(current, total, eta=eta_str)
-
-            # H17: block_start 转发（带章范围文本 message 复用现有"开始分析第X-Y章..."）
-            if status == "start":
-                await hub.publish({
-                    "type": "block_start",
-                    "payload": {
-                        "chapter": payload.get("chapter", 0),  # block_id（块起始章号）
-                        "range": message,
-                        "progress": payload.get("progress", 0),
-                        "total": payload.get("total", 0),
-                        "ts": time.time(),
-                    },
-                })
-
-            # skipped（内容审核拦截）也必须转发：否则前端已登记的 start 车道
-            # 收不到 done，activeBlocks 永久泄漏（车道堆叠修复）
-            if status in ("done", "failed", "skipped"):
-                await hub.publish({
-                    "type": "block_done",
-                    "payload": {
-                        "chapter": payload.get("chapter", 0),
-                        "ok": status == "done",
-                        "range": message,  # H17: 失败/完成 message 含章范围
-                        "elapsed": payload.get("elapsed"),
-                        "tokens": payload.get("tokens"),
-                    },
-                })
-                # 记录每章统计（失败块同样计入：重试成本不可因失败而归零）
-                self._record_chapter_stat(payload)
-
-                # H17: discovery 提取（仅成功块，result 是 AnalysisResult dataclass dict）
-                if status == "done":
-                    result = payload.get("result")
-                    discovery = _extract_discovery(result, self._seen_characters)
-                    if discovery:
-                        await hub.publish({"type": "discovery", "payload": discovery})
-
-        async def on_token_stats(payload: dict) -> None:
-            # 累积分类 token 统计（实现在 analysis_stats.AnalysisStats）
-            self.stats.accumulate_token_stats(payload)
-            await hub.publish({"type": "token_stats", "payload": payload})
+        # WS 事件翻译层（pipeline → ProgressHub）：工厂捕获 hub/item/stats/已见人物
+        on_progress, on_token_stats = make_pipeline_callbacks(
+            hub=hub, item=item, stats=self.stats,
+            seen_characters=self._seen_characters)
 
         # token 落盘基线快照（2026-08-17）：本书开始前的累计值，finally 中做差得本书消耗
         stats_baseline = self.stats.baseline()
