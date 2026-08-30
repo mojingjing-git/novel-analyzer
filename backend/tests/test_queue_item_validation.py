@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import pytest
 
-from backend.services.queue_service import PROJECT_ROOT, QueueItem
+from backend.services.queue_manager import PROJECT_ROOT, QueueItem
 
 
 def test_from_dict_null_blocks_dir_raises():

@@ -18,7 +18,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 def test_archive_item_updates_workspace_dir():
     """_archive_item 成功后 item.workspace_dir 必须指向新位置"""
-    from backend.services.queue_service import QueueItem, AnalysisService
+    from backend.services.queue_manager import QueueItem
+    from backend.services.queue_service import AnalysisService
     from backend.config.settings import AppConfig
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -77,7 +78,8 @@ def test_archive_item_updates_workspace_dir():
 def test_archive_then_get_book_path_finds_new_location():
     """归档后 book_service.get_book_path 用 book_id 能找到新位置（之前找不到旧路径）"""
     from backend.services.book_service import refresh_books, get_book_path
-    from backend.services.queue_service import QueueItem, QueueManager, get_service
+    from backend.services.queue_manager import QueueItem, QueueManager
+    from backend.services.queue_service import get_service
     from backend.config.settings import AppConfig
 
     with tempfile.TemporaryDirectory() as tmp:

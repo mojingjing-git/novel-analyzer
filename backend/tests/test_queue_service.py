@@ -9,8 +9,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
+from backend.services.queue_manager import QueueItem, QueueManager
 from backend.services.queue_service import (
-    QueueItem, QueueManager, AnalysisService,
+    AnalysisService,
     _extract_discovery, _DISCOVERY_STOP_WORDS,
 )
 

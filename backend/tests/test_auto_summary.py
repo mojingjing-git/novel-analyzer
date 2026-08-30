@@ -6,7 +6,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from backend.config.settings import AppConfig, AnalysisConfig
-from backend.services.queue_service import AnalysisService, QueueItem, QueueManager
+from backend.services.queue_manager import QueueItem, QueueManager
+from backend.services.queue_service import AnalysisService
 
 
 def test_analysis_config_auto_summary_defaults():

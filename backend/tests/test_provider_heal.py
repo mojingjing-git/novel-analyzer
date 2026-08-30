@@ -6,7 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from backend.config.settings import AppConfig
-from backend.services.queue_service import QueueManager
+from backend.services.queue_manager import QueueManager
 
 
 def _cfg(provider="auto"):
@@ -33,12 +33,12 @@ def test_cross_protocol_probe_heals_and_returns_true(monkeypatch):
         raise RuntimeError("404 not found")
 
     monkeypatch.setattr(
-        "backend.services.queue_service.LLMClient.list_models", fake_list_models)
+        "backend.services.queue_manager.LLMClient.list_models", fake_list_models)
     # 原生 chat 探针封掉（避免真实网络调用）：无论何种 provider 都失败
     async def fake_chat_fail(self, messages, *a, **k):
         return False, "", "down", (0, 0)
     monkeypatch.setattr(
-        "backend.services.queue_service.LLMClient.chat", fake_chat_fail)
+        "backend.services.queue_manager.LLMClient.chat", fake_chat_fail)
 
     cfg = _cfg()
     ok = asyncio.run(_svc().check_api(cfg))
@@ -51,14 +51,14 @@ def test_both_protocols_fail_returns_false(monkeypatch):
         raise RuntimeError("down")
 
     monkeypatch.setattr(
-        "backend.services.queue_service.LLMClient.list_models", always_fail)
+        "backend.services.queue_manager.LLMClient.list_models", always_fail)
     # 同时封掉 chat 探针与其翻转复试
     class FakeClient:
         def __init__(self, config): pass
         async def chat(self, messages):
             return False, "", "down", (0, 0)
     monkeypatch.setattr(
-        "backend.services.queue_service.LLMClient", FakeClient)
+        "backend.services.queue_manager.LLMClient", FakeClient)
 
     cfg = _cfg()
     ok = asyncio.run(_svc().check_api(cfg))
@@ -74,7 +74,7 @@ def test_models_ok_with_claude_prefix_heals_to_openai(monkeypatch):
         return ["claude-3-5-sonnet"]
 
     monkeypatch.setattr(
-        "backend.services.queue_service.LLMClient.list_models", fake_list_models)
+        "backend.services.queue_manager.LLMClient.list_models", fake_list_models)
 
     cfg = _cfg()   # 文件内既有 helper：model=claude-*、provider=auto
     ok = asyncio.run(QueueManager.__new__(QueueManager).check_api(cfg))
@@ -86,7 +86,7 @@ def test_non_claude_model_not_touched(monkeypatch):
     async def fake_list_models(base_url, api_key, provider):
         return ["gpt-4o"]
     monkeypatch.setattr(
-        "backend.services.queue_service.LLMClient.list_models", fake_list_models)
+        "backend.services.queue_manager.LLMClient.list_models", fake_list_models)
 
     cfg = _cfg()
     cfg.api.model = "gpt-4o"
@@ -100,7 +100,7 @@ def test_official_anthropic_direct_not_healed(monkeypatch):
     async def fake_list_models(base_url, api_key, provider):
         return ["claude-3-5-sonnet"]   # Anthropic 面 /models 成功
     monkeypatch.setattr(
-        "backend.services.queue_service.LLMClient.list_models", fake_list_models)
+        "backend.services.queue_manager.LLMClient.list_models", fake_list_models)
 
     cfg = _cfg()
     cfg.api.base_url = "https://api.anthropic.com"
@@ -127,7 +127,7 @@ def test_heal_persists_via_config_manager(monkeypatch, tmp_path):
     async def fake_list_models(base_url, api_key, provider):
         return ["claude-3-5-sonnet"]
     monkeypatch.setattr(
-        "backend.services.queue_service.LLMClient.list_models", fake_list_models)
+        "backend.services.queue_manager.LLMClient.list_models", fake_list_models)
 
     cfg = svc.config_manager.config  # type: ignore[union-attr]
     ok = asyncio.run(svc.check_api(cfg))

@@ -12,7 +12,8 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from backend.services.queue_service import QueueItem, get_service
+from backend.services.queue_manager import QueueItem
+from backend.services.queue_service import get_service
 from backend.services import workspace_service
 
 logger = logging.getLogger(__name__)
