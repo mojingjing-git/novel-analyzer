@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from backend.services.queue_manager import QueueItem, QueueManager
+from backend.services.analysis_stats import AnalysisStats
 from backend.services.queue_service import (
     AnalysisService,
     _extract_discovery, _DISCOVERY_STOP_WORDS,
@@ -169,16 +170,12 @@ def test_queue_persistence():
 def test_record_chapter_stat_accumulates():
     """每章统计含重试成本字段，且总量累加"""
     from backend.services.queue_service import AnalysisService
+    from backend.services.analysis_stats import AnalysisStats
     svc = object.__new__(AnalysisService)
-    svc._chapter_stats = []
-    svc._token_stats = {}
-    svc._analysis_start_time = 0.0
-    svc._analysis_end_time = None
+    svc.stats = AnalysisStats()
     svc._runner_task = None
     svc._pipeline = None
     svc._stop_requested = False
-    svc._total_retries = 0
-    svc._total_failed_tokens = 0
 
     svc._record_chapter_stat({
         "chapter": 1, "elapsed": 1.0,
@@ -202,16 +199,12 @@ def test_record_chapter_stat_accumulates():
 def test_record_chapter_stat_failed_payload():
     """失败块的 retries/failed_tokens 同样计入总量与每章记录（失败成本不可归零）"""
     from backend.services.queue_service import AnalysisService
+    from backend.services.analysis_stats import AnalysisStats
     svc = object.__new__(AnalysisService)
-    svc._chapter_stats = []
-    svc._token_stats = {}
-    svc._analysis_start_time = 0.0
-    svc._analysis_end_time = None
+    svc.stats = AnalysisStats()
     svc._runner_task = None
     svc._pipeline = None
     svc._stop_requested = False
-    svc._total_retries = 0
-    svc._total_failed_tokens = 0
 
     # 失败 payload 只有 chapter/status/retries/failed_tokens（无 elapsed/input/output）
     svc._record_chapter_stat({
@@ -235,16 +228,14 @@ def test_record_chapter_stat_failed_payload():
 def test_token_stats_elapsed_frozen_after_run():
     """运行结束后 elapsed 冻结为结束时刻与开始时刻之差，不再随当前时间增长"""
     from backend.services.queue_service import AnalysisService
+    from backend.services.analysis_stats import AnalysisStats
     svc = object.__new__(AnalysisService)
-    svc._chapter_stats = []
-    svc._token_stats = {}
-    svc._analysis_start_time = 1000.0
-    svc._analysis_end_time = 1005.0
+    svc.stats = AnalysisStats()
+    svc.stats.start_time = 1000.0
+    svc.stats.end_time = 1005.0
     svc._runner_task = None
     svc._pipeline = None
     svc._stop_requested = False
-    svc._total_retries = 0
-    svc._total_failed_tokens = 0
 
     stats = svc.token_stats()
     assert stats["elapsed"] == 5.0
@@ -382,6 +373,7 @@ def test_start_resets_seen_characters():
     进程级单例：__init__ 只跑一次。如果不重置，上一本书的人物会污染新书
     的"首次登场"判定（_extract_discovery 用 seen_characters 做求差）。"""
     svc = object.__new__(AnalysisService)
+    svc.stats = AnalysisStats()  # start() 会调 stats.reset()
     # 模拟上一本书残留的人物集合
     svc._seen_characters = {"林动", "萧炎", "牧尘"}
     # is_running = False（_runner_task 为 None）

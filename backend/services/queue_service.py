@@ -15,6 +15,7 @@ from typing import List, Optional, Dict, Any
 from ..config.settings import AppConfig, ConfigManager
 from ..core.pipeline import AnalysisPipeline
 from ..progress_hub import get_hub
+from .analysis_stats import AnalysisStats
 from .queue_manager import CONFIG_FILE, PROJECT_ROOT, QUEUE_STATE_FILE, QueueItem, QueueManager
 
 logger = logging.getLogger(__name__)
@@ -128,19 +129,11 @@ class AnalysisService:
         self._runner_task: Optional[asyncio.Task] = None
         self._pipeline: Optional[AnalysisPipeline] = None
         self._stop_requested = False
-        # 分类 token 累计 {category: {"input_tokens": int, "output_tokens": int}}
-        self._token_stats: Dict[str, Dict[str, int]] = {}
-        # 每章统计记录 [(chapter, elapsed, input_tokens, output_tokens)]
-        self._chapter_stats: List[Dict[str, Any]] = []
+        # 一次分析会话的 token/耗时累计（分类统计/每章记录/重试成本/KV 命中），
+        # 生命周期 = start 重置 → finally 冻结（实现见 analysis_stats.py）
+        self.stats = AnalysisStats()
         # H17 (2026-08-26) 发现流：跨块"已见人物"集合（断点续跑后全量"首次"是已知限制）
         self._seen_characters: set = set()
-        self._total_retries = 0
-        self._total_failed_tokens = 0
-        # EFF-5：KV cache 命中 token 累计（运行中实时读当前 analyzer；结束后用累计值）
-        self._total_cached_tokens = 0
-        self._analysis_start_time: float = 0.0
-        # 运行结束时刻（冻结耗时用：结束后 elapsed 不再随 time.time() 增长）
-        self._analysis_end_time: Optional[float] = None
         # 注意：启动期自动扫描已迁移到 app.py 的 lifespan 启动阶段（asyncio.to_thread 执行），
         # 不再在此处同步执行——否则首个触发 get_service() 的 async 请求会在事件循环内
         # 同步跑完整工作区扫描（网络盘多书时卡数秒~数十秒），冻结整个事件循环。
@@ -172,46 +165,23 @@ class AnalysisService:
 
     def token_stats(self) -> Dict[str, Any]:
         """返回分类 token 统计 + 每章记录 + 总耗时 + KV 缓存命中数（EFF-5）"""
-        # 运行结束后用冻结的结束时刻计算，否则结束后的 elapsed 会无限增长
-        if self._analysis_end_time:
-            elapsed = self._analysis_end_time - self._analysis_start_time
-        elif self._analysis_start_time:
-            elapsed = time.time() - self._analysis_start_time
-        else:
-            elapsed = 0.0
         # KV cache 命中：运行中读当前 analyzer（实时）；结束后用累计值
         # getattr 兜底：部分单测用 __new__ 构造实例（无 __init__ 属性）
-        cached_tokens = getattr(self, '_total_cached_tokens', 0)
-        if self._pipeline is not None:
-            analyzer = getattr(self._pipeline, '_analyzer', None)
+        cached_tokens = self.stats.total_cached_tokens
+        pipeline = getattr(self, "_pipeline", None)
+        if pipeline is not None:
+            analyzer = getattr(pipeline, '_analyzer', None)
             if analyzer is not None:
                 try:
                     cached_tokens = analyzer.get_token_stats().get('cached_tokens', 0)
                 except Exception:
-                    cached_tokens = self._total_cached_tokens
-        return {
-            "categories": self._token_stats,
-            "chapter_stats": self._chapter_stats[-200:],  # 最近200章
-            "elapsed": elapsed,
-            "running": self.is_running,
-            "total_retries": self._total_retries,
-            "total_failed_tokens": self._total_failed_tokens,
-            "cached_tokens": cached_tokens or 0,
-        }
+                    cached_tokens = self.stats.total_cached_tokens
+        return self.stats.session_snapshot(running=self.is_running, cached_tokens=cached_tokens)
 
     def _record_chapter_stat(self, payload: dict) -> None:
-        """记录每章统计（含重试成本），供 /api/analysis/token_stats 展示"""
-        self._chapter_stats.append({
-            "chapter": payload.get("chapter", 0),
-            "status": payload.get("status", "done"),
-            "elapsed": payload.get("elapsed", 0),
-            "input_tokens": payload.get("input_tokens", 0),
-            "output_tokens": payload.get("output_tokens", 0),
-            "retries": payload.get("retries", 0),
-            "failed_tokens": payload.get("failed_tokens", 0),
-        })
-        self._total_retries += payload.get("retries", 0) or 0
-        self._total_failed_tokens += payload.get("failed_tokens", 0) or 0
+        """记录每章统计（含重试成本），委托 stats（保留方法垫片：on_progress 闭包
+        与测试拦截点都经此名字）"""
+        self.stats.record_chapter(payload)
 
     @property
     def workspace_path(self) -> Path:
@@ -282,16 +252,11 @@ class AnalysisService:
             logger.warning("队列为空或已全部完成")
             return False
         self._stop_requested = False
-        self._token_stats = {}
-        self._chapter_stats = []
-        self._total_retries = 0
-        self._total_failed_tokens = 0
-        self._total_cached_tokens = 0
         # P1-b (2026-08-26)：重置"已见人物"集合，避免上一本书的人物污染新书首次登场判定
         # （AnalysisService 是进程级单例，__init__ 只跑一次）
         self._seen_characters = set()
-        self._analysis_start_time = time.time()
-        self._analysis_end_time = None
+        # 新会话：清空 token/耗时累计并记录开始时刻
+        self.stats.reset()
         self._runner_task = asyncio.create_task(self._run_queue())
         return True
 
@@ -358,7 +323,7 @@ class AnalysisService:
         finally:
             # 冻结结束时刻：任务完成/被取消/异常后 is_running 即变 False，
             # 此时 token_stats 的 elapsed 必须停止增长
-            self._analysis_end_time = time.time()
+            self.stats.freeze()
 
     async def _auto_summary_done_books(self, config: AppConfig) -> None:
         """队列中 status==done 的书逐本自动最终总结（延迟导入避免循环依赖：
@@ -468,24 +433,12 @@ class AnalysisService:
                         await hub.publish({"type": "discovery", "payload": discovery})
 
         async def on_token_stats(payload: dict) -> None:
-            # 累积分类 token 统计
-            cat = payload.get("category", "unknown")
-            if cat not in self._token_stats:
-                self._token_stats[cat] = {"input_tokens": 0, "output_tokens": 0}
-            # 直接使用 input_tokens/output_tokens（不再用 or 回退到 current_tokens，
-            # 因为 input_tokens=0 是合法值，or 会错误回退到 input+output 之和）
-            self._token_stats[cat]["input_tokens"] += payload.get("input_tokens", 0) or 0
-            self._token_stats[cat]["output_tokens"] += payload.get("output_tokens", 0) or 0
+            # 累积分类 token 统计（实现在 analysis_stats.AnalysisStats）
+            self.stats.accumulate_token_stats(payload)
             await hub.publish({"type": "token_stats", "payload": payload})
 
         # token 落盘基线快照（2026-08-17）：本书开始前的累计值，finally 中做差得本书消耗
-        stats_baseline = {
-            "chapter_stats_len": len(self._chapter_stats),
-            "categories": {k: dict(v) for k, v in self._token_stats.items()},
-            "cached": self._total_cached_tokens,
-            "retries": self._total_retries,
-            "failed_tokens": self._total_failed_tokens,
-        }
+        stats_baseline = self.stats.baseline()
 
         self._pipeline = AnalysisPipeline(
             config=config,
@@ -528,7 +481,7 @@ class AnalysisService:
                 analyzer = getattr(self._pipeline, '_analyzer', None)
                 if analyzer is not None:
                     try:
-                        self._total_cached_tokens += analyzer.get_token_stats().get('cached_tokens', 0) or 0
+                        self.stats.total_cached_tokens += analyzer.get_token_stats().get('cached_tokens', 0) or 0
                     except Exception:
                         pass
             self._pipeline = None
@@ -540,30 +493,13 @@ class AnalysisService:
 
     def _persist_book_token_stats(self, item: QueueItem, baseline: Dict[str, Any]) -> None:
         """本书分析 token 消耗落盘 output/token_stats.json（重启后可查历史成本）。
-        失败仅记日志，不影响主流程。"""
+        失败仅记日志，不影响主流程。做差逻辑在 analysis_stats.book_consumption。"""
         try:
             from ..utils.json_utils import safe_save_json
             output_dir = item.workspace_dir / "output"
             if not output_dir.exists():
                 return
-            categories = {}
-            for cat, v in self._token_stats.items():
-                before = baseline["categories"].get(cat, {"input_tokens": 0, "output_tokens": 0})
-                categories[cat] = {
-                    "input_tokens": v["input_tokens"] - before["input_tokens"],
-                    "output_tokens": v["output_tokens"] - before["output_tokens"],
-                }
-            payload = {
-                "type": "analysis",
-                "book_id": item.name,
-                "finished_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "elapsed": (item.end_time or time.time()) - (item.start_time or time.time()),
-                "categories": categories,
-                "total_retries": self._total_retries - baseline["retries"],
-                "total_failed_tokens": self._total_failed_tokens - baseline["failed_tokens"],
-                "cached_tokens": self._total_cached_tokens - baseline["cached"],
-                "chapter_stats": self._chapter_stats[baseline["chapter_stats_len"]:],
-            }
+            payload = self.stats.book_consumption(item, baseline)
             safe_save_json(payload, output_dir / "token_stats.json")
         except Exception as e:
             logger.warning(f"《{item.name}》token 统计落盘失败: {e}")
