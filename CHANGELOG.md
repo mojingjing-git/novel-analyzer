@@ -247,6 +247,24 @@
 
 ---
 
+## 2026-08-31 运行概览车道堆叠修复（车道注册表自愈）
+
+- **症状**：长程运行后「并发车道 57 / 8 运行中」极夸张堆叠；原有功能无影响。WS 挂测试客户端三轮实测定位：真实 LLM 并发恒等于配置值（信号量从未超卖），纯前端车道记账腐烂
+- **根因（三层叠加）**：
+  1. 记账口径：`activeBlocks` =「start 未 done」，但 done 由 as_completed 消费循环补发（worker 已释放槽位）且每 8 块阻塞等 rolling 总结 1-3 分钟 → 稳态虚高 ~2.5 倍（实测峰值 20/8）
+  2. 通道有损：ProgressHub 每连接队列 maxsize=1000 满了丢最旧 + 断线无重放 + 前端无对账 → 丢一条 done = 永久僵尸（只能刷新页面清零）
+  3. 触发点：断点续跑补发洪峰（916 块 ~2700 条消息必打满队列）+ LLM 失败风暴日志（实测 21:51-21:52 两分钟 73 次尝试失败）+ rolling 等待
+  - 附带排除并堵上两条隐藏泄漏路径：skipped（审核拦截）原先不转发 block_done；worker 异常兜底固定发 chapter:0 被前端 `blockId > 0` 检查忽略
+- **修复**（subagent 复审通过并按其 4 条修正落地）：
+  - `pipeline.py`：`_analyze_one_block` try/finally 登记 `_inflight_blocks`（预热/并发/补跑三路径单点覆盖，信号量真实在途 ≤ concurrency）+ `inflight_blocks()` 快照；`_worker`/`analyze_block_with_progress` 异常兜底带原 block_id 发 failed + 补 `state.add_failed`；续跑补发每 50 条 sleep(0)
+  - `queue_service.py`：`status()` 暴露 `inflight_blocks`（getattr 兜底 `__new__` 单测实例）；`skipped` 也转发 block_done(ok=false)
+  - `progress_hub.py`：队满分级驱逐——先丢 token_delta（高频可再生）→ 再丢 log → 保 block_start/block_done 等低频关键事件
+  - 前端新增 `utils/laneRegistry.ts` 纯函数：`gcActiveBlocks`（超预警窗无 token / 30min 硬上限回收僵尸，跳过 ≥900000 总结合成车道 + has-token 门控防误杀）+ `reconcileActiveBlocks`（inflight 整体纠偏，保留合成车道与 15s 宽限新块，无变化返回原引用）；`QueuePage.syncLaneRegistry()` 挂 `refresh()`（5s 轮询 + block_done 防抖），GC 同步清理 tokenByBlock/rateByBlock；client.ts `AnalysisStatus` 加 `inflight_blocks` 类型
+- **回归**：后端 420 passed（+6：hub 分级驱逐 3 / pipeline 在途+异常 3，54 文件）；前端 vitest 77 passed（+11 laneRegistry，11 文件）；vue-tsc 0 错；vite build 通过
+- **未做**：rolling 等待与消费循环解耦（消除 done 延迟基线，行为改动大，先观察自愈效果再定）
+
+---
+
 ## 核心机制演进主线
 
 | 机制 | 雏形期（3月） | PyQt6/PySide6 期（4-7月） | Web 版（8月） |

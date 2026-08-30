@@ -14,7 +14,7 @@
 - **后端**：FastAPI（异步），Python 3.11+
 - **桌面壳**：pywebview + WebView2（Windows）
 - **LLM 兼容**：任何 OpenAI 兼容 API（8+ 厂商预设），以及 Anthropic 协议
-- **测试**：255 个测试用例，43 个测试文件
+- **测试**：420 个测试用例，54 个测试文件（2026-08-31 累计，含车道堆叠修复 6 个新增）
 
 ---
 
@@ -72,7 +72,7 @@
 │   │   ├── export_utils.py       # Markdown 导出
 │   │   └── text_utils.py         # 编码检测、文本去重、伏笔去重
 │   ├── workers/                  # 后台任务
-│   └── tests/                    # pytest（255 用例，43 文件）
+│   └── tests/                    # pytest（420 用例，54 文件）
 ├── frontend/                     # Vue 3 前端
 │   ├── src/
 │   │   ├── api/
@@ -104,7 +104,9 @@
 │   │   │   ├── StatsPage.vue     # Token 统计面板
 │   │   │   └── PromptPreviewPage.vue  # Prompt 预览
 │   │   ├── utils/
-│   │   │   └── markdown.ts       # 零依赖 Markdown→HTML 渲染器
+│   │   │   ├── markdown.ts       # 零依赖 Markdown→HTML 渲染器
+│   │   │   ├── summaryLanes.ts   # 总结阶段→LaneView 合成块（id ≥ 900000）纯函数
+│   │   │   └── laneRegistry.ts   # 车道注册表自愈：GC + inflight 对账纯函数
 │   │   ├── router.ts             # 12 条路由（AppLayout 包裹）
 │   │   ├── App.vue
 │   │   ├── main.ts
@@ -137,7 +139,7 @@
 | openpyxl | Excel 导出（懒加载） |
 | networkx + pyvis | 角色关系图（可选依赖） |
 | json5 / json_repair | JSON 容错解析 |
-| pytest | 255 个测试用例 |
+| pytest | 420 个测试用例（54 文件） |
 
 ### 前端
 | 组件 | 版本/说明 |
@@ -314,10 +316,12 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 
 ### 5.1 核心模块（backend/core/）
 
-#### pipeline.py（1110行）
+#### pipeline.py（1177行）
 - **职责**：全书分析总调度器
 - **关键类**：`AnalysisPipeline`
-- **关键方法**：`run()`、`_serial_warmup()`、`_streaming_concurrent()`、`_failure_retry()`、`_async_rolling()`、`_flush_checkpoint()`
+- **关键方法**：`run()`、`_serial_warmup()`、`_streaming_concurrent()`、`_failure_retry()`、`_async_rolling()`、`_flush_checkpoint()`、`_analyze_one_block()`（预热/并发/补跑三路径共用入口，try/finally 登记 `_inflight_blocks` 在途块）、`inflight_blocks()`（真实在途快照，供 status 端点给前端车道对账）
+- **异常兜底**：`_worker` 与 `analyze_block_with_progress` 内包 try/except——异常带原 block_id 发 failed + 补 `state.add_failed`（否则消费循环兜底固定发 chapter:0 被前端忽略 = 车道泄漏，且异常会冲出 run() 整书标 failed）
+- **补发限速**：断点续跑补发 block_done 每 50 条 `sleep(0)` 让出事件循环（千章级续跑 ~2700 条消息会打满 WS 每连接队列触发丢最旧）
 - **进度广播**：通过 `ProgressHub` WebSocket 推送 log/progress/block_done/state_change/token_stats
 - **停止机制**：`self._stop_requested` + `self.analyzer.stop()` + `self.rolling_client.request_stop()`
 
@@ -368,7 +372,7 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 
 ### 5.2 服务层（backend/services/）
 
-#### queue_service.py（847行）
+#### queue_service.py（1003行）
 - **QueueManager**：队列状态机（pending/running/done/failed/skipped）
 - **AnalysisService**（单例）：
   - `_run_queue()`：逐本运行 `AnalysisPipeline`
@@ -376,6 +380,8 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
   - 自动总结：队列完成后逐本串行执行 `FinalSummaryRunner`
   - 自动归档：分析完成后 `shutil.move` 到 `分析结果/`
   - 每本书分析完成后 token 消耗落盘 `output/token_stats.json`
+- **事件转换层（on_progress）**：status=start→block_start、done/failed/skipped→block_done（skipped 原先不转发，前端车道会泄漏）
+- **status() 暴露 `inflight_blocks`**：pipeline 信号量窗口内的真实在途块（≤ concurrency 零丢失），前端车道对账源；`getattr` 兜底 `__new__` 构造的单测实例
 - **跨协议探针纠正**：预检 models/chat 探针失败时翻转 provider 重探一次；OpenAI 协议暴露 claude-* 模型时就地纠正 provider 并经 config_manager 落盘持久化
 - **状态持久化**：`queue_state.json`（相对路径存储）
 
@@ -525,7 +531,7 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 
 | 页面 | 行数 | 职责 |
 |---|---|---|
-| QueuePage | 555 | 主页：队列表、启停控制、实时进度（WS+轮询）、章节详情、日志 |
+| QueuePage | 792 | 主页：队列表、启停控制、实时进度（WS+轮询）、运行概览仪表盘（车道 GC+对账自愈）、章节详情、日志 |
 | SettingsPage | 558 | 配置：API 预设、模型选择器、思维探测、伏笔分类网格、滚动总结参数、复检批大小 |
 | SummaryPage | 532 | 聚合+总结：4阶段加权进度、模型覆盖、日志抽屉、报告查看器 |
 | SplitterPage | 422 | 批量切章：文件选择、预览、自定义正则、卷识别、pywebview 文件对话框 |
@@ -555,6 +561,7 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 ### 6.6 前端关键模式
 
 - **双更新策略**：WebSocket 实时推送 + 5s REST 轮询降级
+- **车道注册表自愈**：WS block_start/done 增量记账（有损通道，丢 done = 僵尸车道）+ 每 5s 用 `inflight_blocks`（信号量真实在途）对账纠偏 + GC 超窗回收；对账只替换 id<900000 分析块，保总结合成车道；实现抽在 `utils/laneRegistry.ts` 纯函数
 - **防抖刷新**：高频 WS 事件（block_done/token_stats）500ms 防抖
 - **请求序列守卫**：单调递增计数器防止旧异步响应覆盖新数据
 - **空闲自动回退**：ChapterDetailPanel 60s 无操作自动回到最新章节
@@ -948,3 +955,88 @@ mypy backend/
   - 车道渲染开销：纯文本 + Vue 静态提升足够
 - **回归**：后端 293 passed / 前端 47 passed / 0 回归；vue-tsc 0 错；vite build 0 错
 - **未做（V2 升级）**：车道进度条 + 卡死预警（依赖 H16 Phase 3 token_delta 业务接入，H16 当前仅完成 Phase 1 骨架）；Phase 3 单独排期
+
+### 10.21 2026-08-27 用户实地跑出的 7 个 P1/P2 bug 批量修复
+
+用户用 2 本真实小说（《超级能源强国》4.5MB GBK / 《从姑获鸟开始》6.3MB UTF-8）实地跑全套流程，撞出 7 个独立 bug。一次性修完。
+
+**A. GUI 退出联动 `f439c52`**（`run_desktop.bat`）
+- 旧：开 GUI 一个动作、关三个窗口（cmd + tail + GUI 都不联动）
+- 改：bat 顶部加 `chcp 65001 >nul`（cmd 按 UTF-8 解析 bat，含中文 start 标题不乱码/引号不错位）+ GUI 退出后 `taskkill /FI "WINDOWTITLE eq NovelAnalyzer 运行日志" /T /F` 关掉独立 tail 窗口
+- 关键：`taskkill /FI WINDOWTITLE` 比 `Start-Process -PassThru + PID` 简单无数；PowerShell `-NoExit` 不改 host title 所以标题稳定
+- 附带：`chcp 65001` 顺便修了 `echo [ERROR] 未找到 python` 等中文 echo 的乱码
+
+**B. GBK 4.5MB 小说"无法使用任何编码读取" `c1f3750`**（`backend/utils/text_utils.py` + `splitter_service.py`）
+- 三个独立 bug 叠加：
+  1. `_penalty_sample` 用 strict decode，256KB 采样窗口结尾切到 GBK 2-byte 字符尾字节 → `incomplete multibyte sequence` → GBK 整个被排除
+  2. `splitter_service.ENCODING_PRIORITY` 缩水版（`["utf-8","gbk","gb2312","big5","utf-16"]`）缺 `gb18030`（GBK 超集），splitter 路径独有
+  3. `latin-1` 兜底"任何字节都能解" → penalty 永远 0 → 盖过真正 GBK 解码
+- 修法：(1) decode 改 `errors='replace'` 边界字符变 U+FFFD；(2) splitter 删本地 list 复用 `ENCODING_CANDIDATES` 常量；(3) 加 `_SINGLE_BYTE_BIAS=0.001` 给 1-byte 编码（latin-1/cp1252/ascii）基础偏置
+- 测试：`tests/test_text_encoding_sampling.py`（3 用例，含用户真实 4.5MB 文件回归）
+
+**C. 整本书切成一章（沉默失败） `1350cb3`**（`splitter_service.py` + `SplitterPage.vue`）
+- 两个独立 bug：
+  1. `mode=custom` + 不匹配 pattern（用户瞎写/写错）→ 0 命中 → 沉默当 1 章
+  2. `min_words=10000` 阈值过高（网文章节大多 2000-5000 字）→ 过滤后剩 1 章
+- 修法：(1) `_chapter_regex_for_mode` 编译成功但 0 命中回退 auto + warning；(2) min_words 过滤后 < 5 章且 ≥ 5 章过滤前 → `raise ValueError` 含调参建议
+- 前端：`SplitterPage.vue:22` pattern 默认值 `'第[...]+章'` 改 `''`（custom 模式空 pattern 走后端 auto 兜底，去掉陷阱）
+- 测试：`tests/test_splitter_silent_failure.py`（7 用例）
+
+**D-G. 书名推断 `1ae7cc4` + `fdc3b8d` + `25c455b`**（`splitter_service.infer_book_name`）
+- 旧：硬编码 suffix 白名单（校对版/完整版/全本）剥离 → 永远漏（精校版/精修版/典藏版/完结版/校对后/无括号版 全部漏网）
+- D. 主路径改用 `re.search(r"[《<]([^》>]+)[》>]", name)` 截取《...》之间内容（截不到时回退）
+- E. fallback 路径用通用 regex 覆盖分隔符变体（连字符/下划线/点/空格）+ 可选括号；版本词白名单扩到 12 个
+- F. 双层书名号 `《《xxx》》` 修：P5 regex 在双层上输出 `《《xxx》`（少一个外层 `》`）；改用 `《+([^《》]+)》+` 自动找最内层
+- 真实案例：用户上传 `《《大王饶命》》（精校版）.txt` → 修前《《大王饶命》（错位）→ 修后《大王饶命》
+- 测试：`tests/test_infer_book_name.py`（58 用例 P5b）+ `tests/test_infer_book_name_dquote.py`（15 用例 P5c）
+
+**H. _archive_item 搬目录后没更新 item.workspace_dir `56098be`**（`queue_service.py`）
+- 现象：用户跑 `《大王饶命》` → 分析完成 → `auto_archive=true` 触发 `shutil.move(workspace/《大王饶命》/, workspace/分析结果/《大王饶命》/)` → `item.workspace_dir` **仍指向旧路径**（已搬走）
+- 后果链：`_books["《大王饶命》"] = item.workspace_dir`（旧路径）→ `get_book_path` 命中后 `path.exists() False` → `KeyError("书目不存在")` → auto_summary 失败
+- 修法：`shutil.move` 成功后更新 `item.workspace_dir = target` + `item.blocks_dir = target/"blocks"` + `self.save_queue()` 持久化
+- **遗留状态**：用旧版本已归档的书，队列项里 workspace_dir 仍是旧路径，需用户重启或点"扫描工作区"重建
+- 测试：`tests/test_archive_path_update.py`（2 用例）
+
+**用户报告 vs 我猜测的方向错位（教训）**：
+- 报告"《《大王饶命》》分析完成"——我以为是双书名号文件名（regex bug），实为单层 + log 装饰 `《{item.name}》` 加的外层
+- 报告"书目不存在: 《大王饶命》"——我以为是书目录命名错位（splitter bug），实为归档搬走但路径引用没更新（queue_service bug）
+- **教训**：下次类似报告先看 `workspace/` 实际目录结构再下结论，不要按"双层《》就当 regex 问题"线性推断
+
+**关联 commit**（H16 收尾 P1/P2 在 10.20 之前）：
+- `fa0f95e` recheck 阶段补 total_batches + 停止路径 sweep + range 补 /total
+- `61fd242` 最终总结阶段→LaneView 兼容（summaryLanes helper）
+- `5f654c4` 并发数显示/上半部分对齐（status.concurrency 暴露 + col-head 38→56px）
+- `c258e77` 实时速率聚合 + 已完成块去浮点（Math.round）+ 日志卡底色对齐
+- `6299a23` 并发模式补发 block_start（修 activeBlocks=0）
+- `086a296` `run_desktop.bat` 开独立 tail 窗口（PowerShell Get-Content -Wait）
+- `5e1597b` RunDashboard 套 .glass-card
+- `8907e24` Pydantic CompletionUsage 无 .get() 兼容（`_get_reasoning_tokens` helper）
+- `3fd8d57` P1-a 流式中断保留 partial content + P1-b `_seen_characters` 跨书重置
+
+**回归**：本 session 累计后端 366/366 passed；测试文件 43 → 48；4 个 other Agent 文件（`test_anthropic_provider.py` / `client.ts` / `SettingsPage.vue` / queue-live-dashboard plan）保持 ` M` unstaged 不动
+
+### 10.22 2026-08-27 伏笔组合因子排序 + 排行视图
+- **组合因子排序**：`_build_foreshadow_catalog` sort_key 从 `imp×100 + conf×10 + evidence_count(≤99)` 改为 `imp×100 + conf×10 + evidence_count(≤50) + span(≤49)`。**原因**：纯 evidence_count 对早期隐蔽伏笔结构性歧视（好伏笔越隐蔽检测次数越低，越易被截断）。组合因子让"跨章时间范围"(span) 和"被检测次数"(evidence_count) 各贡献一半权重。
+- **composite_score 保留**：sort_key 计算后不再 pop，改名 `composite_score` 保留到 catalog 条目 + ledger 条目。
+- **ForeshadowItem 扩展**：加 `composite_score: int = 0` + `importance: str = "中"`，SCHEMA_VERSION 升到 3。
+- **排行 API**：`GET /api/books/{id}/foreshadow_ranking` 从 ledger 读+算分+降序返回。
+- **前端排行视图**：TimelinePage 加第三个 mode "伏笔排行"，按分数降序列表，含分数条+span+evidence_count+status+⚠️标注。旧数据（无 composite_score）实时计算兜底。
+- **未改**：`max_foreshadow_catalog_high` 默认值仍为 500（用户可在 GUI 手动改到 1000）。
+
+### 10.23 2026-08-27 伏笔总表日志 Bug 修复
+- **症状**：日志 `伏笔总表构建完成：2431 原始 -> 1395 入总表（高 899, 中 1234, 其他 296）` 看起来截断没生效（中 1234 > max_mid=200 但日志没显示截断信息）。
+- **根因**：`final_summary.py:911-913` 日志打印 `len(high_items)` / `len(mid_items)`（截断前原始数），不是 `truncated` 里实际高/中/其他数。
+- **修复**：加 `high_kept` / `mid_kept` 变量跟踪实际入表数，日志改为 `高 899/899, 中 200/1234` 格式，截断信息也补全到 INFO 级别。
+- **截断逻辑本身正确**：1234 → 200 = 1034 条中桶伏笔被截断，与 1395 总数（899+200+296）一致。
+- **回归**：老 ledger JSON 反序列化兼容（新字段默认值 0/"中"）；排行端点对旧数据实时算分兜底。
+
+### 10.24 2026-08-31 运行概览车道堆叠修复（车道注册表自愈）
+- **症状**：用户上报长程运行后车道计数堆叠「57 / 8 运行中」，功能无影响。WS 挂测试客户端三轮实测定位：真实 LLM 并发恒 = 配置值（信号量从未超卖），是前端车道记账腐烂——「start 未 done」稳态虚高 ~2.5 倍（done 由消费循环补发且每 8 块阻塞等 rolling 1-3 分钟），叠加 WS 通道有损（hub 每连接队列 maxsize=1000 满了丢最旧、断线无重放、前端无对账），丢一条 done = 永久僵尸；续跑补发洪峰（916 块 ~2700 条消息必打满队列）+ 失败风暴为触发点
+- **修复**（subagent 复审通过并按其 4 条修正落地）：
+  - 后端 pipeline：`_analyze_one_block` try/finally 登记 `_inflight_blocks`（预热/并发/补跑单点覆盖）+ `inflight_blocks()` 快照；`_worker`/`analyze_block_with_progress` 异常兜底带原 block_id 发 failed + 补 `state.add_failed`（原兜底固定发 chapter:0 被前端忽略 = 隐藏泄漏路径）；续跑补发每 50 条 sleep(0)
+  - queue_service：`status()` 暴露 `inflight_blocks`（getattr 兜底 `__new__` 单测）；`skipped` 也转发 block_done
+  - progress_hub：队满分级驱逐 token_delta → log → 保 block_start/block_done 等关键事件
+  - 前端：新增 `utils/laneRegistry.ts`（`gcActiveBlocks` 僵尸回收 + `reconcileActiveBlocks` 真实在途对账，纯函数可测）；QueuePage `syncLaneRegistry()` 挂 `refresh()`（5s 轮询 + block_done 防抖），GC 同步清 tokenByBlock/rateByBlock；GC 跳过 ≥900000 总结合成车道 + has-token 门控（复审修正项）
+- **原因**：车道注册表纯增量记账，无对账、无超时回收，任何丢失永久累积只能刷新页面清零
+- **回归**：后端 420 passed（+6，54 文件）/ 前端 vitest 77 passed（+11）/ vue-tsc 0 错 / vite build 通过；改动未提交（工作区另有前 session 的 31 个 ` M` 文件不动）
+- **未做**：rolling 等待与消费循环解耦（消除 done 延迟基线，行为改动大，先观察自愈效果）
