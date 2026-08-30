@@ -212,6 +212,9 @@ class AnalysisPipeline:
         self._on_token_stats = on_token_stats
         self._block_map: dict = {}  # block_id -> 实际章号列表（补跑时按原块恢复）
         self._rolling_early: int = ROLLING_EARLY_CHAPTERS  # 滚动摘要首生成阈值（可自适应）
+        # 运行概览在途块（block_id -> {chapter, range, started_at}）：LLM 调用窗口内登记，
+        # 供 /api/analysis/status#inflight_blocks 给前端车道对账（WS 丢 done 的治本纠偏源）
+        self._inflight_blocks: dict = {}
 
     async def _emit(self, payload: dict) -> None:
         """发进度（替代旧 progress.emit）"""
@@ -326,6 +329,10 @@ class AnalysisPipeline:
             logger.info(f"断点续跑：跳过已完成{len(skipped_blocks)}块 → 块ID: {[b[0] for b in skipped_blocks]}")
             # 补发 block_done 事件，使前端续跑时也能看到这些章「已完成」（与正常完成表现一致）
             for idx, (bid, _chs) in enumerate(skipped_blocks, start=1):
+                if idx % 50 == 0:
+                    # 补发洪峰限速：每块 ~3 条消息，千章级续跑一次灌 2700+ 条会打满
+                    # 每连接 WS 队列（maxsize=1000）触发丢最旧，挤掉真实 block_done
+                    await asyncio.sleep(0)
                 await self._emit({
                     "status": "done",
                     "chapter": bid,
@@ -458,9 +465,18 @@ class AnalysisPipeline:
                     "progress": completed_count, "total": total,
                     "message": f"开始分析{ch_range}..."
                 })
-                success, elapsed, ch_tokens, result, retry_info = await self._analyze_one_block(
-                    analyzer, self.file_processor, state, block_id, block_chs,
-                    block_size=block_size)
+                try:
+                    success, elapsed, ch_tokens, result, retry_info = await self._analyze_one_block(
+                        analyzer, self.file_processor, state, block_id, block_chs,
+                        block_size=block_size)
+                except Exception as e:
+                    # 异常必须带原 block_id 走 failed：消费循环的 except 兜底拿不到
+                    # block_id（固定发 chapter:0），前端 blockId>0 检查会忽略，
+                    # 已登记的 start 车道将永远收不到 done（车道堆叠泄漏源之一）
+                    logger.error(f"块{block_id}分析异常: {e}", exc_info=True)
+                    state.add_failed(block_id, f"块分析异常: {e}")
+                    success, elapsed, ch_tokens, result, retry_info = (
+                        False, 0.0, (0, 0), None, {"retries": 0, "failed_tokens": 0})
                 return block_id, block_chs, success, elapsed, ch_tokens, result, retry_info, False
 
         tasks = [asyncio.create_task(_worker(bid, chs)) for bid, chs in remaining]
@@ -604,12 +620,19 @@ class AnalysisPipeline:
             "skipped_chapters": skipped_chapters
         }
 
+    def inflight_blocks(self) -> list:
+        """当前真实在途块快照（LLM 调用窗口内，天然 ≤ concurrency 且零丢失）"""
+        return sorted(self._inflight_blocks.values(), key=lambda d: d["started_at"])
+
     async def _analyze_one_block(self, analyzer, file_processor, state,
                                  block_id: int, block_chs=None,
                                  block_size: int = 1) -> tuple:
         """
         分析单个块的公共逻辑（预热/并发/补跑共用）。
         纯分析+保存，不 emit progress（由调用方负责）。
+
+        在途登记放在这一层而非 _worker：预热与补跑不走 _worker，
+        三条路径在此单点汇聚才能覆盖全部车道。
 
         Args:
             block_chs: 本块实际章号列表；None 时回退到 _block_map（补跑场景），
@@ -619,6 +642,21 @@ class AnalysisPipeline:
             (success, elapsed, ch_tokens, result, retry_info)
         """
         chs = block_chs or self._block_map.get(block_id) or [block_id]
+        self._inflight_blocks[block_id] = {
+            "chapter": block_id,
+            "range": _fmt_range(block_id, chs, block_size),
+            "started_at": time.time(),
+        }
+        try:
+            return await self._analyze_one_block_impl(
+                analyzer, file_processor, state, block_id, chs, block_size)
+        finally:
+            self._inflight_blocks.pop(block_id, None)
+
+    async def _analyze_one_block_impl(self, analyzer, file_processor, state,
+                                      block_id: int, chs: list,
+                                      block_size: int = 1) -> tuple:
+        """_analyze_one_block 的实际分析体（chs 已解析，在途登记由外层负责）"""
         content = await asyncio.to_thread(file_processor.read_block, chs)
         if content is None:
             state.add_failed(block_id, "读取失败")
@@ -676,17 +714,30 @@ class AnalysisPipeline:
                 "message": f"{prefix}开始分析{ch_range}..."
             })
 
-        success, elapsed, ch_tokens, result, retry_info = await self._analyze_one_block(
-            self._analyzer, self.file_processor, self.state, block_id, block_chs,
-            block_size=block_size,
-        )
+        try:
+            success, elapsed, ch_tokens, result, retry_info = await self._analyze_one_block(
+                self._analyzer, self.file_processor, self.state, block_id, block_chs,
+                block_size=block_size,
+            )
 
-        success, new_completed = await self._handle_block_outcome(
-            success=success, block_id=block_id, block_chs=block_chs,
-            block_size=block_size, total=total, label=label,
-            completed_count=completed_count, elapsed=elapsed,
-            ch_tokens=ch_tokens, result=result, retry_info=retry_info,
-        )
+            success, new_completed = await self._handle_block_outcome(
+                success=success, block_id=block_id, block_chs=block_chs,
+                block_size=block_size, total=total, label=label,
+                completed_count=completed_count, elapsed=elapsed,
+                ch_tokens=ch_tokens, result=result, retry_info=retry_info,
+            )
+        except Exception as e:
+            # 预热/补跑路径的异常兜底：不包裹会冲出 run() 被服务层整书标 failed；
+            # 且必须带正确 chapter 发 failed，否则前端已登记的 start 车道泄漏
+            logger.error(f"{prefix}块{block_id}分析异常: {e}", exc_info=True)
+            self.state.add_failed(block_id, f"块分析异常: {e}")
+            await self._emit({
+                "chapter": block_id, "status": "failed",
+                "progress": completed_count, "total": total,
+                "retries": 0, "failed_tokens": 0,
+                "message": f"{prefix}{ch_range}分析异常",
+            })
+            return False, completed_count, (0, 0), None, {"retries": 0, "failed_tokens": 0}
         return success, new_completed, ch_tokens, result, retry_info
 
     async def _handle_block_outcome(

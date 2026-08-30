@@ -548,6 +548,8 @@ class AnalysisService:
         # 导致「并发车道 N/4」实际是「N/每块4章」——配置 concurrency=8 时实际 8 路并发但 UI 标 4。
         cm = getattr(self, "config_manager", None)
         analysis_cfg = getattr(getattr(cm, "config", None), "analysis", None) if cm else None
+        # getattr 兜底：部分单测用 __new__ 构造实例（无 __init__ 属性）
+        pipeline = getattr(self, "_pipeline", None)
         return {
             "running": self.is_running,
             "queue": self.queue.get_progress(),
@@ -555,6 +557,9 @@ class AnalysisService:
             "workspace_dir": self.workspace_path.as_posix(),
             "concurrency": getattr(analysis_cfg, "concurrency", None) if analysis_cfg else None,
             "block_size": getattr(analysis_cfg, "block_size", None) if analysis_cfg else None,
+            # 运行概览车道对账源：pipeline 信号量窗口内的真实在途块（≤ concurrency，
+            # 零丢失）。前端 WS 记账丢 done 时以此整体纠偏（车道堆叠修复）
+            "inflight_blocks": pipeline.inflight_blocks() if pipeline is not None else [],
         }
 
     def token_stats(self) -> Dict[str, Any]:
@@ -831,7 +836,9 @@ class AnalysisService:
                     },
                 })
 
-            if status in ("done", "failed"):
+            # skipped（内容审核拦截）也必须转发：否则前端已登记的 start 车道
+            # 收不到 done，activeBlocks 永久泄漏（车道堆叠修复）
+            if status in ("done", "failed", "skipped"):
                 await hub.publish({
                     "type": "block_done",
                     "payload": {

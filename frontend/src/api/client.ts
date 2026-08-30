@@ -32,6 +32,8 @@ export interface AnalysisStatus {
   // 实际配置 concurrency=8 时后端是 8 路并发，UI 标 4
   concurrency?: number
   block_size?: number
+  // 运行概览车道对账源：pipeline 信号量窗口内的真实在途块（车道堆叠修复）
+  inflight_blocks?: Array<{ chapter: number; range: string; started_at: number }>
 }
 
 export interface TokenCategory {

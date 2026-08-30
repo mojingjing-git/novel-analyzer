@@ -9,6 +9,7 @@ import ConfirmDialog from '../components/ConfirmDialog.vue'
 import CountUp from '../components/CountUp.vue'
 import RunDashboard, { type DiscoveryItem, type ActiveBlock, type FinishedBlock } from '../components/RunDashboard.vue'
 import { applySummaryProgress } from '../utils/summaryLanes'
+import { gcActiveBlocks, reconcileActiveBlocks } from '../utils/laneRegistry'
 import { api, type AnalysisStatus, type TokenStatsResponse, type SessionTokenStatsResponse } from '../api/client'
 import { useProgressSocket, type ProgressMessage } from '../api/useProgressSocket'
 import { useLogStore } from '../composables/useLogStore'
@@ -200,10 +201,38 @@ function onMessage(msg: ProgressMessage) {
 
 const { connected } = useProgressSocket(onMessage)
 
+// 车道注册表自愈（车道堆叠修复）：随 refresh()（5s 轮询 + block_done 防抖）执行
+// 1) GC：elapsed 超预警窗且无 token 更新的僵尸车道回收（WS 丢 done 的兜底），
+//    并同步清理 tokenByBlock/rateByBlock（同样只增不减的内存泄漏）
+// 2) 对账：用后端 inflight_blocks（信号量真实在途）整体纠偏分析块，
+//    保留总结合成车道（≥900000）与 15s 内新登记块（防 fetch/start 竞态闪烁）
+function syncLaneRegistry() {
+  if (!status.value?.running) return
+  const now = Date.now()
+  const { kept, gcIds } = gcActiveBlocks(
+    activeBlocks.value, tokenByBlock.value, now, stallWarnSec.value || 480)
+  if (gcIds.length > 0) {
+    for (const id of gcIds) {
+      tokenByBlock.value.delete(id)
+      rateByBlock.value.delete(id)
+    }
+    tokenByBlock.value = new Map(tokenByBlock.value)
+    rateByBlock.value = new Map(rateByBlock.value)
+    console.warn('[车道GC] 回收僵尸车道:', gcIds)
+  }
+  const inflight = status.value?.inflight_blocks
+  if (inflight) {
+    activeBlocks.value = reconcileActiveBlocks(kept, inflight, Date.now())
+  } else if (gcIds.length > 0) {
+    activeBlocks.value = kept
+  }
+}
+
 async function refresh() {
   try {
     const s = await api.analysisStatus()
     status.value = s
+    syncLaneRegistry()
     // 刷新/重连时 WS 进度可能尚未到达，用 REST 状态兜底填充进度条，
     // 避免运行中刷新页面后进度条凭空消失（等待下一个 block_done 才出现）
     if (s?.running && progress.value.total === 0 && s.queue?.current_progress != null && s.queue.current_total) {

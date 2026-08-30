@@ -91,12 +91,32 @@ class ProgressHub:
             try:
                 q.put_nowait(message)
             except asyncio.QueueFull:
-                # 慢消费者：丢弃最旧消息后重试，避免阻塞发布方
+                # 慢消费者：分级驱逐而非无脑丢最旧——token_delta 高频可再生先丢，
+                # log 次之；block_start/block_done/progress 等低频关键事件保住
+                # （前端车道记账靠它们配对，丢一条 = 永久僵尸车道）
                 try:
-                    q.get_nowait()
+                    items = []
+                    while True:  # 排空队列（QueueFull 时必有积压）
+                        items.append(q.get_nowait())
+                except asyncio.QueueEmpty:
+                    pass
+
+                def _droppable_rank(m: Dict[str, Any]) -> int:
+                    t = m.get("type")
+                    if t == "token_delta":
+                        return 0
+                    if t == "log":
+                        return 1
+                    return 2
+
+                try:
+                    evict_idx = min(range(len(items)), key=lambda i: _droppable_rank(items[i]))
+                    del items[evict_idx]
+                    for m in items:
+                        q.put_nowait(m)
                     q.put_nowait(message)
                 except Exception:
-                    pass
+                    pass  # 驱逐兜底失败不阻塞发布方
 
     def publish_threadsafe(self, loop: asyncio.AbstractEventLoop, message: Dict[str, Any]) -> None:
         """供非事件循环线程调用（如同步代码通过 to_thread 运行时回推进度）"""
