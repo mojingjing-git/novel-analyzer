@@ -17,6 +17,7 @@ from typing import Any, Dict, Set
 
 from .ws_events import (
     WSType,
+    WSState,
     log_event,
     progress_event,
     state_change_event,
@@ -136,7 +137,7 @@ class ProgressHub:
     async def progress(self, current: int, total: int, eta: str = "") -> None:
         await self.publish(progress_event(current, total, eta))
 
-    async def state_change(self, state: str, detail: str = "") -> None:
+    async def state_change(self, state: WSState, detail: str = "") -> None:
         await self.publish(state_change_event(state, detail))
 
     async def broadcast_token_delta(

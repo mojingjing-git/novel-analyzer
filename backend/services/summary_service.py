@@ -15,6 +15,7 @@ from typing import Optional, Dict, Any
 from ..config.settings import AppConfig
 from ..progress_hub import get_hub
 from .final_summary import FinalSummaryRunner
+from ..ws_events import WSType, WSState
 from .queue_service import get_service as get_analysis_service
 from . import book_service
 
@@ -108,14 +109,14 @@ class SummaryService:
                 level = "error" if ptype == "batch_failed" else "info"
                 asyncio.create_task(hub.log(message, level=level, category="summary"))
             asyncio.create_task(hub.publish({
-                "type": "summary_progress",
+                "type": WSType.SUMMARY_PROGRESS,
                 "payload": {**payload, "book_id": book_id,
                             "batches_done": self._batches_done},
             }))
 
         def on_token_stats(payload: dict) -> None:
             asyncio.create_task(hub.publish({
-                "type": "token_stats",
+                "type": WSType.TOKEN_STATS,
                 "payload": {**payload, "source": "summary"},
             }))
 
@@ -153,24 +154,24 @@ class SummaryService:
 
     async def _run(self, output_dir: Path) -> None:
         hub = get_hub()
-        await hub.state_change("summary_running", f"最终总结开始: {self._book_id}")
+        await hub.state_change(WSState.SUMMARY_RUNNING, f"最终总结开始: {self._book_id}")
         try:
             report = await self._runner.run()
             if report is None:
                 self._phase = "stopped"
-                await hub.state_change("summary_stopped", f"总结已停止: {self._book_id}")
+                await hub.state_change(WSState.SUMMARY_STOPPED, f"总结已停止: {self._book_id}")
             else:
                 report_path = output_dir / "final_summary_report.md"
                 await asyncio.to_thread(report_path.write_text, report, encoding="utf-8")
                 logger.info(f"全书脉络报告已保存: {report_path}")
                 self._phase = "complete"
-                await hub.state_change("summary_done", f"总结完成: {self._book_id}")
+                await hub.state_change(WSState.SUMMARY_DONE, f"总结完成: {self._book_id}")
         except Exception as e:
             logger.error(f"最终总结异常: {e}", exc_info=True)
             self._phase = "failed"
             self._error = str(e)
             await hub.log(f"最终总结失败: {e}", level="error")
-            await hub.state_change("summary_failed", str(e))
+            await hub.state_change(WSState.SUMMARY_FAILED, str(e))
         finally:
             self._finished_at = time.time()
             # 会话累计 + 总结 token 落盘（2026-08-17）：历史成本可查，重启不丢

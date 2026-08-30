@@ -13,6 +13,7 @@ from typing import Optional, Dict, Any, Callable
 
 from ..config.settings import AppConfig
 from ..progress_hub import get_hub
+from ..ws_events import WSType, WSState
 from .location_normalizer import LocationNormalizer
 from . import book_service
 from ..core.llm_client import LLMClient
@@ -97,7 +98,7 @@ class LocationNormalizationService:
             if message:
                 asyncio.create_task(hub.log(message, level="info", category="location-normalization"))
             asyncio.create_task(hub.publish({
-                "type": "location_normalization_progress",
+                "type": WSType.LOCATION_NORMALIZATION_PROGRESS,
                 "payload": {**payload, "book_id": book_id, "batches_done": self._batches_done},
             }))
 
@@ -118,7 +119,7 @@ class LocationNormalizationService:
 
     async def _run(self) -> None:
         hub = get_hub()
-        await hub.state_change("location_normalization_running", f"地点归一化开始: {self._book_id}")
+        await hub.state_change(WSState.LOCATION_NORMALIZATION_RUNNING, f"地点归一化开始: {self._book_id}")
         normalizer = self._normalizer
         assert normalizer is not None
         try:
@@ -126,20 +127,20 @@ class LocationNormalizationService:
             self._finished_at = time.time()
             if ok is True:
                 self._phase = "complete"
-                await hub.state_change("location_normalization_done", f"地点归一化完成: {self._book_id}")
+                await hub.state_change(WSState.LOCATION_NORMALIZATION_DONE, f"地点归一化完成: {self._book_id}")
             elif ok is None:
                 self._phase = "stopped"
-                await hub.state_change("location_normalization_stopped", f"地点归一化已停止: {self._book_id}")
+                await hub.state_change(WSState.LOCATION_NORMALIZATION_STOPPED, f"地点归一化已停止: {self._book_id}")
             else:
                 self._phase = "failed"
                 self._error = "归一化失败（部分 batch 失败率过高）"
-                await hub.state_change("location_normalization_failed", self._error)
+                await hub.state_change(WSState.LOCATION_NORMALIZATION_FAILED, self._error)
         except Exception as e:
             logger.error(f"地点归一化异常: {e}", exc_info=True)
             self._phase = "failed"
             self._error = str(e)
             self._finished_at = time.time()
-            await hub.state_change("location_normalization_failed", str(e))
+            await hub.state_change(WSState.LOCATION_NORMALIZATION_FAILED, str(e))
 
 
 _service: Optional[LocationNormalizationService] = None

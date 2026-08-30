@@ -17,6 +17,7 @@ from ..core.pipeline import AnalysisPipeline
 from ..progress_hub import get_hub
 from .analysis_stats import AnalysisStats
 from .pipeline_events import make_pipeline_callbacks
+from ..ws_events import WSState
 from .queue_manager import CONFIG_FILE, PROJECT_ROOT, QUEUE_STATE_FILE, QueueItem, QueueManager
 
 logger = logging.getLogger(__name__)
@@ -197,10 +198,10 @@ class AnalysisService:
             await hub.log("API 预检查中...")
             if not await self.queue.check_api(config):
                 await hub.log("API 预检查失败，请检查设置中的 API 配置", level="error")
-                await hub.state_change("idle", "API 预检查失败")
+                await hub.state_change(WSState.IDLE, "API 预检查失败")
                 return
 
-            await hub.state_change("running", "队列分析开始")
+            await hub.state_change(WSState.RUNNING, "队列分析开始")
 
             while not self._stop_requested:
                 item = self.queue.get_current()
@@ -222,7 +223,7 @@ class AnalysisService:
             # 收尾
             self.save_queue()
             if self._stop_requested:
-                await hub.state_change("stopped", "分析已停止")
+                await hub.state_change(WSState.STOPPED, "分析已停止")
             else:
                 # 2026-08-02 spec：队列全部完成且开启 auto_summary 时，
                 # 对已完成的书逐本串行执行最终总结（单本失败记录日志继续下一本；
@@ -231,9 +232,9 @@ class AnalysisService:
                     await self._auto_summary_done_books(config)
                 # P2 修复：自动总结期间用户可能已停止——此时不得广播“队列全部完成”
                 if self._stop_requested:
-                    await hub.state_change("stopped", "分析已停止（总结阶段中止）")
+                    await hub.state_change(WSState.STOPPED, "分析已停止（总结阶段中止）")
                 else:
-                    await hub.state_change("done", "队列全部完成")
+                    await hub.state_change(WSState.DONE, "队列全部完成")
             self._pipeline = None
         finally:
             # 冻结结束时刻：任务完成/被取消/异常后 is_running 即变 False，
@@ -289,7 +290,7 @@ class AnalysisService:
         item.start_time = time.time()
         self.save_queue()
         await hub.log(f"开始分析《{item.name}》（共{item.total_chapters}章）")
-        await hub.state_change("running", f"分析中: {item.name}")
+        await hub.state_change(WSState.RUNNING, f"分析中: {item.name}")
 
         # WS 事件翻译层（pipeline → ProgressHub）：工厂捕获 hub/item/stats/已见人物
         on_progress, on_token_stats = make_pipeline_callbacks(

@@ -31,6 +31,7 @@ from backend.api import (
     routes_location_normalization,
     ws,
 )
+from backend.ws_events import WSState
 from backend.progress_hub import get_hub, install_log_forwarder
 
 logger = logging.getLogger(__name__)
@@ -146,11 +147,11 @@ def create_app() -> FastAPI:
     async def demo_publish():
         """M0 回环验证：同步发布一串演示进度消息，WS 客户端应能收到"""
         hub = get_hub()
-        await hub.state_change("running", "demo 开始")
+        await hub.state_change(WSState.RUNNING, "demo 开始")
         for i in range(1, 6):
             await hub.log(f"demo 日志第 {i} 条")
             await hub.progress(i, 5, eta=f"{5 - i} 秒")
-        await hub.state_change("done", "demo 结束")
+        await hub.state_change(WSState.DONE, "demo 结束")
         return {"ok": True, "published": 12}
 
     # 发布模式：托管前端构建产物（必须放在最后，避免吞掉 /api 路由）
