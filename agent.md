@@ -34,7 +34,10 @@
 │   │   ├── style_analyzer.py     # 风格分析器（22统计+8语义维度）
 │   │   └── moderation.py         # 内容审核识别
 │   ├── services/                 # 业务服务层
-│   │   ├── queue_service.py      # 队列编排 + AnalysisService（单例；启动扫描移出 __init__，改由 app lifespan 经 to_thread 触发）
+│   │   ├── queue_service.py      # 分析运行编排层（AnalysisService 单例；启动扫描移出 __init__，改由 app lifespan 经 to_thread 触发）
+│   │   ├── queue_manager.py      # 队列管理：QueueItem/QueueManager（状态机/工作区扫描/API 预检/持久化）
+│   │   ├── analysis_stats.py     # 分析会话统计累加（AnalysisStats：token 五件套/每章记录/重试成本/冻结耗时）
+│   │   ├── pipeline_events.py    # WS 事件翻译层（pipeline 回调工厂 + discovery 提取 + ETA 格式化）
 │   │   ├── final_summary.py      # 最终总结执行器（4阶段 + 断点续跑）
 │   │   ├── splitter_service.py   # 小说切章服务
 │   │   ├── workspace_service.py  # 工作区/归档管理
@@ -372,18 +375,33 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 
 ### 5.2 服务层（backend/services/）
 
-#### queue_service.py（1003行）
-- **QueueManager**：队列状态机（pending/running/done/failed/skipped）
+#### queue_service.py（406行，2026-08-31 拆分后编排层）
 - **AnalysisService**（单例）：
-  - `_run_queue()`：逐本运行 `AnalysisPipeline`
+  - `_run_queue()`：逐本运行 `AnalysisPipeline`（经 `make_pipeline_callbacks` 挂事件翻译层）
   - 双向互斥：分析运行中禁总结，总结运行中禁分析
   - 自动总结：队列完成后逐本串行执行 `FinalSummaryRunner`
-  - 自动归档：分析完成后 `shutil.move` 到 `分析结果/`
-  - 每本书分析完成后 token 消耗落盘 `output/token_stats.json`
-- **事件转换层（on_progress）**：status=start→block_start、done/failed/skipped→block_done（skipped 原先不转发，前端车道会泄漏）
+  - 自动归档：分析完成后 `shutil.move` 到 `分析结果/`（`_archive_item` 含 P5d 路径更新修复）
+  - 每本书分析完成后 token 消耗落盘 `output/token_stats.json`（做差逻辑在 AnalysisStats.book_consumption）
 - **status() 暴露 `inflight_blocks`**：pipeline 信号量窗口内的真实在途块（≤ concurrency 零丢失），前端车道对账源；`getattr` 兜底 `__new__` 构造的单测实例
-- **跨协议探针纠正**：预检 models/chat 探针失败时翻转 provider 重探一次；OpenAI 协议暴露 claude-* 模型时就地纠正 provider 并经 config_manager 落盘持久化
+- `_record_chapter_stat` 仅剩测试拦截垫片用途（生产路径经 pipeline_events → AnalysisStats.record_chapter）
+
+#### queue_manager.py（408行）
+- **QueueItem**：队列任务（持久化经 `_store_path`/`_load_path` 相对 PROJECT_ROOT 路径化，搬迁/换盘不失效）
+- **QueueManager**：状态机（pending/running/done/failed/skipped；增删移推进/`scan_directory` 并行扫描/`infer_progress`/`save_state`/`load_state` 原子写）
+- **`check_api()`**：API 预检（models 健康检查 → chat 探针 → 跨协议翻转探针）
+- **跨协议探针纠正**：预检 models/chat 探针失败时翻转 provider 重探一次；OpenAI 协议暴露 claude-* 模型时就地纠正 provider 并经 config_manager 落盘持久化（config_manager 由 AnalysisService 注入）
 - **状态持久化**：`queue_state.json`（相对路径存储）
+- ⚠️ 单测 patch 注意：`LLMClient` 的 patch 目标是 `backend.services.queue_manager.LLMClient`（test_provider_heal ×8）
+
+#### analysis_stats.py（119行）
+- **AnalysisStats**：一次分析会话的统计值对象——分类 token 累计/每章记录/重试成本/KV 命中/起止时刻
+- 方法：`reset()`（start 调）/`record_chapter()`/`accumulate_token_stats()`/`baseline()`（本书落盘基线）/`freeze()`（finally 冻结 elapsed）/`session_snapshot(running, cached_tokens)`/`book_consumption(item, baseline)`
+- **不持有 pipeline**：运行中实时 KV 命中由 service 读 `self._pipeline._analyzer` 后传参
+
+#### pipeline_events.py（167行）
+- **`make_pipeline_callbacks(hub, item, stats, seen_characters)`**：返回 (on_progress, on_token_stats)，替代原 `_run_one_item` 嵌套闭包（捕获面经复审确认恰好完整；save_queue 不在此层）
+- on_progress：status=start→block_start、done/failed/skipped→block_done（skipped 必须转发，否则前端车道泄漏）+ discovery（仅成功块）
+- `_extract_discovery`/`_DISCOVERY_STOP_WORDS`/`_format_eta`/`_compute_eta` 随迁于此
 
 #### final_summary.py（1703行）
 - **职责**：全书总结执行引擎

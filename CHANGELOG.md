@@ -263,6 +263,15 @@
 - **回归**：后端 420 passed（+6：hub 分级驱逐 3 / pipeline 在途+异常 3，54 文件）；前端 vitest 77 passed（+11 laneRegistry，11 文件）；vue-tsc 0 错；vite build 通过
 - **未做**：rolling 等待与消费循环解耦（消除 done 延迟基线，行为改动大，先观察自愈效果再定）
 
+## 2026-08-31 queue_service 职责拆分（1003 行 → 4 模块）
+
+- **`queue_manager.py`（408 行）**：QueueItem/QueueManager（状态机/并行扫描/API 预检/持久化）独立；`check_api` 的 `LLMClient` 随迁，test_provider_heal 8 处 patch 字符串同步迁移（含 :61 整类重绑定）
+- **`analysis_stats.py`（119 行）**：新类 AnalysisStats 收敛 service 的 7 个散属性（token 五件套/起止时刻），方法 reset/record_chapter/accumulate_token_stats/baseline/freeze/session_snapshot/book_consumption；**不持有 pipeline**——运行中实时 KV 命中由 service 传参
+- **`pipeline_events.py`（167 行）**：`make_pipeline_callbacks(hub, item, stats, seen_characters)` 工厂替代 `_run_one_item` 的两个嵌套闭包（捕获面经复审确认恰好完整）；discovery 提取/ETA 格式化随迁
+- **`queue_service.py`（406 行）**：只留 AnalysisService 编排 + get_service，符号名与文件名不动（summary_service 反向导入方向不变）；`_record_chapter_stat` 退化为测试拦截垫片
+- 拆分前 subagent 对照代码复审，吸收 3 处修正（routes_analysis 生产导入不能破 / AnalysisStats 补 freeze+baseline / 每步绑定测试改造）；三步各自提交后全量 pytest 420 passed，`from backend.app import app` 导入冒烟通过
+- **未动**：自动总结/归档编排（与分析-总结互斥锁纠缠，等有功能需求时再拆）
+
 ## 2026-08-31 工作区清理
 
 - 删除已被完全取代的两份整仓备份：`小说分析器 - 副本`（332MB）+ `小说分析器 - 归一化兜底版`（358MB）。删除前验证：基线提交 cae160a 在主仓历史内、两份备份全部改动/新增文件在主仓均有对应（内容已被后续正式实现覆盖）；`代码版本/`（git 化前手动版本档案）与 `数据产物/`（分析结果归档）保留
