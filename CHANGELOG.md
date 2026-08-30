@@ -272,6 +272,14 @@
 - 拆分前 subagent 对照代码复审，吸收 3 处修正（routes_analysis 生产导入不能破 / AnalysisStats 补 freeze+baseline / 每步绑定测试改造）；三步各自提交后全量 pytest 420 passed，`from backend.app import app` 导入冒烟通过
 - **未动**：自动总结/归档编排（与分析-总结互斥锁纠缠，等有功能需求时再拆）
 
+## 2026-08-31 WS 事件协议类型化（前后端，wire 格式零变更）
+
+- **后端 `backend/ws_events.py`（新，协议唯一权威定义）**：`WSType`(11 值)/`WSState`(12 值)/`PipelineStatus`(7 值) 三个 StrEnum + 8 类 payload 契约 + 7 个纯同步工厂（log_event/progress_event/block_start_event/block_done_event/discovery_event/state_change_event/token_delta_event——HubLogHandler 同步线程可调）
+- **后端接线**：pipeline.py 12 处 `_emit` status 常量化；pipeline_events.py 比较与发布改工厂（含删 `_record_chapter_stat` 之外的旧发现：progress_hub.block_done() 便捷方法全仓无调用方且 payload 形状与翻译层不一致，已删除并在 ws_events.block_done_event 注释留痕）；queue_service(6)/summary_service(4+2)/location_normalization_service(5+1)/app.py(2) 全部常量化；progress_hub.state_change 签名收紧为 WSState
+- **前端**：useProgressSocket 定义 10 类 payload 接口 + 可辨识联合 ProgressMessage（ping 无 payload）；QueuePage 删 5 处 `as unknown as` 强转（switch 自动窄化，只删强转不改 `??` 兜底语义）；App.vue 删 7 处 as 强转；summaryLanes 入参类型化 `WSSummaryProgressPayload`（字段全 optional 兼容测试 fixture）
+- **验证**：后端 420 passed + 导入冒烟；前端 vitest 77 passed + vue-tsc 0 错 + vite build 通过
+- **收益**：状态漏发/字段拼错不再静默通过（类型层拦截），WS 协议有了唯一权威文档（ws_events.py 即协议文档）
+
 ## 2026-08-31 llm_client 拆分（1761 行 → 4 模块，主类 1291 行）
 
 - **`llm_failure_logger.py`（104 行）**：FailureLogger 类 + 进程级单例 + `_get_failure_logger()` 原样随迁（纯 stdlib；全仓仅 llm_client 内部使用，零测试改动）

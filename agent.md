@@ -24,6 +24,8 @@
 .
 ├── backend/                      # FastAPI 后端
 │   ├── app.py                    # FastAPI 工厂（CORS、静态文件、路由注册、生命周期）
+│   ├── ws_events.py              # WS 事件协议权威定义（WSType/WSState/PipelineStatus + payload 契约 + 工厂）
+│   ├── progress_hub.py           # 进度广播中枢（每连接队列/慢消费者分级驱逐/token_delta 节流）
 │   ├── core/                     # 核心分析引擎
 │   │   ├── pipeline.py           # 主分析流水线（三阶段）
 │   │   ├── llm_client.py         # LLM 客户端主类（双协议调用 + 三层重试链 + 三分竞争）
@@ -521,7 +523,14 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 | `routes_location_normalization.py` | 4 | `/api/location-normalization` | 归一化任务 start/stop/status/result |
 | `routes_prompt.py` | 1 | `/api/prompt` | Prompt 预览 |
 | `routes_foreshadow.py` | 1 | `/api/foreshadow` | 50类伏笔分类定义 |
-| `ws.py` | 1 WS | `/ws/progress` | WebSocket 实时进度 |
+| `ws.py` | 1 WS | `/ws/progress` | WebSocket 实时进度（wire 协议权威定义见 `backend/ws_events.py`） |
+
+**WS 事件协议**（2026-08-31 类型化）：`backend/ws_events.py` 为唯一权威定义——
+`WSType`(11 值)/`WSState`(12 值)/`PipelineStatus`(7 值) 三个 StrEnum + 8 类 payload
+契约 + 7 个纯同步工厂（log_event/progress_event/block_start_event/block_done_event/
+discovery_event/state_change_event/token_delta_event）。前端镜像：
+`frontend/src/api/useProgressSocket.ts` 的 ProgressMessage 可辨识联合。
+修改任何事件字段必须两侧同步。
 
 **安全机制：**
 - 路径遍历防护（`routes_aggregate.py`）
@@ -542,8 +551,9 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 - **错误增强**：HTTP 错误附加 `.status` 和 `.detail` 属性
 - **防重复读取**：先 `res.text()` 再 `JSON.parse()`，避免 body stream already read
 
-#### useProgressSocket.ts（123行）
+#### useProgressSocket.ts（123行+协议类型）
 - **单例 WebSocket**：模块级变量，跨路由共享
+- **可辨识联合 ProgressMessage**（2026-08-31）：10 类 payload 接口与 backend/ws_events.py 镜像，switch 自动窄化
 - **pub/sub 模式**：组件注册 `onMessage` 回调，自动清理
 - **指数退避重连**：1s → 2s → 4s → ... → 10s 上限
 - **ping 过滤**：心跳消息静默丢弃
