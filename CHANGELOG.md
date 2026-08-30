@@ -213,8 +213,8 @@
 
 ### 未提交清单（当前工作区）
 
-- 08-02 之后的所有里程碑（自动总结/优化批/伏笔 50 类/模型选择/复检续跑）尚未 git 提交
-- 系统备份：`F:\AI\小说分析器 - 归一化兜底版`（08-09，伏笔归一化分支完整快照）
+- ~~08-02 之后的所有里程碑（自动总结/优化批/伏笔 50 类/模型选择/复检续跑）尚未 git 提交~~ 已全部正式提交（08-27 批次，至 `46bc715`），本节作废
+- ~~系统备份：`F:\AI\小说分析器 - 归一化兜底版`（08-09，伏笔归一化分支完整快照）~~ 已于 2026-08-31 删除（连同 `小说分析器 - 副本`，共 690MB）：基线 cae160a 在主仓历史内、两份备份的全部改动文件均已被后续正式实现覆盖，验证后清理；`代码版本/`（4GB，git 化之前的手动版本档案）与 `数据产物/`（2.3GB，分析结果归档）保留
 
 ---
 
@@ -262,6 +262,12 @@
   - 前端新增 `utils/laneRegistry.ts` 纯函数：`gcActiveBlocks`（超预警窗无 token / 30min 硬上限回收僵尸，跳过 ≥900000 总结合成车道 + has-token 门控防误杀）+ `reconcileActiveBlocks`（inflight 整体纠偏，保留合成车道与 15s 宽限新块，无变化返回原引用）；`QueuePage.syncLaneRegistry()` 挂 `refresh()`（5s 轮询 + block_done 防抖），GC 同步清理 tokenByBlock/rateByBlock；client.ts `AnalysisStatus` 加 `inflight_blocks` 类型
 - **回归**：后端 420 passed（+6：hub 分级驱逐 3 / pipeline 在途+异常 3，54 文件）；前端 vitest 77 passed（+11 laneRegistry，11 文件）；vue-tsc 0 错；vite build 通过
 - **未做**：rolling 等待与消费循环解耦（消除 done 延迟基线，行为改动大，先观察自愈效果再定）
+
+## 2026-08-31 工作区清理
+
+- 删除已被完全取代的两份整仓备份：`小说分析器 - 副本`（332MB）+ `小说分析器 - 归一化兜底版`（358MB）。删除前验证：基线提交 cae160a 在主仓历史内、两份备份全部改动/新增文件在主仓均有对应（内容已被后续正式实现覆盖）；`代码版本/`（git 化前手动版本档案）与 `数据产物/`（分析结果归档）保留
+- 项目内清理：tmp_* 草稿 ×5、`crash.log.1`（62MB，H15 修复前的旧轮转备份）、`__pycache__`/`.pytest_cache`、前端构建残留（vite.config.js/.d.ts、tsbuildinfo ×2，均 gitignored 可再生）
+- 删除 git 跟踪的死文件：4 张无引用的视觉验证截图（frontend/*.png）+ `.github/workflows/ci.yml`（仓库无远端，Actions 永远不会触发；均可从历史恢复）
 
 ---
 
