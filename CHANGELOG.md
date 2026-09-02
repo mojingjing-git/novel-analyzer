@@ -295,6 +295,53 @@
 - 项目内清理：tmp_* 草稿 ×5、`crash.log.1`（62MB，H15 修复前的旧轮转备份）、`__pycache__`/`.pytest_cache`、前端构建残留（vite.config.js/.d.ts、tsbuildinfo ×2，均 gitignored 可再生）
 - 删除 git 跟踪的死文件：4 张无引用的视觉验证截图（frontend/*.png）+ `.github/workflows/ci.yml`（仓库无远端，Actions 永远不会触发；均可从历史恢复）
 
+## 2026-09-02 i18n 接口预留（L2）
+
+- 后端 `GUIConfig.language` 字段（默认 `"zh-CN"`，写入 config.json）
+- 前端 vue-i18n@^10 集成，空 locale 文件骨架
+- `useLocale()` composable + `AppConfigDto.gui.language?` 类型
+- **零翻译，零 UI 变化**；仅为未来 i18n 启用预留接口
+
+## 2026-09-02 切章器国际化 Phase 2-3 修复（P1）
+
+**目标**：把 `backend/services/splitter_service.py` 改成"包罗万象"切章器，覆盖 7 本 Project Gutenberg 外文书 + 4 类边界 case + 中文回归 0 破坏。
+
+**Phase 2 核心修复**（T2.1a/b、T2.4、T2.5b、T2.6、T2.7）：
+- **T2.1a 英文章节正则**：`CHAPTER_PATTERNS` 加 2 条——`[Cc]hapter\s+[IVXLCDM]+[\.\s:]?`（罗马数字）+ 裸 Roman 短篇（`[IVXLCDM]+\.\s+[A-Z][A-Z\s,'\u2019\-:]{2,80}$`，Sherlock 风格）；收紧原 `^\d+[\.、]\s*\S` 排除 Gutenberg license 的 `1.A.`/`1.B.`
+- **T2.1b 章节号提取**：`_extract_chapter_num` 支持 Roman（`_roman_to_int`，含 `I` 单字符兜底）+ 英文数词（`_word_to_int`，含连字符/空格复合）
+- **T2.4 卷归属**：`VOLUME_PATTERNS` 加 `Book the First/Second/...` + `Book [IVXLCDM]`（Dickens 风格）；`_normalize_volume_label` 同步把序数词映射为 Roman
+- **T2.5b TOC 跳过**：`_strip_gutenberg_header` 在 START 后 100 行内识别 CONTENTS 块、跳过再找真章节；`_find_first_real_chapter_or_volume` 通过"12 行内 body 出现"判别 TOC vs 真章节
+- **T2.5b 同号去重**：`_dedup_same_key` 保留字数最多的（TOC 残留 < 1000 字、正文 ≥ 5000 字）
+- **T2.6 Gatsby 独行 Roman**：`裸罗马独行` 正则覆盖 `I`/`II`/`IX`/`X` 单独成行
+- **T2.7 PG header 提取**：新增 `_extract_pg_header_meta` 识别 `Title:` / `Author:` 显式行（Dracula/Pride 等 7 本 metadata 全空 → 全填上）
+
+**Phase 3 边界加固**（T3.1-T3.6）：
+- 新增 `tests/test_splitter_edge_cases.py`（8 个 case 覆盖 4 类边界）：
+  - 空文件 / 纯空白 → 1 章"全文"不报错
+  - 单章节（"第1章 xxx" + 500 字）→ 1 章
+  - 5 行诗集 / < 10 行短文 → 1 章"全文"
+  - 20MB 单章 + `max_words=1M` → 自动拆为多章（`@pytest.mark.slow` + threading 超时保护）
+- 顶层 `tests/conftest.py` 注册 `@pytest.mark.slow` marker
+
+**Phase 4 已知限制**（T4.6 docstring 末尾追加）：
+- Dracula 日记体无显式 Chapter 标记：仍可识别 `CHAPTER I.` ~ `CHAPTER XXVII.` 27 章 Roman
+- Moby-Dick TOC 重复：`dedup_same_key` 兜底后剩余 1-2 条残留
+- 裸罗马短篇正则要求"全大写 2-80 字符"：小写标题不识别
+- pre-START 头 Title/Author 提取：只对 Project Gutenberg 文件有效
+
+**回归结果**：
+- baseline 7 本：7/7 章节数达标 + 7/7 metadata 含正确书名/作者
+- 边界 8 case：8/8 通过
+- 中文回归 16（mixed_formats 7 + atomic 2 + silent_failure 7）：16/16 通过
+- `pytest backend/tests/`：421/421 通过（实际用例数 = 421；plan 写作"354"为 v2 计划时的过时数）
+- **总改动**：splitter_service.py 5 处 + tests/test_splitter_edge_cases.py（新增）+ tests/conftest.py（新增）+ CHANGELOG.md（本条）
+
+**未做**：
+- 不动 Phase 1 产物（baseline 报告 / Gutenberg 下载脚本 / 测试 fixture）
+- 不 git commit（用户未要求）
+- 不重写整个 splitter_service.py，仅最小必要改动
+- 日文片假名章节不识别（不在本次范围）
+
 ---
 
 ## 核心机制演进主线

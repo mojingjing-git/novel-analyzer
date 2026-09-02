@@ -31,3 +31,8 @@ frontend/vite.config.d.ts
 
 # 开发流程产物
 .superpowers/
+
+# 调试脚本与中间产物
+_dbg_*.py
+tests/fixtures/_dbg_*.py
+_commit*_msg.txt
