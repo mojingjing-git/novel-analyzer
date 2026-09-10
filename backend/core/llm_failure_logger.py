@@ -9,12 +9,45 @@ H15 修复（2026-08-26）：原实现用裸 open('a') 追加，无大小限制�
 
 import json
 import logging
+import re
 import threading
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+# 敏感凭证脱敏正则（PR-1 修复，2026-09-10）：
+# 覆盖 OpenAI / Anthropic 风格 key、x-api-key / Authorization header 形式
+# 显式长度 20+ 避免误伤短随机串；多模式 any-match 全部替换
+# **顺序很关键**：sk-ant- 必须在 sk- 之前（否则会被通用 sk- 模式先吃掉）
+_REDACT_PATTERNS = [
+    (re.compile(r'sk-ant-[A-Za-z0-9_-]{20,}'), 'sk-ant-***'),                    # Anthropic sk-ant-...（必须先匹配）
+    (re.compile(r'sk-[A-Za-z0-9_-]{20,}'), 'sk-***'),                            # OpenAI sk-...
+    (re.compile(r'(x-api-key:\s*)\S+', re.IGNORECASE), r'\1***'),                # x-api-key header
+    (re.compile(r'(Authorization:\s*Bearer\s+)\S+', re.IGNORECASE), r'\1***'),    # Authorization Bearer
+]
+
+
+def redact(text: str) -> str:
+    """对文本中的敏感凭证（API key / token）做脱敏。
+
+    - 覆盖：OpenAI sk-... / Anthropic sk-ant-... / x-api-key header / Authorization: Bearer
+    - 显式长度 20+ 避免误伤短随机串
+    - **fail-open**：re.sub 抛异常时返回原文（宁可漏脱敏也不丢日志）
+
+    Refs: _plan_v3.md PR-1 步骤 2
+    """
+    if not text:
+        return text
+    try:
+        for pattern, replacement in _REDACT_PATTERNS:
+            text = pattern.sub(replacement, text)
+        return text
+    except Exception:
+        # fail-open：避免 redact 失败导致日志丢失
+        return text
 
 
 class FailureLogger:
@@ -60,7 +93,7 @@ class FailureLogger:
             "attempt": f"{attempt_num}/{max_retries}",
             "temperature": temperature,
             "error_type": error_type,
-            "error_message": str(error_message)[:500],
+            "error_message": redact(str(error_message)[:500]),
             "wait_time_seconds": wait_time,
             "messages_length": messages_length
         }

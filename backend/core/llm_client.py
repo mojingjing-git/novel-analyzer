@@ -22,7 +22,7 @@ from ..config.settings import APIConfig
 from ..core.moderation import (
     mark_moderation, is_moderation_code, is_moderation_message, is_moderation_error,
 )
-from .llm_failure_logger import _get_failure_logger
+from .llm_failure_logger import _get_failure_logger, redact as _redact
 from .llm_stream import (
     StreamChunk, StreamResult,
     parse_anthropic_response, parse_anthropic_stream_event, parse_openai_stream_event,
@@ -373,7 +373,7 @@ class LLMClient:
             return False, "", error_msg, (0, 0)
 
         except AuthenticationError as e:
-            error_msg = f"认证失败，请检查API Key: {str(e)}"
+            error_msg = f"认证失败，请检查API Key: {_redact(str(e))}"
             logger.error(error_msg)
 
             _get_failure_logger().record_failure(
@@ -387,7 +387,7 @@ class LLMClient:
             return False, "", error_msg, (0, 0)
 
         except APITimeoutError as e:
-            error_msg = f"请求超时 (timeout={self.config.timeout}s): {str(e)}"
+            error_msg = f"请求超时 (timeout={self.config.timeout}s): {_redact(str(e))}"
             logger.warning(error_msg)
 
             _get_failure_logger().record_failure(
@@ -402,7 +402,7 @@ class LLMClient:
 
         except APIError as e:
             status_code = getattr(e, 'status_code', None)
-            error_msg = f"API错误 (HTTP {status_code}): {str(e)}"
+            error_msg = f"API错误 (HTTP {status_code}): {_redact(str(e))}"
 
             # 内容审核拦截识别：结构化错误码 / 响应体 message / 异常文本
             if moderation_hit_from_exception(e):
@@ -433,7 +433,7 @@ class LLMClient:
             return False, "", error_msg, (0, 0)
 
         except anthropic.AuthenticationError as e:
-            error_msg = f"认证失败，请检查API Key: {str(e)}"
+            error_msg = f"认证失败，请检查API Key: {_redact(str(e))}"
             logger.error(error_msg)
             _get_failure_logger().record_failure(
                 attempt_num=0,
@@ -446,7 +446,7 @@ class LLMClient:
             return False, "", error_msg, (0, 0)
 
         except anthropic.APITimeoutError as e:
-            error_msg = f"请求超时 (timeout={self.config.timeout}s): {str(e)}"
+            error_msg = f"请求超时 (timeout={self.config.timeout}s): {_redact(str(e))}"
             logger.warning(error_msg)
             _get_failure_logger().record_failure(
                 attempt_num=0,
@@ -460,7 +460,7 @@ class LLMClient:
 
         except anthropic.APIStatusError as e:
             status_code = getattr(e, 'status_code', None)
-            error_msg = f"API错误 (HTTP {status_code}): {str(e)}"
+            error_msg = f"API错误 (HTTP {status_code}): {_redact(str(e))}"
             # 内容审核拦截识别（Anthropic usage policy 类消息）
             body = getattr(e, 'response', None)
             body_text = ""
@@ -488,7 +488,7 @@ class LLMClient:
             return False, "", error_msg, (0, 0)
 
         except anthropic.APIConnectionError as e:
-            error_msg = f"连接失败: {str(e)}"
+            error_msg = f"连接失败: {_redact(str(e))}"
             logger.error(error_msg)
             _get_failure_logger().record_failure(
                 attempt_num=0,
@@ -501,7 +501,7 @@ class LLMClient:
             return False, "", error_msg, (0, 0)
 
         except Exception as e:
-            error_msg = f"未知错误: {type(e).__name__}: {str(e)}"
+            error_msg = f"未知错误: {type(e).__name__}: {_redact(str(e))}"
             logger.error(error_msg, exc_info=True)
 
             # 内容审核拦截识别（智谱/小米等自由文本消息走这里）
@@ -618,7 +618,7 @@ class LLMClient:
             raise
         except Exception as e:
             # 整个调用级别错误（连接失败、API 4xx/5xx 等）作为 error chunk yield
-            error_msg = f"流式调用异常: {type(e).__name__}: {str(e)}"
+            error_msg = f"流式调用异常: {type(e).__name__}: {_redact(str(e))}"
             logger.warning(error_msg)
             yield StreamChunk(type="error", error=error_msg)
     @staticmethod
