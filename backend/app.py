@@ -33,6 +33,7 @@ from backend.api import (
 )
 from backend.ws_events import WSState
 from backend.progress_hub import get_hub, install_log_forwarder
+from backend.core.llm_failure_logger import redact
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,79 @@ _file_handler = RotatingFileHandler(
     str(LOG_FILE), encoding="utf-8", maxBytes=10 * 1024 * 1024, backupCount=3
 )
 _file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+
+
+class _SensitiveFieldsFilter(logging.Filter):
+    """对所有落到 analyzer.log 的 record 做敏感字段二次过滤（PR-1 修复，2026-09-10）。
+
+    - 复用 `backend.core.llm_failure_logger.redact`（与 PR-1 步骤 2 同源）
+    - 处理 `record.msg`（f-string 已格式化）和 `record.args`（% 格式化参数）
+    - **fail-open**：filter 内部任何异常都放行原文（不丢日志）
+    - 永远 return True（不丢 record，只改写 msg/args 内容）
+
+    Refs: _plan_v3.md PR-1 步骤 3
+    """
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            if isinstance(record.msg, str):
+                record.msg = redact(record.msg)
+            if record.args:
+                record.args = tuple(
+                    redact(a) if isinstance(a, str) else a
+                    for a in record.args
+                )
+        except Exception:
+            # fail-open：filter 失败时放行原文，绝不丢日志
+            pass
+        return True
+
+
+_file_handler.addFilter(_SensitiveFieldsFilter())
 logging.getLogger().addHandler(_file_handler)
+
+
+def _check_dependency_health() -> dict:
+    """启动时检查关键依赖是否真的能 import
+
+    真实事故复现（analyzer.log:451-457, 2026-08-26 06:46-6:47）：
+    json_repair 未安装 8 次, 9 级容错链到策略 7 静默跳过, 解析降级
+    但未崩溃。本函数目标: 把这种"未装"显式化, 避免再次发生。
+
+    Returns:
+        dict: {
+            "status": "ok" | "degraded" | "critical",
+            "deps": {label: {"status": "ok"|"missing", "version": str, "error": str}},
+            "missing": [str, ...],          # 所有缺失依赖名
+            "critical_missing": [str, ...],  # 标记为 critical 的缺失依赖
+        }
+    """
+    # (label, module_name, critical) — critical=True 表示该依赖缺失会显著降级功能
+    deps = [
+        ("json5", "json5", True),
+        ("json_repair", "json_repair", True),
+        ("openai", "openai", True),
+        ("anthropic", "anthropic", False),  # 可选, 仅使用 Anthropic provider 时需要
+        ("openpyxl", "openpyxl", True),
+        ("websockets", "websockets", True),
+    ]
+    health = {"status": "ok", "deps": {}, "missing": [], "critical_missing": []}
+    for label, module, critical in deps:
+        try:
+            m = __import__(module)
+            health["deps"][label] = {
+                "status": "ok",
+                "version": getattr(m, "__version__", "unknown"),
+            }
+        except ImportError as e:
+            health["deps"][label] = {"status": "missing", "error": str(e)}
+            health["missing"].append(label)
+            if critical:
+                health["critical_missing"].append(label)
+    if health["critical_missing"]:
+        health["status"] = "critical"
+    elif health["missing"]:
+        health["status"] = "degraded"
+    return health
 
 
 def create_app() -> FastAPI:
@@ -95,6 +168,28 @@ def create_app() -> FastAPI:
             logger.info("启动期工作区扫描完成")
         except Exception as e:
             logger.warning(f"启动期工作区扫描失败（不影响启动）: {e}")
+
+        # 启动期依赖健康检查（缺失时通过 WS 推 ERROR 到 GUI 简化日志 + 落盘 analyzer.log）
+        try:
+            dep_health = _check_dependency_health()
+            if dep_health["status"] != "ok":
+                missing_list = dep_health["critical_missing"] or dep_health["missing"]
+                msg = (
+                    f"⚠️ 关键依赖缺失: {', '.join(missing_list)} "
+                    f"(status={dep_health['status']}, 9 级容错链可能降级)"
+                )
+                hub = get_hub()
+                # 走业务事件路径（hub.log 内部 hardcode source="business"）才能在 GUI 简化日志视图显示
+                await hub.log(msg, level="error", category="system")
+                # 同步落盘 analyzer.log（事后查问题用）
+                logger.error(f"依赖健康检查异常: {msg}")
+            else:
+                logger.info(
+                    f"依赖健康检查通过: {len(dep_health['deps'])} 个全部就绪 "
+                    f"(json_repair={dep_health['deps'].get('json_repair', {}).get('version', 'unknown')})"
+                )
+        except Exception as e:
+            logger.warning(f"依赖健康检查失败（不影响启动）: {e}")
         yield
 
     app = FastAPI(title="Novel Analyzer Web", version="0.1.0", lifespan=lifespan)
@@ -141,7 +236,16 @@ def create_app() -> FastAPI:
 
     @app.get("/api/health")
     async def health():
-        return {"status": "ok", "app": "novel-analyzer-web"}
+        # 合并依赖健康检查：缺关键依赖时把 status 降级为 critical/degraded，
+        # 让运维/QA 第一时间发现，而不是只看 analyzer.log 或 GUI 简化日志。
+        dep_health = _check_dependency_health()
+        return {
+            "status": dep_health["status"] if dep_health["status"] != "ok" else "ok",
+            "app": "novel-analyzer-web",
+            "deps": dep_health["deps"],
+            "missing": dep_health["missing"],
+            "critical_missing": dep_health["critical_missing"],
+        }
 
     @app.post("/api/demo/publish")
     async def demo_publish():

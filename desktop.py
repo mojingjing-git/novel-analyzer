@@ -18,6 +18,7 @@ import json
 import logging
 from logging.handlers import RotatingFileHandler
 import os
+import secrets
 import socket
 import sys
 import threading
@@ -160,6 +161,8 @@ def _find_free_port() -> int:
 
 
 LOCK_FILE = PROJECT_ROOT / "app.lock"
+SESSION_TOKEN_FILE = PROJECT_ROOT / "session.token"
+SESSION_TOKEN_ENV = "NOVEL_ANALYZER_SESSION_TOKEN"
 
 
 def _read_lock() -> dict:
@@ -411,6 +414,26 @@ def main():
         except OSError:
             pass
 
+    # 生成 session token（PR-1 修复，D 方案鉴权，2026-09-10）
+    # desktop.py 启动时生成 32 字节 url-safe token：
+    #   1) 写到 session.token（工作目录 app.lock 旁）
+    #   2) 设置 NOVEL_ANALYZER_SESSION_TOKEN 环境变量
+    #   3) 后端 uvicorn（在同一 Python 解释器线程中跑）读环境变量启用 Depends 鉴权
+    # 退出时通过 _on_closed 清理（删 session.token + 清环境变量）
+    # Refs: _plan_v3.md PR-1 步骤 4
+    try:
+        _session_token = secrets.token_urlsafe(32)
+        SESSION_TOKEN_FILE.write_text(_session_token, encoding="utf-8")
+        os.environ[SESSION_TOKEN_ENV] = _session_token
+        logger.info(f"已生成 session token 写入 {SESSION_TOKEN_FILE.name}")
+    except Exception as e:
+        logger.error(f"生成 session token 失败: {e}")
+        try:
+            LOCK_FILE.unlink()
+        except OSError:
+            pass
+        sys.exit(1)
+
     # 后台线程启动后端
     t = threading.Thread(target=_start_server, args=(port,), daemon=True)
     t.start()
@@ -447,6 +470,16 @@ def main():
     # 记录窗口关闭 / 前端加载异常，便于区分「用户主动关」还是「渲染进程崩溃」
     def _on_closed():
         logger.warning("窗口已关闭（可能是用户主动关闭，也可能是渲染进程崩溃）")
+        # 清理 session token（PR-1 修复，D 方案鉴权）
+        # 删文件 + 清环境变量，避免下次启动时残留 token 被滥用
+        try:
+            os.environ.pop(SESSION_TOKEN_ENV, None)
+        except Exception:
+            pass
+        try:
+            SESSION_TOKEN_FILE.unlink(missing_ok=True)
+        except Exception:
+            pass
 
     def _on_closing():
         """OS 关窗（Alt+F4/任务栏关闭）拦截：任务运行中需确认，返回 False 否决关闭"""
