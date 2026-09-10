@@ -44,7 +44,7 @@
 │   │   ├── analysis_stats.py     # 分析会话统计累加（AnalysisStats：token 五件套/每章记录/重试成本/冻结耗时）
 │   │   ├── pipeline_events.py    # WS 事件翻译层（pipeline 回调工厂 + discovery 提取 + ETA 格式化）
 │   │   ├── final_summary.py      # 最终总结执行器（4阶段 + 断点续跑）
-│   │   ├── splitter_service.py   # 小说切章服务
+│   │   ├── splitter_service.py   # 小说切章服务（i18n：15 章 + 5 卷正则，支持 PG/古典/裸 Roman 风格）
 │   │   ├── workspace_service.py  # 工作区/归档管理
 │   │   ├── book_service.py       # 书名目录映射
 │   │   ├── summary_service.py    # 总结任务生命周期
@@ -63,6 +63,7 @@
 │   │   ├── routes_location_normalization.py  # 地点归一化任务控制（4端点；start/stop/status/result）
 │   │   ├── routes_prompt.py      # Prompt 预览（1端点）
 │   │   ├── routes_settings.py    # 配置管理（6端点）
+│   │   ├── auth.py               # session token 鉴权（D 方案，PR-1 修复，2026-09-10）
 │   │   └── ws.py                 # WebSocket /ws/progress
 │   ├── config/
 │   │   ├── settings.py           # 三层 dataclass 配置 + ConfigManager（save 走 safe_save_json 原子写）
@@ -167,7 +168,7 @@
 
 ```
 .txt 文件
-  → splitter_service（切章，12种章格式 + 4种卷格式正则）
+  → splitter_service（切章，15种章格式 + 5种卷格式正则，PG 头截断 + TOC 去重）
   → blocks/*.txt
   → pipeline（三阶段分析）
       → serial warmup（前 N 块串行）
@@ -348,9 +349,10 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 - 自建 AsyncOpenAI 探针客户端，不走重试链/失败日志；单测 patch 目标 `backend.core.llm_probe.AsyncOpenAI`（test_anthropic_provider ×9 + test_streaming ×1）
 - `_THINKING_DETECTORS` 字段清单与前端 SettingsPage 的分项展示是**手工镜像**关系，禁删字段
 
-#### llm_failure_logger.py（104行）
+#### llm_failure_logger.py（~150 行，PR-1 +50 行）
 - **FailureLogger**：线程安全，`RotatingFileHandler(10MB × 3)` 轮转，每行 JSON 便于 `jq`/grep；记录温度/错误类型/等待时长
 - 进程级单例 `failure_logger` + `_get_failure_logger()`；`reset()` 供跨书清空
+- **`redact()` 模块函数**（PR-1 修复，2026-09-10）：对文本中的 API key / token 脱敏，覆盖 OpenAI sk-... / Anthropic sk-ant-... / Authorization Bearer / x-api-key header；**显式长度 20+ 避免误伤短随机串**；**fail-open**（re.sub 抛异常时返回原文）。`FailureLogger.record_failure` 入口对 `error_message` 自动走 redact；`app.py` 的 `_SensitiveFieldsFilter` 也复用此函数
 
 #### llm_stream.py（133行）
 - **StreamChunk/StreamResult**：H16 流式调用数据结构（analyzer/final_summary/test_streaming 导入方）
@@ -432,12 +434,16 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 - 总结任务生命周期管理
 - 总结结束落盘 `output/summary_token_stats.json`
 
-#### splitter_service.py（730行）
+#### splitter_service.py（1242行）
 - **职责**：小说文本切分为独立章节文件
-- **12 种章格式 + 4 种卷格式正则**：中文数字、阿拉伯数字、"回"、"节"、卷+章组合、英文 Chapter 等
+- **15 种章格式 + 5 种卷格式正则**：中文数字、阿拉伯数字、"回"、"节"、卷+章组合、英文 Chapter、Roman（`CHAPTER I.`）、裸 Roman（Sherlock 独行 `I.`/`II.`）、Book the First/Second + Book [IVXLCDM]（Dickens 风格）
 - **核心算法**：两遍扫描（定位边界→提取内容）、评分式模式选择、次级格式比额门槛并入（绝对得分 ≥2 且 ≥ 主导的 15%，混排书不吞章、高频噪声列表不过度切分）、MD5 去重、超长章拆分
+  - **T2.5 PG 头截断**：`_strip_gutenberg_header` 在 START 标记后切掉 license 头，保留正文
+  - **T2.5b TOC 跳过**：START 后 100 行内识别 CONTENTS 块、跳过再找真章节；`_find_first_real_chapter_or_volume` 通过"12 行内 body 出现"判别 TOC vs 真章节；`_dedup_same_key` 保留字数最多（TOC 残留 < 1000 字、正文 ≥ 5000 字）
+  - **T2.7 pre-START metadata**：`_extract_pg_header_meta` 识别 `Title:` / `Author:` 显式行（Dracula/Pride 等 7 本 metadata 全空 → 全填上）
 - **并发写入**：`ThreadPoolExecutor`（最多 32 工作者）缓解网络盘延迟
 - **运行护栏 + 原子写**：save/batch 路由有分析运行护栏；写盘暂存-交换原子化
+- **已知限制**：4 条见 `splitter_service.py` docstring L51-75（Dracula 日记体 / Moby-Dick TOC 残留 / 裸罗马全大写约束 / pre-START 仅对 PG 有效）
 
 #### workspace_service.py（381行）
 - **职责**：工作区目录管理
@@ -523,6 +529,7 @@ self._flushed_chapters: Set[int]           # 已落盘的章号集合
 | `routes_location_normalization.py` | 4 | `/api/location-normalization` | 归一化任务 start/stop/status/result |
 | `routes_prompt.py` | 1 | `/api/prompt` | Prompt 预览 |
 | `routes_foreshadow.py` | 1 | `/api/foreshadow` | 50类伏笔分类定义 |
+| `auth.py` | 0 | — | **session token 鉴权 D 方案**（PR-1 修复，2026-09-10）：`require_session_token` Depends，供 `/api/analysis/logs` 等敏感端点使用。读 `NOVEL_ANALYZER_SESSION_TOKEN` 环境变量 + `X-Session-Token` header；`hmac.compare_digest` 防时序攻击；环境变量未设置（开发模式）→ 放行 |
 | `ws.py` | 1 WS | `/ws/progress` | WebSocket 实时进度（wire 协议权威定义见 `backend/ws_events.py`） |
 
 **WS 事件协议**（2026-08-31 类型化）：`backend/ws_events.py` 为唯一权威定义——
@@ -718,6 +725,11 @@ npm run build
 ### 9.1 密钥与数据安全
 - `config.json` 含真实 API Key，**禁止提交、打印、写入日志或纳入任何输出**
 - `config.json`、`queue_state.json`、`workspace/`、`*.log`、`app.lock`、`1/`、`.bak_*` 均已被 `.gitignore` 忽略
+- **PR-1 修复（2026-09-10）**：所有可能含 key 的错误日志**必须过 `redact()`**（`llm_failure_logger.redact`）。两重防御：
+  1. `FailureLogger.record_failure` 入口对 `error_message` 自动 redact
+  2. `app.py` 的 `_SensitiveFieldsFilter` 对所有落 `analyzer.log` 的 record 二次过滤
+  - **fail-open 原则**：redact 抛异常时返回原文（宁可漏脱敏也不丢日志）
+  - 未来加新错误字段时**必须**也走 redact，否则可能漏脱敏
 
 ### 9.2 行尾符
 - 仓库中存在大量历史 CRLF/LF 差异，**不要批量转换**
@@ -1028,6 +1040,30 @@ mypy backend/
 - 前端：`SplitterPage.vue:22` pattern 默认值 `'第[...]+章'` 改 `''`（custom 模式空 pattern 走后端 auto 兜底，去掉陷阱）
 - 测试：`tests/test_splitter_silent_failure.py`（7 用例）
 
+### 09-02 切章器国际化 Phase 2-3 修复（P1）
+
+**目标**：把 `backend/services/splitter_service.py` 改成"包罗万象"切章器，覆盖 7 本 Project Gutenberg 外文书 + 4 类边界 case + 中文回归 0 破坏。
+
+**Phase 2 核心修复**（T2.1a/b、T2.4、T2.5b、T2.6、T2.7）：
+- **T2.1a 英文章节正则**：`CHAPTER_PATTERNS` 加 2 条——`[Cc]hapter\s+[IVXLCDM]+[\.\s:]?`（罗马数字）+ 裸 Roman 短篇（Sherlock 风格）；收紧原 `^\d+[\.、]\s*\S` 排除 Gutenberg license 的 `1.A.`/`1.B.`
+- **T2.1b 章节号提取**：`_extract_chapter_num` 支持 Roman（`_roman_to_int`，含 `I` 单字符兜底）+ 英文数词（`_word_to_int`，含连字符/空格复合）
+- **T2.4 卷归属**：`VOLUME_PATTERNS` 加 `Book the First/Second/...` + `Book [IVXLCDM]`（Dickens 风格）；`_normalize_volume_label` 同步把序数词映射为 Roman
+- **T2.5b TOC 跳过** + **T2.7 PG header 提取**：见 §5.1 splitter_service 段
+
+**Phase 3 边界加固**（T3.1-T3.6）：新增 `tests/test_splitter_edge_cases.py`（8 case：空文件/单章节/5 行诗集/20MB 单章 + `max_words=1M` 自动拆多章等）；`tests/conftest.py` 注册 `@pytest.mark.slow` marker。
+
+**Phase 4 已知限制**：Dracula 日记体无显式 Chapter 标记（仍可识别 27 章 Roman）/ Moby-Dick TOC 重复（`dedup_same_key` 兜底后残留 1-2 条）/ 裸罗马短篇正则要求全大写 2-80 字符（小写标题不识别）/ pre-START 头 Title/Author 提取只对 Project Gutenberg 文件有效。
+
+**回归结果**：
+- baseline 7 本：7/7 章节数达标 + 7/7 metadata 含正确书名/作者
+- 边界 8 case：8/8 通过
+- 中文回归 16（mixed_formats 7 + atomic 2 + silent_failure 7）：16/16 通过
+- `pytest backend/tests/`：421/421 通过
+
+**未做**：不动 Phase 1 产物 / 不 git commit / 不重写整个 splitter_service.py / 日文片假名章节不识别。
+
+详细 plan：[`docs/PLAN-splitter-i18n-2026-09.md`](docs/PLAN-splitter-i18n-2026-09.md) · 交付报告：[`docs/DELIVER-splitter-i18n-2026-09.md`](docs/DELIVER-splitter-i18n-2026-09.md) · baseline 报告：[`docs/REPORT-splitter-baseline-2026-09-02.md`](docs/REPORT-splitter-baseline-2026-09-02.md)
+
 **D-G. 书名推断 `1ae7cc4` + `fdc3b8d` + `25c455b`**（`splitter_service.infer_book_name`）
 - 旧：硬编码 suffix 白名单（校对版/完整版/全本）剥离 → 永远漏（精校版/精修版/典藏版/完结版/校对后/无括号版 全部漏网）
 - D. 主路径改用 `re.search(r"[《<]([^》>]+)[》>]", name)` 截取《...》之间内容（截不到时回退）
@@ -1086,3 +1122,75 @@ mypy backend/
 - **原因**：车道注册表纯增量记账，无对账、无超时回收，任何丢失永久累积只能刷新页面清零
 - **回归**：后端 420 passed（+6，54 文件）/ 前端 vitest 77 passed（+11）/ vue-tsc 0 错 / vite build 通过；改动未提交（工作区另有前 session 的 31 个 ` M` 文件不动）
 - **未做**：rolling 等待与消费循环解耦（消除 done 延迟基线，行为改动大，先观察自愈效果）
+
+### 10.25 2026-09-10 API Key 日志泄露修复（PR-1，D 方案）
+- **症状**：9 处 `f"...{str(e)}"` 错误处理无 redact；`FailureLogger.record_failure` 直接 `str(error_message)[:500]` 落盘；`/api/analysis/logs` 端点无任何鉴权一键下载完整 `analyzer.log`（含 key 泄露风险）
+- **修复**：
+  - **新工具** `backend/core/llm_failure_logger.py::redact()`：4 个正则（OpenAI sk- / Anthropic sk-ant- / Authorization Bearer / x-api-key），**显式长度 20+ 避免误伤短串**，**fail-open**（异常时返回原文）
+  - **双层防御**：`FailureLogger.record_failure` 入口对 `error_message` 自动 redact + `app.py` 新增 `_SensitiveFieldsFilter`（logging.Filter）注册到 `_file_handler` 二次过滤所有 `analyzer.log` 落盘 record
+  - **9 处 `str(e)` 全部走 `_redact(str(e))`**（`llm_client.py` 含认证失败 / 请求超时 / API 错误 / 连接失败 / 未知错误 / 流式异常等 6 类异常路径）
+  - **D 方案鉴权**：`backend/api/auth.py` 新增 `require_session_token` Depends，读环境变量 `NOVEL_ANALYZER_SESSION_TOKEN` + `X-Session-Token` header，`hmac.compare_digest` 防时序攻击；`/api/analysis/logs` 端点加 `dependencies=[Depends(require_session_token)]`
+  - **desktop.py**：启动时 `secrets.token_urlsafe(32)` 生成 token，写入 `session.token` + 设置环境变量；`_on_closed` 退出时清理
+  - **测试**：`test_redact.py` 14 case（含 3 个反向：短串不误伤、已脱敏不重复、Retry-After 不误伤）+ `test_session_token_auth.py` 4 e2e（开发模式放行 / 无 header 403 / 错 token 403 / 正确 token 200）
+- **原因**：用户/上游 API 异常 message 可能含 key；`/analysis/logs` 端点裸奔一键下载 30MB 日志是定时炸弹
+- **未做**：D 方案"桌面端零摩擦"需要前端 `client.ts` 拦截 fetch 加 `X-Session-Token` header（独立 PR，避免本 PR scope 蔓延）；**当前桌面 webview 调受保护端点会被 403**——这是已知折中
+- **回归**：PR-1 新增 18 case 全过；核心 LLM 关联测试（test_llm_moderation_sniff、test_global_llm_sem、test_provider_heal、test_anthropic_provider 首次跑、test_llm_mock 首次跑、test_streaming 首次跑）均无破坏；完整 pytest 验收待独立项装 `pytest-timeout` 后补做（test_anthropic_provider/test_streaming 既有 hang 测试需 timeout 防御）
+- **新约束**（已写入 9.1）：未来加新错误字段时**必须**也走 `redact()`
+
+---
+
+## 13. i18n 接口预留（L2 阶段，2026-09-02）
+
+当前状态：**只搭骨架，未翻译**。vue-i18n 已安装，locale 文件为空，
+不抽任何现有字符串。所有 UI 仍硬编码中文。
+
+### 接口已就位
+- 后端 `GUIConfig.language: str = "zh-CN"`（写进 config.json）
+- 前端 `vue-i18n@^10` 已 init（`useLocale()` composable 可用）
+- 前端 `AppConfigDto.gui.language?: string`
+
+### 未来启用 i18n 的步骤
+1. 创建新页面/新功能时，新字符串**必须**用 `t('namespace.element')` 包裹
+2. 翻译抽取：按 `frontend/src/pages/*.vue` + `components/*.vue` 顺序批量替换
+3. 填 `frontend/src/locales/en.json`（zh-CN.json 由原硬编码生成）
+4. 启用 `useLocale().setLocale()` 的后端持久化（PUT /api/settings）
+   - **Open Question**：当前 `routes_settings.py:97` 的 `is_running` 护栏只挡 analysis，
+     未来启用 setLocale 持久化时需扩到 summary/style/location_normalization 全套服务
+5. 跑伪本地化测试（pseudo locale）验证布局
+
+### Open Question（来自 verifier 审计，2026-09-02）
+- `useLocale()` 的 type cast `(supportedLocales as readonly string[]).includes(l) ? l as SupportedLocale : 'zh-CN'`
+  对 `'zh_CN'`（下划线）等 typo 不会拒，未来加 setLocale 的来源校验
+- vue-i18n dev 模式可能在 console.warn "no messages"（messages 为空），**影响为零**但需知
+- `useLocale()` 必须在 setup 上下文调（vue-i18n 的 inject 限制），不能在 main.ts / 事件回调里直接用
+
+### 当前已规划的 i18n 翻译键命名约定
+- 页面级：`queue.*`, `settings.*`, `summary.*`, `splitter.*`, `viz.*`, ...
+- 组件级：`component.button.start`, `component.modal.confirm`
+- 公共：`common.*`（如 common.loading, common.cancel, common.confirm）
+
+---
+
+## 14. 小说书名推断合并（2026-09-04）
+
+### 问题
+splitter 内部有两条平行的"书名推断"路径：
+- `infer_book_name(path)` 从**文件名**（"《书名》（精校版）.txt"）→ 权威 ✅
+- `_extract_metadata` 从**正文前 8 行** → 错值 ❌
+
+原本 splitter 写 `blocks/metadata.json.title` 用第二条路径，**完全不知道**第一条路径已经推断过。
+《轮回乐园》txt 第一段没有 `《...》` 包裹，前 8 行策略误把"夜晚时分..."当书名。
+
+### 修法 A（splitter 治本）
+`save_to_workspace` 把 `book_name` 沿 `save_split → split_text → _extract_metadata` 透传为 `external_title`。
+`_extract_metadata` 接受 `external_title`，**传入时直接返回 `{"title": external_title}` 跳过正文推断**。
+未传入时（直接调 `split_text` 的场景，如 `split_text` 单独测试）才走正文推断。
+
+### 兜底（final_summary 拒垃圾）
+`detect_book_name._looks_valid` 加标点过滤：title 含 `。` / `？` / `！` → 视为正文句子，拒之。
+对所有历史污染的 metadata.json 都生效：兜底 fallback 到 `output_dir.parent.name`。
+
+### 关键设计
+- 两条书名路径**只合并一条**（外部权威），正文推断仅作 fallback
+- 不重切已分析的书（重切会清 `chapter_N_result.json`）
+- 不改 `infer_book_name` 算法（已经过 P5/P5b/P5c 修复）

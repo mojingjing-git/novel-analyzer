@@ -5,6 +5,23 @@
 
 ---
 
+## [Unreleased] - 2026-09-10
+
+### PR-1：API Key 日志泄露修复（D 方案鉴权）
+
+- **`redact()` 工具函数**（`backend/core/llm_failure_logger.py`）：4 个正则覆盖 OpenAI sk-... / Anthropic sk-ant-... / Authorization Bearer / x-api-key header；**显式长度 20+ 避免误伤短随机串**；**fail-open**（异常时返回原文）
+- **双层防御**：
+  1. `FailureLogger.record_failure` 入口对 `error_message` 自动 redact
+  2. `app.py` 新增 `_SensitiveFieldsFilter`（logging.Filter）注册到 `_file_handler`，对所有 `analyzer.log` 落盘 record 二次过滤
+- **`llm_client.py` 9 处 `str(e)`** 全部走 `_redact(str(e))`（认证失败 / 请求超时 / API 错误 / 连接失败 / 未知错误 / 流式异常等 6 类异常路径）
+- **D 方案鉴权**（`backend/api/auth.py` 新增）：`require_session_token` Depends，读 `NOVEL_ANALYZER_SESSION_TOKEN` 环境变量 + `X-Session-Token` header，`hmac.compare_digest` 防时序攻击；`/api/analysis/logs` 端点加 `dependencies=[Depends(require_session_token)]`
+- **`desktop.py` 启动时** `secrets.token_urlsafe(32)` 生成 32 字节 token，写入 `session.token` + 设置环境变量；`_on_closed` 退出时清理
+- **测试**：`test_redact.py` 14 case（含 3 个反向：短串不误伤、已脱敏不重复、Retry-After 不误伤）+ `test_session_token_auth.py` 4 e2e（开发模式放行 / 无 header 403 / 错 token 403 / 正确 token 200）
+- **已知折中**：D 方案"桌面端零摩擦"需前端 `client.ts` 拦截 fetch 加 `X-Session-Token` header（独立 PR）；当前桌面 webview 调受保护端点会被 403
+- **新约束**（写入 `agent.md` 9.1）：未来加新错误字段必须也走 `redact()`
+
+---
+
 ## 阶段总览
 
 | 阶段 | 时间 | 版本形态 | 技术栈 | 存档位置 |
@@ -341,6 +358,16 @@
 - 不 git commit（用户未要求）
 - 不重写整个 splitter_service.py，仅最小必要改动
 - 日文片假名章节不识别（不在本次范围）
+
+---
+
+## 2026-09-04 小说书名推断合并
+
+- splitter `save_to_workspace` 透传 `book_name` → `metadata.json.title`（修法 A，治本）
+- `final_summary.detect_book_name._looks_valid_book_name` 拒含中文句末标点 / "作者/著" 的 title（兜底，对历史污染生效）
+- 新增 `backend/scripts/fix_metadata_titles.py` 一次性修复脚本（已扫到 2 本污染 metadata.json）
+- 新增 `backend/tests/test_book_name_inference.py`（4 个测试）
+- 现状：现有 4146 章书已落盘数据**不受影响**；之前被错写 title 的 metadata.json 由兜底自动 fallback + 一次性脚本手动刷
 
 ---
 

@@ -31,6 +31,16 @@ frontend/vite.config.d.ts
 
 # 开发流程产物
 .superpowers/
+.mimocode
+.zcode
+.agent
+
+# 一次性调试产物
+settings_resp.txt
+_plan_*.md
+_pytest_*.txt
+_trash_*/
+v/
 
 # 调试脚本与中间产物
 _dbg_*.py
