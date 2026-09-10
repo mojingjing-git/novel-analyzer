@@ -8,10 +8,11 @@ import asyncio
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from backend.api.auth import require_session_token
 from backend.services.queue_manager import QueueItem
 from backend.services.queue_service import get_service
 from backend.services import workspace_service
@@ -272,9 +273,9 @@ async def get_style_result(book_id: str) -> dict:
 
 # ==================== 日志下载 ====================
 
-@router.get("/analysis/logs")
+@router.get("/analysis/logs", dependencies=[Depends(require_session_token)])
 async def download_logs():
-    """下载 analyzer.log 日志文件"""
+    """下载 analyzer.log 日志文件（PR-1 加 session token 鉴权，D 方案）"""
     from backend.app import LOG_FILE
     if not LOG_FILE.exists():
         raise HTTPException(status_code=404, detail="日志文件不存在")
