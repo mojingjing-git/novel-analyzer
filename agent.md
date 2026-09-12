@@ -1143,6 +1143,17 @@ mypy backend/
 - **未动**：用户其他 session 10 个 M 改动（backend/config/ 等）由用户自己处理
 - **顺手修**：第 17 行测试数字 420 → 427（v3 plan 独立项发现的失真；README 同步写"约 427 用例"并标注以 pytest --collect-only 实时输出为准）
 
+### 10.27 2026-09-12 添加 Apache 2.0 许可证
+- 仓库根加 `LICENSE` 文件（标准 Apache 2.0 文本 ~200 行）
+- README "许可证"段改为"本项目使用 Apache License 2.0"
+- **协议选择**：Apache 2.0（不是 MIT），原因：
+  - 多一层专利授权（不亏）
+  - 大公司看到 Apache 更愿意集成
+  - 几乎所有"赚点小钱"路径（服务/咨询/捐赠）都不被协议影响
+- **隐私保护**：Copyright 用 GitHub username（`mojingjing-git`），不暴露真名
+- **状态**：仓库仍 private；等用户"再优化优化"后转 public（届时 LICENSE 已在位）
+- **未做**：完整 NOTICE 文件、CONTRIBUTING.md（公开项目时再补）
+
 ---
 
 ## 13. i18n 接口预留（L2 阶段，2026-09-02）

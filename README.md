@@ -140,7 +140,9 @@ python -m pytest        # 约 427 用例（以 pytest --collect-only 实时输�
 
 ## 许可证
 
-许可证待补充。在补上之前，默认仅供个人学习与本地测试使用，不要直接用于对外服务或商业分发。
+本项目使用 [Apache License 2.0](LICENSE)。Copyright 2026 mojingjing-git。
+
+允许自由商用、修改、分发（含再许可），需保留版权声明。完整条款见仓库根目录 `LICENSE` 文件。
 
 ## 致谢
 

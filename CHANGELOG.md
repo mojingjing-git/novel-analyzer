@@ -31,6 +31,13 @@
 - **顺手修** `agent.md` 第 17 行测试数字 420 → 427（v3 plan 独立项发现的失真）
 - **未动**：用户其他 session 10 个 M 改动（`backend/config/`、`backend/services/`、`frontend/` 等）由用户自己处理
 
+### 许可证：添加 Apache 2.0
+- 仓库根加 `LICENSE` 文件（标准 Apache 2.0 文本 ~200 行；Copyright 2026 mojingjing-git）
+- README "许可证"段改写为"本项目使用 Apache License 2.0"，并引用 `LICENSE` 文件
+- **协议选择理由**：多一层专利授权；大公司看到 Apache 更愿意集成；几乎所有"赚点小钱"路径（服务/咨询/捐赠）都不被协议影响
+- **隐私**：Copyright 用 GitHub username 不暴露真名
+- **状态**：仓库仍 private；用户"再优化优化"后转 public（届时 LICENSE 已在位）
+
 ---
 
 ## 阶段总览
