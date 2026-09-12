@@ -20,6 +20,17 @@
 - **已知折中**：D 方案"桌面端零摩擦"需前端 `client.ts` 拦截 fetch 加 `X-Session-Token` header（独立 PR）；当前桌面 webview 调受保护端点会被 403
 - **新约束**（写入 `agent.md` 9.1）：未来加新错误字段必须也走 `redact()`
 
+### 文档：README 去 AI 味重写
+
+- **README.md 简化至 150 行**（原 277 行）：去 AI 高频词（深度 / 一键 / 全流程 / 双保险 / 兜底 / 秒级 / 智能 / 成本优化 / 零数据丢失哲学 等）；统一术语"伏笔账本"（首次出现标注 `foreshadow_ledger.json`）；新增项目状态 / 已知限制 / 贡献 / 许可证 / 致谢 5 节；测试数字改写"约 427 用例（以 pytest --collect-only 实时输出为准）"
+- **拆 4 个 docs**：
+  - `docs/architecture.md`：核心机制（流水线 / LLM 客户端三重竞争 / 9 级 JSON 容错 / 50 类伏笔 / 4 阶段总结 / KV cache 布局 / 桌面双目录方案 / 完整目录结构）
+  - `docs/configuration.md`：api/analysis 完整字段 + 4 个环境变量 + 8 家厂商预设
+  - `docs/api.md`：60+ 端点表 + WebSocket 8 种消息类型
+  - `docs/troubleshooting.md`：5 个日志文件 + 9 个常见问题详细版 + 性能调优速查
+- **顺手修** `agent.md` 第 17 行测试数字 420 → 427（v3 plan 独立项发现的失真）
+- **未动**：用户其他 session 10 个 M 改动（`backend/config/`、`backend/services/`、`frontend/` 等）由用户自己处理
+
 ---
 
 ## 阶段总览

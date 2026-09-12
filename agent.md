@@ -14,7 +14,7 @@
 - **后端**：FastAPI（异步），Python 3.11+
 - **桌面壳**：pywebview + WebView2（Windows）
 - **LLM 兼容**：任何 OpenAI 兼容 API（8+ 厂商预设），以及 Anthropic 协议
-- **测试**：420 个测试用例，54 个测试文件（2026-08-31 累计，含车道堆叠修复 6 个新增）
+- **测试**：427 个测试用例，54 个测试文件（2026-08-31 累计，含车道堆叠修复 6 个新增）
 
 ---
 
@@ -1136,6 +1136,12 @@ mypy backend/
 - **未做**：D 方案"桌面端零摩擦"需要前端 `client.ts` 拦截 fetch 加 `X-Session-Token` header（独立 PR，避免本 PR scope 蔓延）；**当前桌面 webview 调受保护端点会被 403**——这是已知折中
 - **回归**：PR-1 新增 18 case 全过；核心 LLM 关联测试（test_llm_moderation_sniff、test_global_llm_sem、test_provider_heal、test_anthropic_provider 首次跑、test_llm_mock 首次跑、test_streaming 首次跑）均无破坏；完整 pytest 验收待独立项装 `pytest-timeout` 后补做（test_anthropic_provider/test_streaming 既有 hang 测试需 timeout 防御）
 - **新约束**（已写入 9.1）：未来加新错误字段时**必须**也走 `redact()`
+
+### 10.26 2026-09-12 README 去 AI 味重写
+- **改动**：拆 4 个 docs（architecture/configuration/api/troubleshooting）+ README 简化至 150 行
+- **原因**：README 之前 ~10KB 偏 AI 产品发布稿风格（"深度""一键""全流程""双保险""秒级""零数据丢失哲学"等高频词密集），拆 docs 后定位更清晰
+- **未动**：用户其他 session 10 个 M 改动（backend/config/ 等）由用户自己处理
+- **顺手修**：第 17 行测试数字 420 → 427（v3 plan 独立项发现的失真；README 同步写"约 427 用例"并标注以 pytest --collect-only 实时输出为准）
 
 ---
 
