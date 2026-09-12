@@ -42,7 +42,49 @@
 └── requirements.txt
 ```
 
+## 数据流全景
+
+```mermaid
+flowchart LR
+  TXT[".txt"] --> Split["splitter_service<br>15 章+5 卷正则"]
+  Split --> Blocks["blocks/*.txt"]
+  Blocks --> Pipeline["pipeline.run<br>三阶段"]
+  Pipeline --> MS["MemoryState<br>全内存 IO"]
+  MS --> Output["chapter_N_result.json<br>+ rolling_summary.json"]
+  Output --> Summary["final_summary.run<br>4 阶段"]
+  Summary --> Report["final_summary_report.md"]
+  Output --> Agg["aggregate_utils<br>11 种 JSON"]
+  Output --> Style["style_analyzer<br>22 统计+8 维 LLM"]
+  Output --> Excel["excel_export"]
+  Output --> Loc["location_normalizer<br>独立路径"]
+  Style --> StyleMd["style.md"]
+  Excel --> XLSX["output/*.xlsx"]
+  Agg --> VizPages["时间线 / 关系图 / 地图"]
+  Loc --> LocNorm["locations_normalized.json<br>+ spatial_relationships_normalized.json"]
+```
+
 ## 章节分析流水线（`backend/core/pipeline.py`）
+
+```mermaid
+flowchart TD
+  Start(["启动"]) --> Scan["扫描工作区+块划分"]
+  Scan --> Resume{"断点续跑?"}
+  Resume -->|有| Skip["跳过已落盘块"]
+  Resume -->|无| Warmup
+  Skip --> Warmup["串行预热<br>前 N=并发数块"]
+  Warmup --> Concurrent["流式并发<br>Semaphore+as_completed"]
+  Concurrent --> Checkpoint{"每 N 批?"}
+  Checkpoint -->|是| Save["checkpoint 落盘"]
+  Checkpoint -->|否| Rolling
+  Save --> Rolling["后台 Rolling 任务<br>跨阈值触发"]
+  Rolling --> Concurrent
+  Concurrent --> Retry{"失败块?"}
+  Retry -->|有, ≤3 轮| RetryRun["失败补跑"]
+  Retry -->|无| Merge
+  RetryRun --> Merge["KB 合并+持久化"]
+  Merge --> Report["汇总报告"]
+  Report --> End(["完成"])
+```
 
 1. **块划分**：按实际存在的章号切块，容错断号目录，块大小由 `analysis.block_size` 配置。
 2. **串行预热**：前 N = 并发数 块顺序分析，建立初始知识库，保证后块读不到未来章节知识。
@@ -129,6 +171,29 @@
 `TimelinePage` 按 50 类 chip 多选筛选，设置页可勾选保留类别与重要度 / 置信度阈值。
 
 ## 最终总结 4 阶段（`backend/services/final_summary.py`）
+
+```mermaid
+flowchart LR
+  subgraph P1["阶段 1/4: 分卷摘要+伏笔调和"]
+    V1["卷摘要 LLM"] --> V1S["volume_N.md 落盘"]
+    V1S --> V1R["调和 LLM"]
+    V1R --> V1RS["recon_N.json 落盘"]
+  end
+  subgraph P2["阶段 2/4: 全书伏笔复检"]
+    R1["按 batch_size/批<br>默认 40, config.json 当前 80"] --> R2["LLM 复检"]
+    R2 --> R3["ledger 落盘"]
+  end
+  subgraph P3["阶段 3/4: 风格分析"]
+    S1["22 统计+8 维 LLM"] --> S2["style.md 落盘"]
+  end
+  subgraph P4["阶段 4/4: 最终报告"]
+    F1["卷摘要+伏笔+审计+风格"] --> F2["final_summary_report.md"]
+  end
+  P1 --> P2
+  P1 --> P3
+  P2 --> P4
+  P3 --> P4
+```
 
 | 阶段 | 内容 | 断点 |
 |---|---|---|

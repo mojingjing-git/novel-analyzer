@@ -520,8 +520,16 @@ def _chapter_regex_for_mode(options: SplitOptions, lines: List[str]) -> tuple:
     return master, pattern_name
 
 
-def _extract_metadata(lines: List[str], filename: str) -> Dict[str, str]:
+def _extract_metadata(
+    lines: List[str],
+    filename: str,
+    external_title: str = "",  # 新增：来自文件名推断的权威书名（save_to_workspace 传入）
+) -> Dict[str, str]:
     meta: Dict[str, str] = {}
+    # 外部权威书名优先：来自 save_to_workspace 的 book_name 参数
+    # （已通过 infer_book_name 从《...》文件名推断；与正文乱猜相比更准确）
+    if external_title:
+        return {"title": external_title.strip(), "author": ""}
     for i, raw in enumerate(lines[:60]):
         line = raw.strip()
         if not line or len(line) > 120:
@@ -775,7 +783,11 @@ def _dedup_same_key(blocks: List[ChapterBlock]) -> tuple:
 # ---------------------------------------------------------------------------
 # 核心切分
 # ---------------------------------------------------------------------------
-def split_text(content: str, options: Optional[SplitOptions] = None) -> SplitResult:
+def split_text(
+    content: str,
+    options: Optional[SplitOptions] = None,
+    external_title: str = "",  # 新增：来自 save_split / save_to_workspace 透传的权威书名
+) -> SplitResult:
     if options is None:
         options = SplitOptions()
     # T2.7（2026-09-02）：先从 pre-START 头提取 Title/Author（必须在 T2.5 截断前做，
@@ -827,7 +839,7 @@ def split_text(content: str, options: Optional[SplitOptions] = None) -> SplitRes
         block = ChapterBlock(1, "全文", text, len(text))
         return SplitResult(
             chapters=[block], total_chapters=1, total_words=len(text),
-            metadata=_extract_metadata(lines, ""),
+            metadata=_extract_metadata(lines, "", external_title),
             detected_pattern=chapter_rx.pattern, pattern_name=pattern_name,
         )
 
@@ -930,7 +942,7 @@ def split_text(content: str, options: Optional[SplitOptions] = None) -> SplitRes
     # baseline 显示 _extract_metadata 的"前 8 行短行"策略对 PG header 退化成
     # `[Illustration:` / `CHAPTER I. ...` 等。pg_meta（来自 Title: / Author: 显式行）
     # 准确度更高，必须覆盖而非 fallback。
-    metadata = _extract_metadata(lines, "")
+    metadata = _extract_metadata(lines, "", external_title)
     for k, v in pg_meta.items():
         if v:
             metadata[k] = v
@@ -1082,11 +1094,12 @@ def save_split(
     file_path: Path,
     output_dir: Path,
     options: Optional[SplitOptions] = None,
+    external_title: str = "",  # 新增
 ) -> Dict[str, Any]:
     if options is None:
         options = SplitOptions()
     content = _detect_and_read(file_path)
-    result = split_text(content, options)
+    result = split_text(content, options, external_title=external_title)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # P1 修复（2026-08-24）：先全部暂存到 _split_staging，全部成功后才清理旧章并交换。
@@ -1236,7 +1249,8 @@ def save_to_workspace(
     """切分并保存到工作区 workspace/{书名}/blocks/"""
     book_dir = workspace_dir / book_name
     blocks_dir = book_dir / "blocks"
-    result = save_split(file_path, blocks_dir, options)
+    # 修法 A 关键：把权威书名（已在调用方 routes_splitter.py:130 / 192 推断过）透传
+    result = save_split(file_path, blocks_dir, options, external_title=book_name)
     result["book_name"] = book_name
     result["workspace_dir"] = book_dir.as_posix()
     return result

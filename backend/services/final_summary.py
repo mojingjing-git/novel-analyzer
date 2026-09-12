@@ -252,43 +252,62 @@ GLOBAL_RECHECK_USER_TEMPLATE = """以下是《{book_name}》的全书各卷摘�
 
 # ==================== 辅助函数 ====================
 
+# 常见的非书名文本（metadata 推断错误时会抓到这些）
+# 2026-09-04：从 detect_book_name 闭包提为模块级，供 fix_metadata_titles.py 等外部脚本 import
+_NON_TITLE_PREFIXES = (
+    "内容简介", "作品简介", "小说简介", "简介", "作者", "目录", "楔子",
+    "序章", "前言", "序言", "卷首语", "第一章", "第1章", "第 1 章",
+    "正文", "章节",
+)
+
+
+def _clean_book_name(name: str) -> str:
+    """剥离书名号 / 尾部括号备注（2026-09-04 从 detect_book_name 闭包提为模块级）"""
+    name = name.strip()
+    # 先去掉尾部括号备注，如 "（精校版全本）"
+    name = re.sub(r"\s*[（(].*?[）)]\s*$", "", name)
+    # 再去掉首尾的《》【】
+    name = re.sub(r"^[《【]", "", name)
+    name = re.sub(r"[》】]$", "", name)
+    return name.strip()
+
+
+def _looks_valid_book_name(title: str) -> bool:
+    """判断 title 是否像合法书名（2026-09-04 加 2 段兜底过滤）"""
+    if not title or len(title) < 2 or len(title) > 60:
+        return False
+    # 如果 title 主要由等号/横线/星号/下划线/空格/竖线组成，视为无效
+    if re.fullmatch(r"[\s\=\-\*\_\.\|┅┄━─]+", title):
+        return False
+    # 以冒号结尾，或看起来像章节/简介/作者/目录开头，视为无效
+    if title.rstrip().endswith(("：", ":")):
+        return False
+    t = title.strip()
+    if any(t.startswith(p) or t == p for p in _NON_TITLE_PREFIXES):
+        return False
+    # 新增（修法兜底 #1，2026-09-04）：含中文句末标点视为正文句子
+    # 真实案例：《轮回乐园》splitter 把 "夜晚时分，一座繁华中透露着浮躁的二线城市。" 当书名
+    if any(p in t for p in ("。", "？", "！")):
+        return False
+    # 新增（修法兜底 #2，2026-09-04）：含 "作者" / "著" 视为 splitter 误把作者信息拼入
+    # 真实案例：《进化的46亿重奏》title = "进化的四十六亿重奏 作者：相位行者"（含"作者"但不含句末标点）
+    # _NON_TITLE_PREFIXES 只检查 t.startswith("作者")，这条是 t="进化的..."，不命中
+    if "作者" in t or "著" in t:
+        return False
+    return True
+
+
 def detect_book_name(output_dir: Path) -> Optional[str]:
     """
     检测书名（不带《》包裹，供报告模板使用）。
     1. 优先读取 blocks/metadata.json 中的 title 字段（切分时推断出的书名最准确）。
     2. 其次使用 blocks 所在目录名（书目目录名），去掉《》和括号备注。
     3. 不再扫描 blocks 内 .txt 文件名，避免 split_report.txt 等报告文件被误判为书名。
+
+    2026-09-04：把 _clean / _looks_valid 闭包提到模块级（_clean_book_name /
+    _looks_valid_book_name），并在 _looks_valid_book_name 加 2 段兜底过滤
+    （含中文句末标点 / "作者"/"著" 视为正文句子，自动 fallback 到目录名）。
     """
-    def _clean(name: str) -> str:
-        name = name.strip()
-        # 先去掉尾部括号备注，如 "（精校版全本）"
-        name = re.sub(r"\s*[（(].*?[）)]\s*$", "", name)
-        # 再去掉首尾的《》【】
-        name = re.sub(r"^[《【]", "", name)
-        name = re.sub(r"[》】]$", "", name)
-        return name.strip()
-
-    # 常见的非书名文本（metadata 推断错误时会抓到这些）
-    _NON_TITLE_PREFIXES = (
-        "内容简介", "作品简介", "小说简介", "简介", "作者", "目录", "楔子",
-        "序章", "前言", "序言", "卷首语", "第一章", "第1章", "第 1 章",
-        "正文", "章节",
-    )
-
-    def _looks_valid(title: str) -> bool:
-        if not title or len(title) < 2 or len(title) > 60:
-            return False
-        # 如果 title 主要由等号/横线/星号/下划线/空格/竖线组成，视为无效
-        if re.fullmatch(r"[\s\=\-\*\_\.\|┅┄━─]+", title):
-            return False
-        # 以冒号结尾，或看起来像章节/简介/作者/目录开头，视为无效
-        if title.rstrip().endswith(("：", ":")):
-            return False
-        t = title.strip()
-        if any(t.startswith(p) or t == p for p in _NON_TITLE_PREFIXES):
-            return False
-        return True
-
     blocks_dir = output_dir.parent / "blocks"
     if not blocks_dir.exists():
         return None
@@ -297,15 +316,15 @@ def detect_book_name(output_dir: Path) -> Optional[str]:
     if meta_path.exists():
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            title = _clean(meta.get("title", ""))
-            if _looks_valid(title):
+            title = _clean_book_name(meta.get("title", ""))
+            if _looks_valid_book_name(title):
                 return title
         except Exception:
             pass
 
     # 回退：用 blocks 父目录名（书目目录名），同样清理书名号与括号
-    fallback = _clean(output_dir.parent.name)
-    return fallback if _looks_valid(fallback) else None
+    fallback = _clean_book_name(output_dir.parent.name)
+    return fallback if _looks_valid_book_name(fallback) else None
 
 
 def extract_key_fields(data: dict) -> Optional[dict]:

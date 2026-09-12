@@ -34,6 +34,7 @@ from .constants import (
     TEMPERATURE_MAX_RETRIES, BACKOFF_MAX_RETRIES,
     ENCODING_CANDIDATES,
     CONFIG_FILE_NAME, KNOWLEDGE_FILE_NAME,
+    DEFAULT_LANGUAGE,
     DEFAULT_CHECKPOINT_INTERVAL,
     ROLLING_EARLY_CHAPTERS,
     ROLLING_MAX_MILESTONES, ROLLING_MAX_MOMENTUM,
@@ -212,6 +213,7 @@ class GUIConfig:
     font_size: int = 12
     quit_on_close: bool = True
     theme: str = "light"
+    language: str = DEFAULT_LANGUAGE
 
 
 @dataclass

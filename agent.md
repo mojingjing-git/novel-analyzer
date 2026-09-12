@@ -14,7 +14,7 @@
 - **后端**：FastAPI（异步），Python 3.11+
 - **桌面壳**：pywebview + WebView2（Windows）
 - **LLM 兼容**：任何 OpenAI 兼容 API（8+ 厂商预设），以及 Anthropic 协议
-- **测试**：427 个测试用例，54 个测试文件（2026-08-31 累计，含车道堆叠修复 6 个新增）
+- **测试**：约 443 个测试用例，57 个测试文件（2026-09-10 累计，含 PR-1 redact +14、session_token +4）
 
 ---
 
@@ -81,7 +81,7 @@
 │   │   ├── export_utils.py       # Markdown 导出
 │   │   └── text_utils.py         # 编码检测、文本去重、伏笔去重
 │   ├── workers/                  # 后台任务
-│   └── tests/                    # pytest（420 用例，54 文件）
+│   └── tests/                    # pytest（约 443 用例，57 文件）
 ├── frontend/                     # Vue 3 前端
 │   ├── src/
 │   │   ├── api/
@@ -148,7 +148,7 @@
 | openpyxl | Excel 导出（懒加载） |
 | networkx + pyvis | 角色关系图（可选依赖） |
 | json5 / json_repair | JSON 容错解析 |
-| pytest | 420 个测试用例（54 文件） |
+| pytest | 约 443 个测试用例（57 个文件，2026-09-10 累计） |
 
 ### 前端
 | 组件 | 版本/说明 |

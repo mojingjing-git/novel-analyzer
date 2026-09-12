@@ -4,6 +4,9 @@ import { router } from './router'
 import { setupRipple } from './composables/useRipple'
 import { vTooltip } from './composables/vTooltip'
 import './main.css'
+import { createI18n } from 'vue-i18n'
+import zhCN from './locales/zh-CN.json'
+import en from './locales/en.json'
 
 // 强制动效豁免：系统关闭动画（prefers-reduced-motion: reduce）时，
 // 给 <html> 加 .no-reduce，让 main.css 的 reduce 压平规则跳过，应用内动效照常。
@@ -14,7 +17,15 @@ if (typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion:
 
 const app = createApp(App)
 app.directive('tooltip', vTooltip)
-app.use(router).mount('#root')
+
+const i18n = createI18n({
+  legacy: false,           // Composition API 风格
+  locale: 'zh-CN',         // 默认语言；未来从 config.gui.language 读
+  fallbackLocale: 'en',
+  messages: { 'zh-CN': zhCN, en }
+})
+
+app.use(i18n).use(router).mount('#root')
 
 // 全局 ripple 注入（在挂载后启动，避免拦截 setup 阶段的事件）
 setupRipple()

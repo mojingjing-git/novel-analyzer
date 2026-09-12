@@ -125,7 +125,7 @@ Web UI 顶部 5 个 Tab 对应上面的 5 步流程。所有操作也可以通�
 ## 开发
 
 ```bash
-python -m pytest        # 约 427 用例（以 pytest --collect-only 实时输出为准）
+python -m pytest        # 约 443 用例（以 pytest --collect-only 实时输出为准）
 ```
 
 测试覆盖：LLM 重试链、JSON 容错、模型序列化、队列状态机、总结 checkpoint 断点续跑、知识库快照隔离、伏笔去重等。

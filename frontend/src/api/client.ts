@@ -157,6 +157,7 @@ export interface AppConfigDto {
     font_size: number
     quit_on_close: boolean
     theme: string
+    language?: string  // 新增（2026-09-02 L2 接口预留）
   }
   working_directory: string | null
   knowledge_file: string

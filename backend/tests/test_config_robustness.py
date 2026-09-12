@@ -110,3 +110,18 @@ def test_healthy_config_still_saves(tmp_path):
     # 正常覆盖：磁盘内容已变为序列化后的默认配置（DEFAULT_MODEL 为空串，
     # 故不能断言 model 为真值，改为整体比对确认覆盖确实发生）
     assert json.loads(p.read_text(encoding="utf-8")) == AppConfig().to_dict()
+
+
+def test_gui_language_default_and_coercion():
+    """L2 i18n 接口预留（2026-09-02）：GUIConfig.language 字段默认值 + _coerce_fields 强转"""
+    # 缺省回落：旧 config.json 没有 gui.language → 默认 "zh-CN"
+    cfg = AppConfig.from_dict({"gui": {}})
+    assert cfg.gui.language == "zh-CN"
+
+    # 强转：int → str（_coerce_fields 走 str 分支，line 112-113）
+    cfg2 = AppConfig.from_dict({"gui": {"language": 123}})
+    assert cfg2.gui.language == "123"
+
+    # 正常字符串透传
+    cfg3 = AppConfig.from_dict({"gui": {"language": "en"}})
+    assert cfg3.gui.language == "en"

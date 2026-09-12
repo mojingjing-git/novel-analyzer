@@ -39,10 +39,9 @@ onMounted(load)
         {{ b.name }} ({{ b.total_chapters }} 章){{ b.has_report ? ' ✓已总结' : '' }}{{ b.has_aggregated ? ' ✓已聚合' : '' }}
       </option>
     </select>
-    <button @click="load" :disabled="loading" class="glass-button">
+    <button @click="load" :disabled="loading" class="glass-button" title="刷新书目列表">
       <span v-if="loading" class="win-spinner"></span>
       <Icon v-else name="refresh" :size="13" />
-      <span>{{ loading ? '加载中' : '刷新' }}</span>
     </button>
   </div>
 </template>

@@ -38,6 +38,13 @@
 - **隐私**：Copyright 用 GitHub username 不暴露真名
 - **状态**：仓库仍 private；用户"再优化优化"后转 public（届时 LICENSE 已在位）
 
+### Docs：测试数字修正 + 架构图 Mermaid 化 + gitignore 兜底
+- **测试数字**：README.md / agent.md 共 4 处"427/420/54" 失实数字统一改为"约 443/57"（2026-09-10 `pytest --collect-only` 实测）；保留 agent.md 第 1123 行"后端 420 passed"历史回归记录不动
+- **架构图 Mermaid 化**：`docs/architecture.md` 新增 3 张流程图（数据流全景 / 章节分析流水线 / 最终总结 4 阶段），GitHub 原生渲染支持
+- **gitignore 兜底**：增补 `session.token`（PR-1 引入的 32 字节 session token 缺兜底规则，桌面端启动时生成根目录文件）
+- **Mermaid 节点**用 `<br>`（不带斜杠），兼容性更好；图 3 batch_size 标注"默认 40，config.json 当前配 80"
+- **未动**：CHANGELOG 历史段 / agent.md 10.x 时序段 / `docs/PLAN-splitter-i18n-2026-09.md` / `docs/DELIVER-splitter-i18n-2026-09.md`（历史 plan/deliver 报告）；用户其他 session 10 个 M 改动
+
 ---
 
 ## 阶段总览

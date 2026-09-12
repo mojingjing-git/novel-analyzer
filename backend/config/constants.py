@@ -192,5 +192,10 @@ DEFAULT_FONT_FAMILY = "Microsoft YaHei"
 DEFAULT_FONT_SIZE = 12
 DEFAULT_THEME = "light"  # light / dark
 
+# i18n 接口预留（2026-09-02 L2）：仅作为 future i18n 的接口字段
+# 当前不影响任何 UI 行为；未来 i18n 启用时此字段驱动 vue-i18n locale 选择
+DEFAULT_LANGUAGE = "zh-CN"
+# 注：未来启用语言切换 UI 时再补 SUPPORTED_LANGUAGES = ("zh-CN", "en")
+
 # 内存优化：Checkpoint 间隔（批数），每 N 批自动落盘，0=只在结束时落盘
 DEFAULT_CHECKPOINT_INTERVAL = 5

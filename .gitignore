@@ -12,6 +12,9 @@ queue_state.json
 .tmp_verify/
 app.lock
 
+# 会话鉴权 token（PR-1 引入，2026-09-10）
+session.token
+
 # 测试数据与备份残留
 1/
 
