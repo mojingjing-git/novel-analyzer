@@ -19,6 +19,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 import os
 import secrets
+import shutil
 import socket
 import sys
 import threading
@@ -42,7 +43,15 @@ except Exception:
 # === 关键：解决中文路径下 import backend.app 失败 ===
 # NOVEL_ROOT 允许从“本地副本”启动进程（WebView2 要求进程路径在本地盘），
 # 同时把所有数据/日志仍指向共享盘上的真实项目根目录。
-PROJECT_ROOT = Path(os.environ.get("NOVEL_ROOT") or str(Path(__file__).resolve().parent)).resolve()
+# PyInstaller 打包后（v0.2.0 exe）：所有用户数据落在 EXE 同级目录，不在
+# %APPDATA% 也不在 _MEIPASS——避免 C 盘残留、卸载残留、便于整目录迁移。
+if getattr(sys, "frozen", False):
+    EXE_DIR = Path(sys.executable).resolve().parent   # exe 同级（可写，用户数据）
+    BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", EXE_DIR))  # 临时解压（只读，dist 在这）
+else:
+    EXE_DIR = Path(__file__).resolve().parent
+    BUNDLE_DIR = EXE_DIR
+PROJECT_ROOT = Path(os.environ.get("NOVEL_ROOT") or str(EXE_DIR)).resolve()
 os.chdir(str(PROJECT_ROOT))
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -158,6 +167,86 @@ def _find_free_port() -> int:
     port = s.getsockname()[1]
     s.close()
     return port
+
+
+def check_webview2() -> str | None:
+    """检测 WebView2 Runtime（Win10 部分用户首次启动需下载 ~100MB）
+
+    双保险：注册表 Edge Update Client + 路径检测
+    返回版本字符串，未装返回 None
+    """
+    if sys.platform != "win32":
+        return None  # macOS/Linux 走 pywebview 自带 webkit/gtk
+    # 方法 1: 注册表 Edge Update Client ID
+    try:
+        import winreg
+        for sub_key in (
+            r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",
+            r"SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",
+        ):
+            try:
+                key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, sub_key)
+                version, _ = winreg.QueryValueEx(key, "pv")
+                winreg.CloseKey(key)
+                if version:
+                    return version
+            except FileNotFoundError:
+                continue
+    except Exception:
+        pass
+    # 方法 2: 路径检测
+    for path in (
+        r"C:\Program Files (x86)\Microsoft\EdgeWebView\Application",
+        r"C:\Program Files\Microsoft\EdgeWebView\Application",
+    ):
+        if Path(path).exists():
+            return "detected-by-path"
+    return None
+
+
+def first_run_setup() -> str:
+    """首次启动：自动创建 workspace + 复制 config.example.json 到 config.json
+
+    Returns:
+        "OK" - 已就绪
+        "NEEDS_API_KEY" - 已生成 config.json，待用户填 API Key（启动后引导到设置页）
+    """
+    workspace = PROJECT_ROOT / "workspace"
+    config = PROJECT_ROOT / "config.json"
+
+    # 1. workspace 目录
+    if not workspace.exists():
+        try:
+            workspace.mkdir(parents=True)
+        except PermissionError as e:
+            logger.error(f"无法创建 workspace 目录 {workspace}: {e}（EXE 所在目录不可写？）")
+            raise
+        # 复制欢迎页（PyInstaller 模式下 BUNDLE_DIR=_MEIPASS；开发模式 = EXE_DIR）
+        try:
+            src = BUNDLE_DIR / "_welcome_workspace.md"
+            if src.exists():
+                shutil.copy(str(src), str(workspace / "README.md"))
+                logger.info(f"首次启动：已创建 workspace 并写入欢迎页")
+            else:
+                logger.warning(f"首次启动：欢迎页模板不存在 {src}（开发模式正常）")
+        except Exception as e:
+            logger.warning(f"复制欢迎页失败: {e}")
+
+    # 2. config.json
+    if not config.exists():
+        try:
+            src = BUNDLE_DIR / "config.example.json"
+            if src.exists():
+                shutil.copy(str(src), str(config))
+                logger.info(f"首次启动：已生成 config.json，模板来自 config.example.json")
+                return "NEEDS_API_KEY"
+            else:
+                logger.warning(f"首次启动：config.example.json 不存在 {src}（开发模式正常）")
+        except PermissionError as e:
+            logger.error(f"无法写入 config.json {config}: {e}（EXE 所在目录不可写？）")
+            raise
+
+    return "OK"
 
 
 LOCK_FILE = PROJECT_ROOT / "app.lock"
@@ -368,6 +457,31 @@ def _get_hwnd() -> int | None:
 def main():
     _install_crash_diagnostics()
 
+    # === v0.2.0 exe 首次启动逻辑 ===
+    # 1. 检测 WebView2 Runtime（Win10 部分用户首次启动需下载 ~100MB）
+    wv2 = check_webview2()
+    if wv2 is None:
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(
+                0,
+                "未检测到 WebView2 Runtime。\n\n"
+                "请到：\nhttps://developer.microsoft.com/microsoft-edge/webview2/\n\n"
+                "下载并安装「Evergreen Standalone Installer」（约 100MB）。\n"
+                "安装一次后即可正常使用本应用。",
+                "WebView2 缺失",
+                0x40
+            )
+        except Exception:
+            logger.error("WebView2 未安装，请到 https://developer.microsoft.com/microsoft-edge/webview2/ 下载")
+        sys.exit(1)
+    logger.info(f"WebView2 已就绪: {wv2}")
+
+    # 2. 首次启动 setup：自动创建 workspace + 复制 config.json
+    first_run_status = first_run_setup()
+    if first_run_status == "NEEDS_API_KEY":
+        logger.info("首次启动：需要填 API Key，启动后引导到设置页")
+
     port = _find_free_port()
     logger.info(f"启动后端服务: http://127.0.0.1:{port}")
     logger.info(f"项目根目录: {PROJECT_ROOT}")
@@ -547,6 +661,19 @@ def main():
             logger.warning(f"Win11 背景：启用失败（保持纯色）: {e}")
 
     threading.Thread(target=_apply_win11_backdrop, args=(), daemon=True).start()
+
+    # v0.2.0：首次启动后等页面加载完跳设置页（让用户填 API Key）
+    if first_run_status == "NEEDS_API_KEY":
+        def _jump_to_settings_when_ready():
+            for _ in range(20):  # 最多等 5 秒
+                time.sleep(0.25)
+                try:
+                    window.evaluate_js("location.hash = '#/settings'")
+                    return
+                except Exception:
+                    continue
+            logger.warning("跳设置页超时（WebView2 未就绪？）")
+        threading.Thread(target=_jump_to_settings_when_ready, daemon=True).start()
 
     webview.start()
     # 窗口关闭后清理锁并退出

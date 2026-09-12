@@ -101,18 +101,43 @@ Web UI 顶部 5 个 Tab 对应上面的 5 步流程。所有操作也可以通�
 
 `workspace/分析结果/《书名》/` 是归档区，跑完的书可以归档到这里长期保存，源工作区清理后仍可回看。归档与恢复见 API `/api/workspace/*` 端点。
 
+## 下载（v0.1.0）
+
+从 [GitHub Releases](https://github.com/mojingjing-git/novel-analyzer/releases) 下载最新 `novel-analyzer.exe`（约 26 MB），双击即可运行。
+
+**使用流程**：
+1. 把 `novel-analyzer.exe` 放到任何可写目录（推荐 `D:\tools\novel-analyzer\`，避免 Program Files 权限问题）
+2. 双击运行
+3. 首次启动会自动创建：
+   - `workspace/` 目录（含 README.md 欢迎页）
+   - `config.json`（模板来自 `config.example.json`，已嵌入 exe）
+4. 应用启动后会自动跳到**设置页**，填入 API Key 即可使用
+5. 把你的 `.txt` 小说文件放到 `workspace/<书名>/` 下面
+6. 主界面选书 → 启动分析 → 等几小时 → 看伏笔账本 + 最终报告
+
+**Win10 用户首次启动**：可能提示"未检测到 WebView2 Runtime"。到 [Microsoft Edge WebView2](https://developer.microsoft.com/microsoft-edge/webview2/) 下载「Evergreen Standalone Installer」（约 100MB），安装一次后即可。Win11 预装 WebView2，无需额外操作。
+
+**所有数据都在 EXE 同级目录**（不走 `%APPDATA%`，不写 C 盘）：
+- `workspace/` — 你的小说
+- `config.json` — 配置
+- `analyzer.log` / `crash.log` / `api_failures.log` — 日志
+- `queue_state.json` / `session.token` / `app.lock` — 运行时状态
+
+**删除整个文件夹即彻底清理**。详细打包文档见 [docs/build.md](./docs/build.md)。
+
 ## 已知限制
 
 - 目前只有支持中文长篇小说充分测试。英文 / 多语言混合小说仅进行切分可靠性验证，没有完整实测
 - 主要在 Windows 上验证，macOS / Linux 桌面端未充分测试
 - 需要自备 API Key
 - 长书（百万字以上）单次跑完可能需要数小时
-- 前端构建依赖 Node.js 18+，纯 Python 用户需要先装 Node
+- 前端构建依赖 Node.js 18+，纯 Python 用户需要先装 Node（**v0.1.0+ 用 exe 不需要**）
 - 输出 JSON 字段 schema 还在演化，跨版本升级后旧脚本可能需要适配
 - 测试以 Python 后端为主，前端缺少端到端覆盖
 - 商用 LLM（按 token 计费）跑百万字长书成本可观，跑前最好先试读几章估 token
 - 完整分析跑完后，磁盘占用大致是原 txt 的 3-5 倍（聚合 + checkpoint + 日志）
 - 不同厂商对 thinking_mode 协议支持不一样，详见 [docs/configuration.md](./docs/configuration.md) 的"api 段"
+- v0.1.0 PyInstaller exe 未做代码签名，杀软可能误报（添加信任即可）
 
 ## 常见问题
 

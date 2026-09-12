@@ -45,6 +45,24 @@
 - **Mermaid 节点**用 `<br>`（不带斜杠），兼容性更好；图 3 batch_size 标注"默认 40，config.json 当前配 80"
 - **未动**：CHANGELOG 历史段 / agent.md 10.x 时序段 / `docs/PLAN-splitter-i18n-2026-09.md` / `docs/DELIVER-splitter-i18n-2026-09.md`（历史 plan/deliver 报告）；用户其他 session 10 个 M 改动
 
+### v0.1.0 release：PyInstaller 单文件 .exe + 首次启动自动配置
+- **首个 release 版本**（2026-09-12）— 配套 `dist/novel-analyzer.exe`（约 26 MB）单文件 Windows 桌面应用
+- **PyInstaller 6.22.2 + hook-contrib 2026.7**：`desktop.spec` 完整配置（hiddenimports + excludes + datas），`build_exe.bat` 一键脚本
+- **数据落 EXE 同级**（不走 `%APPDATA%`）：`backend/app.py` `backend/services/queue_manager.py` `desktop.py` 三处统一 `EXE_DIR`（可写）+ `BUNDLE_DIR`（只读，dist 嵌入位置）；删 `NOVEL_ROOT` 在 PyInstaller 模式下的绕路逻辑
+- **首次启动行为**：`first_run_setup()` 自动创建 `workspace/` + 复制 `config.example.json` → `config.json` + 复制 `_welcome_workspace.md` → `workspace/README.md`；返回 `NEEDS_API_KEY` 触发 `window.evaluate_js("location.hash = '#/settings'")` 引导
+- **WebView2 Runtime 检测**：`check_webview2()` 双保险（注册表 Edge Update Client + 路径 `C:\Program Files (x86)\Microsoft\EdgeWebView\Application`）；Win10 部分用户首次启动需下载 ~100MB runtime，给友好弹窗
+- **`collect_submodules('backend')` 自动收集**：解决 `uvicorn.run("backend.app:app")` 字符串 import 被 PyInstaller 静态分析漏掉的问题（68 个 backend 子模块自动收集，排除 tests）
+- **`.gitignore` 兜底**：增补 `build/` + `dist/`（PyInstaller 产物不入库，exe 单独走 `gh release`）
+- **`config.example.json`**（新写）：真实 `config.json` 脱敏模板，`api_key="YOUR_API_KEY_HERE"`
+- **`_welcome_workspace.md`**（新写）：workspace 目录的欢迎页（首次启动自动生成）
+- **`docs/build.md`**（新写）：打包文档（spec 角色 / 关键设计 / 5 个常见问题 / 体积优化历史）
+- **`build_exe.bat`**（新写）：一键打包脚本（清旧产物 + 前端 build + PyInstaller + 验证）
+- **shutil 修 bug**：`desktop.py` 顶部加 `import shutil`（`first_run_setup()` 用了但漏 import）
+- **Win11 透明背景**：pywebview 6.x 控件不支持透明背景色，自动降级纯色（不影响功能）
+- **测试验证**：进程启动 12+ 秒稳定运行；workspace/ + config.json 自动创建；WebSocket `/ws/progress` accept + connection open；6 个依赖健康检查全部就绪
+- **体积 26 MB**（含 Python runtime + 依赖 + 前端 dist + 配置模板）
+- **范围外**：macOS / Linux / ARM64（v0.1.0 仅 Windows x64）；代码签名证书（v0.1.0 不上，避免 +30% 杀软误报）
+
 ---
 
 ## 阶段总览

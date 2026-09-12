@@ -23,12 +23,11 @@ from ..utils.json_utils import safe_save_json
 
 logger = logging.getLogger(__name__)
 
-# 项目根目录（novel_analyzer_web/）：config.json 与 queue_state.json 落在这里
-# PyInstaller 打包后 __file__ 指向临时解压目录，需特殊处理
+# 项目根目录（用户数据落 EXE 同级，与 app.py 策略一致）
+# 设计原则（v0.2.0 exe）：所有用户数据（workspace/ config/ queue_state/ log）
+# 都在 EXE 同级目录，不在 %APPDATA% 也不在 _MEIPASS。
 if getattr(sys, "frozen", False):
-    # 打包后：持久化数据写入用户目录（与 app.py 的 LOG_FILE 策略一致）
-    PROJECT_ROOT = Path(os.environ.get("APPDATA", Path.home())) / "NovelAnalyzer"
-    PROJECT_ROOT.mkdir(parents=True, exist_ok=True)
+    PROJECT_ROOT = Path(sys.executable).resolve().parent
 else:
     # 与 app.py 保持一致：优先用 NOVEL_ROOT 指向“真实项目根”（共享盘），
     # 这样队列状态 / 配置 / 工作区数据都落在共享盘，而不是本地副本目录。

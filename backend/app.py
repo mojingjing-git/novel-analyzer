@@ -37,20 +37,22 @@ from backend.core.llm_failure_logger import redact
 
 logger = logging.getLogger(__name__)
 
-# 项目根目录（novel_analyzer/）；兼容 PyInstaller 打包后的 _MEIPASS
+# 项目根目录（用户数据落 EXE 同级）+ BUNDLE_DIR（只读资源，dist 嵌入位置）
+# 设计原则（v0.2.0 exe）：所有用户数据（workspace/ config/ queue_state/ log）
+# 都在 EXE 同级目录，不在 %APPDATA% 也不在 _MEIPASS，避免 C 盘残留 + 卸载残留。
 if getattr(sys, "frozen", False):
-    PROJECT_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
-    # 打包后日志写到用户目录（持久化，避免 _MEIPASS 临时目录被删）
-    _log_dir = Path(os.environ.get("APPDATA", Path.home())) / "NovelAnalyzer"
-    _log_dir.mkdir(parents=True, exist_ok=True)
-    LOG_FILE = _log_dir / "analyzer.log"
+    EXE_DIR = Path(sys.executable).resolve().parent
+    BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", EXE_DIR))
+    PROJECT_ROOT = EXE_DIR
+    LOG_FILE = PROJECT_ROOT / "analyzer.log"
 else:
     # NOVEL_ROOT 允许从“本地副本”启动进程（WebView2 需本地路径），
     # 同时让数据/日志仍落在共享盘真实项目根。
     _novel_root = os.environ.get("NOVEL_ROOT")
     PROJECT_ROOT = Path(_novel_root).resolve() if _novel_root else Path(__file__).resolve().parent.parent
+    BUNDLE_DIR = PROJECT_ROOT
     LOG_FILE = PROJECT_ROOT / "analyzer.log"
-FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
+FRONTEND_DIST = BUNDLE_DIR / "frontend" / "dist"
 
 # 配置日志文件轮转（10MB x 3）
 _file_handler = RotatingFileHandler(
