@@ -40,9 +40,23 @@ settings_resp.txt
 _plan_*.md
 _pytest_*.txt
 _trash_*/
-v/
+v
 
 # 调试脚本与中间产物
 _dbg_*.py
 tests/fixtures/_dbg_*.py
 _commit*_msg.txt
+
+# 临时测试产物（pytest 调试残留）
+_tmp_test_*/
+_pytest_*.stale
+_pytest_*.xml
+
+# 一次性脚本（根目录 scripts/）
+scripts/_run_*.py
+scripts/_check.py
+
+# 过程产物目录（即使工作区有残留文件也不入 git）
+docs/audit/
+docs/superpowers/plans/
+docs/plans/

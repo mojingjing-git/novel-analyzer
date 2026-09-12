@@ -866,7 +866,7 @@ npm run build
 
 ### 10.13 2026-08-24 双批代码审计 + 14 个 P1 修复
 - 第一批 5 路并行审计报 66 条 → 第二批 5 路对抗复核：53 确认 / 12 部分成立降级 / 1 驳回
-- 落地 P1 修复（详见 docs/superpowers/plans/2026-08-24-p1-bug-fixes.md）：
+- 落地 P1 修复（详见计划文档，已归档到 `_trash_2026-09-10/superpowers_plans/2026-08-24-p1-bug-fixes.md`）：
   - memory_state：分析用 KB 快照注入 rolling_structured（滚动总结此前对 prompt 零生效）
   - pipeline：rolling schema 元素容错 + 补跑后更新异常不再冲出 run()
   - llm_client：APIError body 非 dict 时审核嗅探不再崩穿重试链
@@ -936,8 +936,8 @@ npm run build
 - **未做**：①探测 prompt 用简单数学题，对 M3 的"按需 thinking"特性有时不触发，复杂 prompt（小说分析）才稳定触发——未来可让探测跑两轮（简单+复杂）取 OR；②SettingsPage 没把 `_THINKING_DETECTORS` 拆到独立 ts 文件共享
 
 ### 10.12 相关文档### 10.12 相关文档
-- Win11 重做计划：`docs/superpowers/plans/2026-08-16-win11-frontend-redesign.md`
-- 角色关系图重构计划：`docs/superpowers/plans/2026-08-21-graph-redesign.md`
+- Win11 重做计划：已归档到 `_trash_2026-09-10/superpowers_plans/2026-08-16-win11-frontend-redesign.md`
+- 角色关系图重构计划：已归档到 `_trash_2026-09-10/superpowers_plans/2026-08-21-graph-redesign.md`
 - 项目 README：`README.md`
 - 更新日志：`CHANGELOG.md`
 
